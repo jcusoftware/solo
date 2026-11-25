@@ -1,5 +1,6 @@
 // Progressive-enhancement island for forms posting to /api/* (tenant-agnostic).
-// Without JS the form performs a normal POST (Phase 0: the API answers JSON).
+// Without JS the form performs a normal POST (Phase 0: the API answers JSON),
+// which fails closed with 400 turnstile_required (Turnstile needs JS).
 // With JS: submits via fetch, announces results in the form's role="status"
 // region, marks invalid fields with aria-invalid and moves focus to the first.
 (function () {

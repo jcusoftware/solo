@@ -68,7 +68,7 @@
         <li><strong>Landmarks &amp; navigation:</strong> Every page includes <code>&lt;html lang="..."&gt;</code>, <code>&lt;header&gt;</code>, <code>&lt;nav&gt;</code>, <code>&lt;main id="main" tabindex="-1"&gt;</code>, <code>&lt;footer&gt;</code>, and a keyboard-visible skip link.</li>
         <li><strong>Color contrast:</strong> Minimum <code>4.5:1</code> for normal text and <code>3:1</code> for large text and UI components.</li>
         <li><strong>Focus &amp; targets:</strong> Unobscured <code>:focus-visible</code> outlines and interactive targets at least <code>24×24</code> CSS pixels.</li>
-        <li><strong>Forms:</strong> Explicit <code>&lt;label&gt;</code> associations, <code>aria-describedby</code> validation messages, <code>aria-live</code> status announcements, and full no-JS fallback.</li>
+        <li><strong>Forms:</strong> Explicit <code>&lt;label&gt;</code> associations, <code>aria-describedby</code> validation messages, and <code>aria-live</code> status announcements. All content and navigation works with zero JS; public form submission is the exception — the mandatory Turnstile verification requires JavaScript, so a no-JS submission fails closed with <code>400 turnstile_required</code>.</li>
         <li><strong>Zero overlay widgets:</strong> Third-party accessibility overlays are explicitly banned and detected by automated Playwright checks.</li>
       </ul>
 

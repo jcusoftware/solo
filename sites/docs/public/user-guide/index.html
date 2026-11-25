@@ -75,7 +75,7 @@
       <p>To keep static sites under strict Content Security Policy (<code>style-src 'self'</code>), avoid inline <code>style</code> attributes and inline <code>&lt;script&gt;</code> blocks.</p>
 
       <h2>Progressive-Enhancement Forms</h2>
-      <p>Forms in SWS published sites work even when JavaScript is disabled:</p>
+      <p>Forms in SWS published sites keep native HTML form semantics without JavaScript, but successful submission requires it: the mandatory Cloudflare Turnstile verification makes the Worker fail closed with <code>400 turnstile_required</code> when JS is disabled.</p>
       <ol>
         <li><strong>Baseline HTML:</strong> Every form submits standard <code>application/x-www-form-urlencoded</code> POST requests to <code>/api/inquire</code> or <code>/api/newsletter</code>.</li>
         <li><strong>Accessible semantics:</strong> Inputs pair explicit <code>&lt;label for="..."&gt;</code> elements, <code>aria-describedby</code> error hints, and an <code>aria-live</code> status region for feedback.</li>

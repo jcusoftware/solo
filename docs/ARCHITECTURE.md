@@ -57,7 +57,7 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
 ```
 
 - **Deterministic static rendering.** Published pages are pre-rendered static HTML and CSS compiled from `sws-ir`, yielding zero runtime rendering cost and top Lighthouse performance. Edge Workers execute only on `/api/*`.
-- **Progressive enhancement.** Client JS islands (`forms.js`) enhance form submission with `fetch` and `aria-live` status regions; every form also works as a plain HTML `POST`.
+- **Progressive enhancement.** Client JS islands (`forms.js`) enhance form submission with `fetch` and `aria-live` status regions. Published pages render and navigate with zero JS; public form submission is the documented exception — the mandatory Turnstile verification (§8 of AGENTS.md) requires JavaScript, so a no-JS submission fails closed with `400 turnstile_required`.
 - **Memory and size discipline.** Request bodies are capped at 16 KB, nothing is cached unboundedly in isolate memory, and no native C/OpenSSL or threaded crates are used—staying well within Cloudflare Workers' 128 MB isolate limit.
 
 ---

@@ -53,7 +53,7 @@ The fallback keeps the same IR/pack schema contracts, D1 schema, `_headers`, tes
 - **Structure.** Use landmarks (`header`, `nav`, `main`, `footer`), a skip link and `lang`.
 - **Contrast.** Text contrast is at least 4.5:1, or 3:1 for large text and UI components. The demo palette `#241207` on `#E9E2D2` is 13.97:1, which meets AAA.
 - **Interaction.** Focus is always visible (`:focus-visible`) and never obscured. Targets are at least 24×24 CSS px.
-- **Forms.** Use `<label>` and `aria-describedby` for errors and an `aria-live` status region. Forms must work without JS.
+- **Forms.** Use `<label>` and `aria-describedby` for errors and an `aria-live` status region. All site content and navigation works with zero JS (NAP, hours, semantic menus, `tel:`/`mailto:` links, outbound reservation CTAs). The exception is public form submission: the mandatory Turnstile verification (§8) requires JavaScript, so with JS disabled a submission fails closed with `400 turnstile_required`. Native semantic HTML forms remain required; `forms.js` is progressive enhancement only. A `<noscript>` notice is specced in the follow-up issue (#32).
 - **No accessibility overlay widgets.** That means no accessiBe, UserWay, AudioEye or similar.
 - **Menus are semantic HTML plus `Menu`/`MenuSection`/`MenuItem` JSON-LD.** Never ship a PDF-only menu.
 
