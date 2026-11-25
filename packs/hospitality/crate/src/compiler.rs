@@ -1704,7 +1704,8 @@ mod tests {
         val["happy_hour"]["end"] = json!("22:00");
 
         let mut reg = PluginRegistry::new();
-        reg.register(Box::new(HospitalityPlugin));
+        reg.register(Box::new(HospitalityPlugin))
+            .expect("hospitality pack must satisfy the current plugin ABI");
 
         let doc = reg.transform_input_with(None, &val).unwrap();
         let diags = reg.collect_diagnostics(&doc, None);
