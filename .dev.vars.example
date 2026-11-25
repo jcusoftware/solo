@@ -3,5 +3,7 @@
 TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
 # Leave empty to stub email dispatch ("resend stub: skipped").
 RESEND_API_KEY=
-# Uncomment ONLY for offline local dev without a Turnstile secret: skips verification.
-# DEV_MODE=true
+# Local development only: allows the TEST dummy secret above. With DEV_MODE unset,
+# a TEST secret is rejected with 503 (fail closed) — production must replace the
+# TEST secret via `wrangler secret put TURNSTILE_SECRET_KEY` and must NOT set this.
+DEV_MODE=true
