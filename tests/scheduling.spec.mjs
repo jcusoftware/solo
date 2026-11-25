@@ -100,21 +100,24 @@ test("uncertain booking focuses guidance and stops resubmission", async ({ page 
   await expect(page.getByRole("button", { name: "Book this time" })).toBeHidden();
 });
 
-test("page keeps the fail-closed no-JS contract and stays on-origin", async ({ page, baseURL }) => {
+test("page keeps the fail-closed no-JS contract and stays on-origin", async ({ browser, baseURL }) => {
   const origin = new URL(baseURL).origin;
   const external = [];
+  const context = await browser.newContext({ javaScriptEnabled: false, baseURL });
+  const page = await context.newPage();
   await page.route("**/*", (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== origin && !url.hostname.endsWith("cloudflare.com")) external.push(url.href);
-    return url.hostname === "challenges.cloudflare.com" || url.pathname.startsWith("/api/bookings")
-      ? route.continue() : route.abort();
+    return url.origin === origin ? route.continue() : route.abort();
   });
   const response = await page.goto("/book-a-call");
   expect(response.ok()).toBe(true);
-  // Without JavaScript the form is hidden (submission fails closed by construction)
+  // With JavaScript disabled the form stays hidden (the `hidden` attribute is
+  // removed by booking-client.js, so submission fails closed by construction)
   // and the noscript notice offers the phone fallback.
   await expect(page.locator("#booking-form")).toBeHidden();
   await expect(page.locator("#booking-form noscript p")).toContainText("Online scheduling requires JavaScript");
   await expect(page.locator("#booking-form noscript a[href^='tel:']")).toBeAttached();
   expect(external).toEqual([]);
+  await context.close();
 });

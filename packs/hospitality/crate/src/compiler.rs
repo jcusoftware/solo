@@ -2125,26 +2125,6 @@ fn build_booking_body(v: &VenueManifest) -> Vec<Node> {
             ))],
         ),
         el(
-            "noscript",
-            &[],
-            &[],
-            vec![el(
-                "p",
-                &[],
-                &[],
-                vec![
-                    txt("Online scheduling requires JavaScript. To book by phone, call "),
-                    el(
-                        "a",
-                        &[],
-                        &[("href", &href)],
-                        vec![txt(display)],
-                    ),
-                    txt("."),
-                ],
-            )],
-        ),
-        el(
             "div",
             &["card"],
             &[
@@ -2318,6 +2298,26 @@ fn build_booking_body(v: &VenueManifest) -> Vec<Node> {
                 ("rows", "3"),
             ],
             Vec::new(),
+        ),
+        el(
+            "noscript",
+            &[],
+            &[],
+            vec![el(
+                "p",
+                &[],
+                &[],
+                vec![
+                    txt("Online scheduling requires JavaScript. To book by phone, call "),
+                    el(
+                        "a",
+                        &[],
+                        &[("href", &href)],
+                        vec![txt(display)],
+                    ),
+                    txt("."),
+                ],
+            )],
         ),
         el(
             "div",
