@@ -26,8 +26,11 @@ export default defineConfig({
         // Prerequisites before wrangler dev: local D1 migrations + guarded
         // .dev.vars copy (scripts/e2e-setup.mjs), so a bare test run on a
         // fresh clone passes instead of failing forms with 503/500.
+        // `--var DEV_MODE:true` mirrors the CI web job: test Turnstile keys
+        // are only accepted in dev mode (the #6 fail-closed guard refuses
+        // them otherwise), so local submissions exercise the same 201 path.
         command:
-          "node scripts/e2e-setup.mjs && npx wrangler dev --port 8787 --ip 127.0.0.1",
+          "node scripts/e2e-setup.mjs && npx wrangler dev --port 8787 --ip 127.0.0.1 --var DEV_MODE:true",
         url: `${baseURL}/api/health`,
         reuseExistingServer: !process.env.CI,
         timeout: 300_000,
