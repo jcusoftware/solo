@@ -1,0 +1,63 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "solo-release-bot",
+  "permissions": {
+    "http": {
+      "enable": true,
+      "domains": [
+        "api.github.com"
+      ]
+    },
+    "redis": true,
+    "reddit": {
+      "enable": true,
+      "scope": "user"
+    }
+  },
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "scripts": {
+    "build": "npm run build"
+  },
+  "scheduler": {
+    "tasks": {
+      "check-github-releases": {
+        "endpoint": "/internal/scheduler/check-releases",
+        "cron": "*/15 * * * *"
+      }
+    }
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Check for Solo release",
+        "description": "Poll GitHub Releases now and post the newest v* release if unannounced.",
+        "forUserType": "moderator",
+        "location": "subreddit",
+        "postFilter": "none",
+        "endpoint": "/internal/menu/check-releases"
+      }
+    ]
+  },
+  "settings": {
+    "subreddit": {
+      "githubRepo": {
+        "type": "string",
+        "label": "GitHub Repository (owner/repo)",
+        "helpText": "Public GitHub repository whose published v* releases are announced.",
+        "defaultValue": "jcusoftware/solo"
+      },
+      "productName": {
+        "type": "string",
+        "label": "Product Name",
+        "helpText": "Prefix used in Reddit link post titles (e.g. Solo Release 0.1.0).",
+        "defaultValue": "Solo"
+      }
+    }
+  },
+  "dev": {
+    "subreddit": "solo_release_bot_dev"
+  }
+}
