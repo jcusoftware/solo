@@ -1,6 +1,7 @@
 //! Deterministic IR node expansion and HTML5 element serialization.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use serde_json::Value;
 use sws_ir::{Node, SiteDocument};
@@ -39,9 +40,23 @@ pub(crate) enum ExpandedNode {
     Text(String),
 }
 
+/// A value bound in an evaluation scope.
+///
+/// [`ScopeVal::Shared`] keeps values behind an `Rc` so repeated resolution
+/// (e.g. a collection read by many Loop evaluations) never re-copies them.
+/// [`ScopeVal::ItemRef`] binds a Loop item by index into a shared collection
+/// so instantiating a loop body never deep-clones the item (issue #13).
+enum ScopeVal {
+    Shared(Rc<Value>),
+    ItemRef {
+        collection: Rc<Value>,
+        index: usize,
+    },
+}
+
 struct EvalContext<'a> {
     doc: &'a SiteDocument,
-    scopes: Vec<BTreeMap<String, Value>>,
+    scopes: Vec<BTreeMap<String, ScopeVal>>,
     slot_stack: Vec<BTreeMap<String, Vec<ExpandedNode>>>,
     depth: usize,
     node_depth: usize,
@@ -55,7 +70,11 @@ impl<'a> EvalContext<'a> {
     fn new(doc: &'a SiteDocument) -> Self {
         Self {
             doc,
-            scopes: vec![doc.data.clone()],
+            scopes: vec![doc
+                .data
+                .iter()
+                .map(|(key, val)| (key.clone(), ScopeVal::Shared(Rc::new(val.clone()))))
+                .collect()],
             slot_stack: Vec::new(),
             depth: 0,
             node_depth: 0,
@@ -99,7 +118,18 @@ impl<'a> EvalContext<'a> {
         let mut parts = path.split('.');
         let root_key = parts.next()?;
         for scope in self.scopes.iter().rev() {
-            if let Some(mut cur) = scope.get(root_key) {
+            if let Some(scope_val) = scope.get(root_key) {
+                let mut cur: &Value = match scope_val {
+                    ScopeVal::Shared(val) => val,
+                    ScopeVal::ItemRef { collection, index } => {
+                        match collection.as_array().and_then(|items| items.get(*index)) {
+                            Some(item) => item,
+                            // Unreachable: ItemRef indices are always valid
+                            // when created; fall through to the next scope.
+                            None => continue,
+                        }
+                    }
+                };
                 let mut found = true;
                 for part in parts.clone() {
                     if let Some(next) = cur.get(part) {
@@ -115,6 +145,32 @@ impl<'a> EvalContext<'a> {
             }
         }
         None
+    }
+
+    /// Resolve an expression to an owned shared handle for Loop collections.
+    ///
+    /// A root-level scope entry (the common case, e.g. `items`) is returned as
+    /// a cheap `Rc` clone with no deep copy. Dotted paths and loop items fall
+    /// back to [`EvalContext::resolve_expr`] plus a single deep clone, matching
+    /// the previous whole-collection clone per evaluation.
+    fn resolve_collection(&self, expr: &str) -> Option<Rc<Value>> {
+        let path = expr.trim();
+        if path.is_empty() {
+            return None;
+        }
+        let mut parts = path.split('.');
+        let root_key = parts.next()?;
+        if parts.next().is_none() {
+            for scope in self.scopes.iter().rev() {
+                if let Some(scope_val) = scope.get(root_key) {
+                    if let ScopeVal::Shared(val) = scope_val {
+                        return Some(Rc::clone(val));
+                    }
+                    break;
+                }
+            }
+        }
+        self.resolve_expr(expr).map(|val| Rc::new(val.clone()))
     }
 
     fn is_truthy(&self, expr: &str) -> bool {
@@ -345,9 +401,14 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             collection_expr,
             body,
         } => {
-            let resolved = ctx.resolve_expr(collection_expr);
-            let items = match resolved {
-                Some(Value::Array(items)) => items.clone(),
+            // Resolve the collection once as a shared handle (issue #13):
+            // root-level entries cost only an `Rc` clone and items are bound
+            // into the loop scope by index, so instantiating the body never
+            // deep-copies the collection. Item counts still go through
+            // `record_node` below.
+            let collection = ctx.resolve_collection(collection_expr);
+            let items: &[Value] = match collection.as_deref() {
+                Some(Value::Array(items)) => items.as_slice(),
                 other => {
                     // Unresolved or non-array collection: the loop renders
                     // nothing, but warn (with a non-empty body) so the silent
@@ -366,15 +427,23 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
                             ),
                         );
                     }
-                    Vec::new()
+                    &[]
                 }
             };
-            for item in items {
+            for index in 0..items.len() {
                 if !ctx.record_node() {
                     break;
                 }
                 let mut loop_scope = BTreeMap::new();
-                loop_scope.insert(item_var.clone(), item);
+                if let Some(collection) = collection.as_ref() {
+                    loop_scope.insert(
+                        item_var.clone(),
+                        ScopeVal::ItemRef {
+                            collection: Rc::clone(collection),
+                            index,
+                        },
+                    );
+                }
                 ctx.scopes.push(loop_scope);
                 out.extend(expand_nodes(ctx, body));
                 ctx.scopes.pop();
@@ -410,9 +479,13 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
                     return;
                 }
                 if let Some(val) = props.get(prop_name) {
-                    prop_scope.insert(prop_name.clone(), ctx.interpolate_value(val));
+                    let evaluated = ctx.interpolate_value(val);
+                    prop_scope.insert(prop_name.clone(), ScopeVal::Shared(Rc::new(evaluated)));
                 } else if let Some(default_val) = &prop_spec.default {
-                    prop_scope.insert(prop_name.clone(), default_val.clone());
+                    prop_scope.insert(
+                        prop_name.clone(),
+                        ScopeVal::Shared(Rc::new(default_val.clone())),
+                    );
                 }
             }
             for (k, v) in props {
@@ -420,7 +493,8 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
                     return;
                 }
                 if !prop_scope.contains_key(k) {
-                    prop_scope.insert(k.clone(), ctx.interpolate_value(v));
+                    let evaluated = ctx.interpolate_value(v);
+                    prop_scope.insert(k.clone(), ScopeVal::Shared(Rc::new(evaluated)));
                 }
             }
             if ctx.limit_exceeded {

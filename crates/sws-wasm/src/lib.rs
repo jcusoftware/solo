@@ -7,7 +7,6 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use serde_json::Value;
 use sws_compiler::{CompileOptions, CompilerDiagnostic, DiagnosticLevel};
 use sws_ir::{validate_ir, IrValidationError, SiteDocument};
 use wasm_bindgen::prelude::*;
@@ -78,14 +77,14 @@ pub fn compile_site_inner(ir_json: &str) -> Result<String, String> {
 /// Returns a serialized JSON object `{ valid, ir_errors, diagnostics }`.
 pub fn validate_site_inner(ir_json: &str) -> Result<String, String> {
     let doc = parse_site_document(ir_json)?;
-    let raw_value = serde_json::from_str::<Value>(ir_json).ok();
     let ir_errors: Vec<SerializableIrError> = validate_ir(&doc)
         .iter()
         .map(SerializableIrError::from)
         .collect();
     let options = CompileOptions::default();
-    let diagnostics =
-        sws_compiler::check_site_diagnostics(&doc, raw_value.as_ref(), None, &options);
+    // The plugin registry is `None` on this path, so `raw_input` is never
+    // consumed; skip the second parse of `ir_json` (issue #13).
+    let diagnostics = sws_compiler::check_site_diagnostics(&doc, None, None, &options);
     let has_error_diagnostic = diagnostics.iter().any(diagnostic_is_error);
 
     let output = ValidateOutput {
