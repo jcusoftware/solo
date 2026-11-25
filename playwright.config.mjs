@@ -21,7 +21,11 @@ export default defineConfig({
   webServer: externalBase
     ? undefined
     : {
-        command: "npx wrangler dev --port 8787 --ip 127.0.0.1",
+        // Prerequisites before wrangler dev: local D1 migrations + guarded
+        // .dev.vars copy (scripts/e2e-setup.mjs), so a bare test run on a
+        // fresh clone passes instead of failing forms with 503/500.
+        command:
+          "node scripts/e2e-setup.mjs && npx wrangler dev --port 8787 --ip 127.0.0.1",
         url: `${baseURL}/api/health`,
         reuseExistingServer: !process.env.CI,
         timeout: 300_000,
