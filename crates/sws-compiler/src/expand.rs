@@ -11,10 +11,21 @@ const MAX_COMPONENT_DEPTH: usize = 64;
 const MAX_NODE_DEPTH: usize = 128;
 const MAX_EXPANDED_NODES: usize = 50_000;
 const MAX_EXPANDED_TEXT_BYTES: usize = 2 * 1024 * 1024;
+/// Upper bound on collected evaluation warnings so expansion bombs cannot
+/// allocate unbounded diagnostic vectors. Count-based, therefore deterministic.
+const MAX_EVAL_WARNINGS: usize = 1_000;
 
 pub(crate) struct ExpandedBody {
     pub(crate) nodes: Vec<ExpandedNode>,
     pub(crate) limit_exceeded: bool,
+    pub(crate) warnings: Vec<EvalWarning>,
+}
+
+/// A non-fatal evaluation finding collected during template expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EvalWarning {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +48,7 @@ struct EvalContext<'a> {
     expanded_nodes: usize,
     text_bytes: usize,
     limit_exceeded: bool,
+    warnings: Vec<EvalWarning>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -50,6 +62,14 @@ impl<'a> EvalContext<'a> {
             expanded_nodes: 0,
             text_bytes: 0,
             limit_exceeded: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Record an evaluation warning, capped at [`MAX_EVAL_WARNINGS`] entries.
+    fn warn(&mut self, code: &'static str, message: String) {
+        if self.warnings.len() < MAX_EVAL_WARNINGS {
+            self.warnings.push(EvalWarning { code, message });
         }
     }
 
@@ -142,6 +162,16 @@ impl<'a> EvalContext<'a> {
                         return String::new();
                     }
                     out.push_str(&rendered);
+                } else {
+                    // Unresolved `{{expr}}`: the token is dropped, but surface a
+                    // warning so silent content loss is diagnosable.
+                    self.warn(
+                        "unresolved_expression",
+                        format!(
+                            "template expression '{{{{ {} }}}}' did not resolve and was dropped",
+                            expr.trim()
+                        ),
+                    );
                 }
                 rest = &after_open[end + 2..];
             } else {
@@ -218,6 +248,7 @@ pub(crate) fn expand_page_body(doc: &SiteDocument, nodes: &[Node]) -> ExpandedBo
     ExpandedBody {
         nodes: expanded,
         limit_exceeded: ctx.limit_exceeded,
+        warnings: ctx.warnings,
     }
 }
 
@@ -314,11 +345,30 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             collection_expr,
             body,
         } => {
-            let items = ctx
-                .resolve_expr(collection_expr)
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+            let resolved = ctx.resolve_expr(collection_expr);
+            let items = match resolved {
+                Some(Value::Array(items)) => items.clone(),
+                other => {
+                    // Unresolved or non-array collection: the loop renders
+                    // nothing, but warn (with a non-empty body) so the silent
+                    // skip is diagnosable.
+                    if !body.is_empty() {
+                        let found = match other {
+                            Some(Value::Null) => "null",
+                            Some(_) => "a non-array value",
+                            None => "not defined",
+                        };
+                        ctx.warn(
+                            "unresolvable_loop_collection",
+                            format!(
+                                "loop collection '{collection_expr}' resolved to {found}; loop body with {} node(s) was skipped",
+                                body.len()
+                            ),
+                        );
+                    }
+                    Vec::new()
+                }
+            };
             for item in items {
                 if !ctx.record_node() {
                     break;

@@ -8,9 +8,9 @@ use sws_ir::{RoutePattern, SiteDocument, validate_ir};
 use sws_plugin::{DiagnosticSeverity, PluginRegistry};
 
 use crate::expand::{
-    ExpandedNode, expand_page_body, is_forbidden_attr, is_forbidden_body_tag, is_safe_script_src,
-    is_safe_tag_name, is_safe_url_attr_value, is_safe_url_list_attr_value, is_url_attr,
-    is_url_list_attr,
+    ExpandedNode, EvalWarning, expand_page_body, is_forbidden_attr, is_forbidden_body_tag,
+    is_safe_script_src, is_safe_tag_name, is_safe_url_attr_value, is_safe_url_list_attr_value,
+    is_url_attr, is_url_list_attr,
 };
 
 const BANNED_OVERLAY_PATTERNS: &[&str] = &[
@@ -356,6 +356,39 @@ pub fn run_diagnostics(
         }
     }
 
+    // Contrast coverage: AGENTS.md §6 requires compiler-enforced WCAG contrast.
+    // Zero declared `contrast_pairs` must not mean zero verification — the
+    // canonical body text/background tokens (the names this crate already
+    // treats as canonical: `theme_color` resolves `background`/`bg`, and the
+    // hospitality pack maps its palette to `text`/`bg`) must be covered by at
+    // least one declared pair.
+    const TEXT_ROLE_TOKENS: [&str; 2] = ["text", "foreground"];
+    const BG_ROLE_TOKENS: [&str; 2] = ["bg", "background"];
+    for text_token in TEXT_ROLE_TOKENS {
+        for bg_token in BG_ROLE_TOKENS {
+            if !doc.tokens.colors.contains_key(text_token)
+                || !doc.tokens.colors.contains_key(bg_token)
+            {
+                continue;
+            }
+            let covered = doc
+                .tokens
+                .contrast_pairs
+                .iter()
+                .any(|pair| pair.foreground == text_token && pair.background == bg_token);
+            if !covered {
+                diags.push(CompilerDiagnostic::error(
+                    "contrast_pair_uncovered",
+                    "tokens.contrast_pairs",
+                    format!(
+                        "color tokens '{text_token}'/'{bg_token}' provide the body text and background but no contrast_pairs entry covers them; \
+                         declare a ContrastPair so the WCAG AA ratio is verified"
+                    ),
+                ));
+            }
+        }
+    }
+
     // 4. Global script overlay & URL safety check
     for (idx, script) in doc.scripts.iter().enumerate() {
         if let Some(pat) = contains_banned_overlay(&script.src) {
@@ -407,6 +440,15 @@ pub fn run_diagnostics(
                     "page '{}' exceeded template expansion depth or node count limit",
                     page.id
                 ),
+            ));
+        }
+        // Expansion warnings (unresolved expressions, unresolvable loop
+        // collections) are recorded in deterministic traversal order.
+        for EvalWarning { code, message } in &expanded.warnings {
+            diags.push(CompilerDiagnostic::warning(
+                *code,
+                format!("{page_path}.body"),
+                message.clone(),
             ));
         }
         let mut stats = PageDomStats::default();
