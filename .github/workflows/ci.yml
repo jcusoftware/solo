@@ -67,9 +67,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: cargo deny (installs the binary npm run verify calls)
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: taiki-e/install-action@v2
         with:
-          command: check
+          tool: cargo-deny
       - name: npm run verify (contributor-safe subset; agents/devvit gates run via verify:full in the studio checkout)
         run: npm run verify
 
