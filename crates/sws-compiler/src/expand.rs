@@ -8,6 +8,13 @@ use sws_ir::{Node, SiteDocument};
 use crate::escape::esc_html;
 
 const MAX_COMPONENT_DEPTH: usize = 64;
+const MAX_NODE_DEPTH: usize = 128;
+const MAX_EXPANDED_NODES: usize = 50_000;
+
+pub(crate) struct ExpandedBody {
+    pub(crate) nodes: Vec<ExpandedNode>,
+    pub(crate) limit_exceeded: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExpandedNode {
@@ -25,6 +32,9 @@ struct EvalContext<'a> {
     scopes: Vec<BTreeMap<String, Value>>,
     slot_stack: Vec<BTreeMap<String, Vec<ExpandedNode>>>,
     depth: usize,
+    node_depth: usize,
+    expanded_nodes: usize,
+    limit_exceeded: bool,
 }
 
 impl<'a> EvalContext<'a> {
@@ -34,7 +44,19 @@ impl<'a> EvalContext<'a> {
             scopes: vec![doc.data.clone()],
             slot_stack: Vec::new(),
             depth: 0,
+            node_depth: 0,
+            expanded_nodes: 0,
+            limit_exceeded: false,
         }
+    }
+
+    fn record_node(&mut self) -> bool {
+        if self.limit_exceeded || self.expanded_nodes >= MAX_EXPANDED_NODES {
+            self.limit_exceeded = true;
+            return false;
+        }
+        self.expanded_nodes += 1;
+        true
     }
 
     fn resolve_expr(&self, expr: &str) -> Option<&Value> {
@@ -124,20 +146,36 @@ fn value_to_string(val: &Value) -> String {
     }
 }
 
-pub(crate) fn expand_page_body(doc: &SiteDocument, nodes: &[Node]) -> Vec<ExpandedNode> {
+pub(crate) fn expand_page_body(doc: &SiteDocument, nodes: &[Node]) -> ExpandedBody {
     let mut ctx = EvalContext::new(doc);
-    expand_nodes(&mut ctx, nodes)
+    let expanded = expand_nodes(&mut ctx, nodes);
+    ExpandedBody {
+        nodes: expanded,
+        limit_exceeded: ctx.limit_exceeded,
+    }
 }
 
 fn expand_nodes(ctx: &mut EvalContext<'_>, nodes: &[Node]) -> Vec<ExpandedNode> {
-    let mut out = Vec::with_capacity(nodes.len());
+    if ctx.limit_exceeded || ctx.node_depth >= MAX_NODE_DEPTH {
+        ctx.limit_exceeded = true;
+        return Vec::new();
+    }
+    ctx.node_depth += 1;
+    let mut out = Vec::with_capacity(nodes.len().min(64));
     for node in nodes {
+        if ctx.limit_exceeded {
+            break;
+        }
         expand_single(ctx, node, &mut out);
     }
+    ctx.node_depth -= 1;
     out
 }
 
 fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedNode>) {
+    if !ctx.record_node() {
+        return;
+    }
     match node {
         Node::Text { value } => {
             out.push(ExpandedNode::Text(ctx.interpolate(value)));
@@ -229,6 +267,7 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             slots,
         } => {
             if ctx.depth >= MAX_COMPONENT_DEPTH {
+                ctx.limit_exceeded = true;
                 return;
             }
             let Some(def) = ctx.doc.components.get(component) else {
@@ -321,6 +360,81 @@ fn is_safe_tag_name(tag: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+pub(crate) fn is_forbidden_body_tag(tag_lower: &str) -> bool {
+    matches!(
+        tag_lower,
+        "script"
+            | "style"
+            | "iframe"
+            | "object"
+            | "embed"
+            | "applet"
+            | "base"
+            | "meta"
+            | "link"
+            | "frame"
+            | "frameset"
+    )
+}
+
+pub(crate) fn is_forbidden_attr(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower == "style" || lower == "srcdoc" {
+        return true;
+    }
+    let bytes = lower.as_bytes();
+    bytes.len() > 2 && &bytes[..2] == b"on" && bytes[2].is_ascii_alphabetic()
+}
+
+pub(crate) fn is_url_attr(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "href" | "src" | "action" | "formaction" | "poster" | "cite" | "data" | "xlink:href"
+    )
+}
+
+pub(crate) fn is_safe_url_attr_value(attr: &str, val: &str) -> bool {
+    if val.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return false;
+    }
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.starts_with("//") {
+        return false;
+    }
+    if trimmed.starts_with('#') || trimmed.starts_with('/') || trimmed.starts_with('?') {
+        return !trimmed.contains('\\');
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        return !trimmed.contains('\\');
+    }
+    if attr.eq_ignore_ascii_case("href")
+        && (lower.starts_with("mailto:") || lower.starts_with("tel:"))
+    {
+        return !trimmed.bytes().any(|b| b.is_ascii_control());
+    }
+    // Reject any other explicit URI scheme (e.g. javascript:, vbscript:, data:, blob:, file:).
+    let before_delim = trimmed.split(['/', '?', '#']).next().unwrap_or("");
+    !before_delim.contains(':') && !trimmed.contains('\\')
+}
+
+pub(crate) fn is_safe_script_src(src: &str) -> bool {
+    if src.is_empty()
+        || src
+            .bytes()
+            .any(|b| b <= 0x20 || b == 0x7f || b == b'\\')
+    {
+        return false;
+    }
+    if src.starts_with('/') {
+        return !src.starts_with("//");
+    }
+    sws_ir::is_valid_https_url(src)
+}
+
 pub(crate) fn render_expanded_html(nodes: &[ExpandedNode]) -> String {
     let mut out = String::new();
     for node in nodes {
@@ -338,7 +452,7 @@ fn write_expanded_node(node: &ExpandedNode, out: &mut String) {
             classes,
             children,
         } => {
-            if !is_safe_tag_name(tag) {
+            if !is_safe_tag_name(tag) || is_forbidden_body_tag(&tag.to_ascii_lowercase()) {
                 return;
             }
             out.push('<');
@@ -355,7 +469,12 @@ fn write_expanded_node(node: &ExpandedNode, out: &mut String) {
                 out.push('"');
             }
             for (k, v) in attrs {
-                if k == "id" || k.eq_ignore_ascii_case("class") || !is_safe_tag_name(k) {
+                if k == "id"
+                    || k.eq_ignore_ascii_case("class")
+                    || !is_safe_tag_name(k)
+                    || is_forbidden_attr(k)
+                    || (is_url_attr(k) && !is_safe_url_attr_value(k, v))
+                {
                     continue;
                 }
                 if is_boolean_attr(k) {

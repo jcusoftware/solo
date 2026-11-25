@@ -263,6 +263,9 @@ fn output_path_for_page(page: &Page) -> Option<String> {
     }
     match &page.route {
         RoutePattern::Static { path } => {
+            if !sws_ir::is_valid_static_route(path) {
+                return None;
+            }
             let trimmed = path.trim_matches('/');
             if trimmed.is_empty() {
                 Some("index.html".to_string())
@@ -375,7 +378,7 @@ fn render_page_html(doc: &SiteDocument, page: &Page) -> String {
     let _ = writeln!(out, "<body>");
 
     let expanded = expand::expand_page_body(doc, &page.body);
-    out.push_str(&expand::render_expanded_html(&expanded));
+    out.push_str(&expand::render_expanded_html(&expanded.nodes));
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -897,5 +900,130 @@ mod tests {
             .iter()
             .any(|d| d.level == DiagnosticLevel::Warning && d.code == "plugin:dummy:advisory-note"));
         assert!(compiled.files.contains_key("index.html"));
+    }
+
+    #[test]
+    fn rejects_xss_elements_event_handlers_unsafe_urls_and_script_srcs() {
+        let mut doc = base_doc();
+        doc.scripts.push(ScriptRef {
+            src: "javascript:alert(1)".to_string(),
+            async_load: false,
+            defer: true,
+        });
+        doc.pages[0].scripts.push(ScriptRef {
+            src: "http://insecure.example/app.js".to_string(),
+            async_load: false,
+            defer: true,
+        });
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(elem("script", BTreeMap::new(), vec![text("alert(1)")]));
+            children.push(elem(
+                "a",
+                BTreeMap::from([
+                    ("href".to_string(), "javascript:alert(1)".to_string()),
+                    ("onclick".to_string(), "alert(2)".to_string()),
+                    ("style".to_string(), "color:red".to_string()),
+                ]),
+                vec![text("Click")],
+            ));
+            children.push(elem(
+                "iframe",
+                BTreeMap::from([("srcdoc".to_string(), "<script>alert(3)</script>".to_string())]),
+                Vec::new(),
+            ));
+        }
+
+        let err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        let codes: Vec<&str> = err.diagnostics.iter().map(|d| d.code.as_str()).collect();
+        assert!(codes.contains(&"unsafe_script_src"), "{codes:?}");
+        assert!(codes.contains(&"unsafe_html_element"), "{codes:?}");
+        assert!(codes.contains(&"unsafe_html_attribute"), "{codes:?}");
+        assert!(codes.contains(&"unsafe_url_attribute"), "{codes:?}");
+
+        // Defense-in-depth: even rendering expanded nodes strips forbidden tags/attrs/urls.
+        let expanded = expand::expand_page_body(&doc, &doc.pages[0].body);
+        let rendered = expand::render_expanded_html(&expanded.nodes);
+        assert!(!rendered.contains("<script"), "{rendered}");
+        assert!(!rendered.contains("<iframe"), "{rendered}");
+        assert!(!rendered.contains("onclick"), "{rendered}");
+        assert!(!rendered.contains("style="), "{rendered}");
+        assert!(!rendered.contains("javascript:"), "{rendered}");
+    }
+
+    #[test]
+    fn stops_exponential_component_expansion_dos() {
+        let mut doc = base_doc();
+        // Build a 20-level binary DAG: c0 -> 2*c1 -> 4*c2 -> ... -> 2^20 (>1M) nodes.
+        for i in 0..20 {
+            let name = format!("c{i}");
+            let template = if i == 19 {
+                vec![elem("span", BTreeMap::new(), vec![text("leaf")])]
+            } else {
+                let next = format!("c{}", i + 1);
+                vec![
+                    Node::ComponentInstance {
+                        component: next.clone(),
+                        props: BTreeMap::new(),
+                        slots: BTreeMap::new(),
+                    },
+                    Node::ComponentInstance {
+                        component: next,
+                        props: BTreeMap::new(),
+                        slots: BTreeMap::new(),
+                    },
+                ]
+            };
+            doc.components.insert(
+                name.clone(),
+                ComponentDef {
+                    name,
+                    props: BTreeMap::new(),
+                    slots: Vec::new(),
+                    template,
+                },
+            );
+        }
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(Node::ComponentInstance {
+                component: "c0".to_string(),
+                props: BTreeMap::new(),
+                slots: BTreeMap::new(),
+            });
+        }
+
+        let err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|d| d.code == "expansion_limit_exceeded"),
+            "expected expansion_limit_exceeded, got: {:?}",
+            err.diagnostics
+        );
+    }
+
+    #[test]
+    fn rejects_traversal_static_route() {
+        let mut doc = base_doc();
+        doc.pages.push(valid_page(
+            "evil",
+            "/../../pwn",
+            false,
+            vec![elem("h1", BTreeMap::new(), vec![text("Evil")])],
+        ));
+        let err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics.iter().any(|d| d.code == "ir_invalid"),
+            "{:?}",
+            err.diagnostics
+        );
+        assert_eq!(output_path_for_page(&doc.pages[1]), None);
     }
 }

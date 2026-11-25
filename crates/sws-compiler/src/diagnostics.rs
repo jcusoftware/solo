@@ -7,7 +7,10 @@ use serde_json::Value;
 use sws_ir::{RoutePattern, SiteDocument, validate_ir};
 use sws_plugin::{DiagnosticSeverity, PluginRegistry};
 
-use crate::expand::{ExpandedNode, expand_page_body};
+use crate::expand::{
+    ExpandedNode, expand_page_body, is_forbidden_attr, is_forbidden_body_tag, is_safe_script_src,
+    is_safe_url_attr_value, is_url_attr,
+};
 
 const BANNED_OVERLAY_PATTERNS: &[&str] = &[
     "accessibe",
@@ -94,6 +97,8 @@ struct PageDomStats {
     label_for_ids: BTreeSet<String>,
     controls: Vec<ControlRecord>,
     overlay_hits: Vec<(String, &'static str)>,
+    unsafe_elements: Vec<(String, String)>,
+    unsafe_attributes: Vec<(String, String, &'static str)>,
 }
 
 fn heading_level(tag: &str) -> Option<u8> {
@@ -134,9 +139,26 @@ fn collect_dom_stats(
         let hidden = in_aria_hidden || self_aria_hidden;
         let next_in_label = in_label || tag_lower == "label";
 
+        if is_forbidden_body_tag(&tag_lower) {
+            stats.unsafe_elements.push((path.clone(), tag_lower.clone()));
+        }
+
         for (attr_k, attr_v) in attrs {
             if let Some(pat) = contains_banned_overlay(attr_v) {
                 stats.overlay_hits.push((format!("{path}@{attr_k}"), pat));
+            }
+            if is_forbidden_attr(attr_k) {
+                stats.unsafe_attributes.push((
+                    format!("{path}@{attr_k}"),
+                    attr_k.clone(),
+                    "unsafe_html_attribute",
+                ));
+            } else if is_url_attr(attr_k) && !is_safe_url_attr_value(attr_k, attr_v) {
+                stats.unsafe_attributes.push((
+                    format!("{path}@{attr_k}"),
+                    attr_k.clone(),
+                    "unsafe_url_attribute",
+                ));
             }
         }
         for cls in classes {
@@ -296,13 +318,20 @@ pub fn run_diagnostics(
         }
     }
 
-    // 4. Global script overlay check
+    // 4. Global script overlay & URL safety check
     for (idx, script) in doc.scripts.iter().enumerate() {
         if let Some(pat) = contains_banned_overlay(&script.src) {
             diags.push(CompilerDiagnostic::error(
                 "banned_accessibility_overlay",
                 format!("scripts[{idx}].src"),
                 format!("banned accessibility overlay reference '{pat}' in script src"),
+            ));
+        }
+        if !is_safe_script_src(&script.src) {
+            diags.push(CompilerDiagnostic::error(
+                "unsafe_script_src",
+                format!("scripts[{idx}].src"),
+                format!("script src '{}' must be a relative '/...' path or valid https:// URL", script.src),
             ));
         }
     }
@@ -319,11 +348,37 @@ pub fn run_diagnostics(
                     format!("banned accessibility overlay reference '{pat}' in script src"),
                 ));
             }
+            if !is_safe_script_src(&script.src) {
+                diags.push(CompilerDiagnostic::error(
+                    "unsafe_script_src",
+                    format!("{page_path}.scripts[{s_idx}].src"),
+                    format!(
+                        "script src '{}' must be a relative '/...' path or valid https:// URL",
+                        script.src
+                    ),
+                ));
+            }
         }
 
         let expanded = expand_page_body(doc, &page.body);
+        if expanded.limit_exceeded {
+            diags.push(CompilerDiagnostic::error(
+                "expansion_limit_exceeded",
+                format!("{page_path}.body"),
+                format!(
+                    "page '{}' exceeded template expansion depth or node count limit",
+                    page.id
+                ),
+            ));
+        }
         let mut stats = PageDomStats::default();
-        collect_dom_stats(&expanded, &format!("{page_path}.body"), false, false, &mut stats);
+        collect_dom_stats(
+            &expanded.nodes,
+            &format!("{page_path}.body"),
+            false,
+            false,
+            &mut stats,
+        );
 
         for (hit_path, pat) in stats.overlay_hits {
             diags.push(CompilerDiagnostic::error(
@@ -331,6 +386,21 @@ pub fn run_diagnostics(
                 hit_path,
                 format!("banned accessibility overlay pattern '{pat}' detected"),
             ));
+        }
+        for (elem_path, tag) in stats.unsafe_elements {
+            diags.push(CompilerDiagnostic::error(
+                "unsafe_html_element",
+                elem_path,
+                format!("disallowed HTML element <{tag}> in page body"),
+            ));
+        }
+        for (attr_path, attr_name, code) in stats.unsafe_attributes {
+            let msg = if code == "unsafe_url_attribute" {
+                format!("unsafe URL scheme or characters in attribute '{attr_name}'")
+            } else {
+                format!("disallowed HTML attribute '{attr_name}' (inline handlers/styles/srcdoc are forbidden)")
+            };
+            diags.push(CompilerDiagnostic::error(code, attr_path, msg));
         }
 
         // Dynamic pages with an empty body act as route metadata and have no rendered HTML.

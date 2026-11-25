@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{IrStyleRule, Node, Page, SiteDocument};
-use crate::validate::is_valid_hex_color;
+use crate::validate::{is_valid_hex_color, is_valid_https_url};
 
 /// Errors returned when applying an [`IrPatch`] to a [`SiteDocument`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,10 +156,10 @@ pub fn apply_patch(doc: &mut SiteDocument, patch: &IrPatch) -> Result<(), IrErro
                 doc.locale = locale.clone();
             }
             if let Some(base_url) = base_url {
-                if !base_url.starts_with("https://") {
+                if !is_valid_https_url(base_url) {
                     return Err(IrError::InvalidValue {
                         field: "base_url".to_string(),
-                        message: "base_url must start with https://".to_string(),
+                        message: "base_url must be a valid https:// URL".to_string(),
                     });
                 }
                 doc.base_url = base_url.clone();

@@ -271,9 +271,7 @@ fn diet_schema_type(tag: &str) -> Option<&'static str> {
 }
 
 fn is_slug(s: &str) -> bool {
-    !s.is_empty()
-        && s.split('-')
-            .all(|seg| !seg.is_empty() && seg.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9')))
+    sws_ir::is_valid_slug(s)
 }
 
 fn is_hhmm(s: &str) -> bool {
@@ -296,8 +294,7 @@ fn is_hhmm(s: &str) -> bool {
 }
 
 fn is_hex(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_hexdigit)
+    sws_css::is_valid_hex_color(s)
 }
 
 fn is_price(s: &str) -> bool {
@@ -311,90 +308,20 @@ fn is_price(s: &str) -> bool {
 }
 
 fn is_date_ymd(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 10
-        && b[4] == b'-'
-        && b[7] == b'-'
-        && s.bytes()
-            .enumerate()
-            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    sws_security::validate::is_valid_date(s)
 }
 
 fn is_https_url(s: &str) -> bool {
-    if s.trim().is_empty()
-        || s.chars()
-            .any(|c| (c as u32) <= 0x20 || c as u32 == 0x7f)
-    {
-        return false;
-    }
-    let Some(rest) = s.strip_prefix("https://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    !authority.is_empty()
-        && !authority.starts_with('.')
-        && !authority.ends_with('.')
-        && !authority.contains('@')
-}
-
-fn has_balanced_quotes(s: &str) -> bool {
-    let mut quote: Option<char> = None;
-    for ch in s.chars() {
-        if let Some(q) = quote {
-            if ch == q {
-                quote = None;
-            }
-        } else if ch == '"' || ch == '\'' {
-            quote = Some(ch);
-        }
-    }
-    quote.is_none()
+    sws_ir::is_valid_https_url(s)
 }
 
 fn is_safe_font_stack(s: &str) -> bool {
-    if s.trim().is_empty() {
-        return false;
-    }
-    if s.contains([';', '{', '}', '\n', '\r', '\\'])
-        || s.contains("/*")
-        || s.contains("*/")
-        || s.to_ascii_lowercase().contains("url(")
-    {
-        return false;
-    }
-    has_balanced_quotes(s)
-}
-
-fn parse_rgb(hex: &str) -> Option<[f64; 3]> {
-    if !is_hex(hex) {
-        return None;
-    }
-    let r = u8::from_str_radix(&hex[1..3], 16).ok()? as f64 / 255.0;
-    let g = u8::from_str_radix(&hex[3..5], 16).ok()? as f64 / 255.0;
-    let b = u8::from_str_radix(&hex[5..7], 16).ok()? as f64 / 255.0;
-    Some([r, g, b])
-}
-
-fn linearize(x: f64) -> f64 {
-    if x <= 0.04045 {
-        x / 12.92
-    } else {
-        ((x + 0.055) / 1.055).powf(2.4)
-    }
+    sws_css::is_safe_font_stack(s)
 }
 
 /// Compute WCAG 2.x contrast ratio between two `#RRGGBB` colors.
 pub fn contrast_ratio(a: &str, b: &str) -> Option<f64> {
-    let [ar, ag, ab] = parse_rgb(a)?;
-    let [br, bg, bb] = parse_rgb(b)?;
-    let lum_a = 0.2126 * linearize(ar) + 0.7152 * linearize(ag) + 0.0722 * linearize(ab);
-    let lum_b = 0.2126 * linearize(br) + 0.7152 * linearize(bg) + 0.0722 * linearize(bb);
-    let (hi, lo) = if lum_a >= lum_b {
-        (lum_a, lum_b)
-    } else {
-        (lum_b, lum_a)
-    };
-    Some((hi + 0.05) / (lo + 0.05))
+    sws_css::contrast_ratio(a, b)
 }
 
 fn resolve_color<'a>(
@@ -913,10 +840,14 @@ mod tests {
         v.slug = "Bad_Slug!".into();
         v.nap.website = "http://shirlington-hearth.example".into();
         v.brand.fonts.body = "Arial; background: url(https://evil.example)".into();
+        v.brand.fonts.heading = Some("Georgia, expression(alert(1))".into());
+        v.holiday_overrides[0].date = "2027-02-30".into();
         let errs = validate_venue(&v);
         assert!(errs.iter().any(|e| e.contains("slug")));
         assert!(errs.iter().any(|e| e.contains("nap.website")));
         assert!(errs.iter().any(|e| e.contains("brand.fonts.body")));
+        assert!(errs.iter().any(|e| e.contains("brand.fonts.heading")));
+        assert!(errs.iter().any(|e| e.contains("holiday_overrides[0].date")));
     }
 
     #[test]

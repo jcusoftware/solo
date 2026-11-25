@@ -124,7 +124,7 @@ mod tests {
 
         // Passes large text (>= 3.0) but fails normal text (< 4.5): ~3.10
         let border_ratio = contrast_ratio("#949494", "#FFFFFF").expect("valid hex");
-        assert!(border_ratio >= 3.0 && border_ratio < 4.5);
+        assert!((3.0..4.5).contains(&border_ratio));
         assert!(meets_wcag_aa_large("#949494", "#FFFFFF"));
         assert!(!meets_wcag_aa_normal("#949494", "#FFFFFF"));
 
