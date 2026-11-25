@@ -8,6 +8,7 @@
 //! - Any other path -> static assets binding (`ASSETS`)
 
 pub mod forms;
+pub mod newsletter;
 pub mod routes;
 
 #[cfg(target_arch = "wasm32")]
@@ -25,7 +26,7 @@ mod wasm {
     use sws_security::response::{error_body, validation_error_body};
     use sws_security::validate::{ValidationError, iso8601_utc, truncate_str, validate_newsletter};
     use sws_security::worker_utils::{
-        json_response, opt_str, read_fields, secret, var, verify_turnstile, with_timeout,
+        json_response, read_fields, secret, var, verify_turnstile, with_timeout,
     };
 
     use crate::forms::{
@@ -326,22 +327,25 @@ mod wasm {
             return Ok(resp);
         }
         let now = iso8601_utc(worker::Date::now().as_millis());
+        // Host-testable statement builder (crates/sws-worker-site/src/newsletter.rs):
         // CAN-SPAM: preserve existing subscriber consent audit records
         // (`consent_text`, `consent_timestamp`, `source_route`) and status
         // (`unsubscribed`/`bounced`) against anonymous overwrites.
-        let stmt = env
-            .d1("DB")?
-            .prepare(
-                "INSERT INTO newsletter_subscribers (email, status, consent_timestamp, source_route, consent_text) \
-                 VALUES (?1, 'subscribed', ?2, ?3, ?4) \
-                 ON CONFLICT(email) DO NOTHING",
-            )
-            .bind(&[
-                JsValue::from_str(&signup.email),
-                JsValue::from_str(&now),
-                JsValue::from_str(&signup.source_route),
-                opt_str(&signup.consent_text),
-            ])?;
+        let up = crate::newsletter::newsletter_upsert(
+            &signup.email,
+            &now,
+            &signup.source_route,
+            signup.consent_text.as_deref(),
+        );
+        let binds: Vec<JsValue> = up
+            .binds
+            .into_iter()
+            .map(|bind| match bind {
+                Some(value) => JsValue::from_str(&value),
+                None => JsValue::NULL,
+            })
+            .collect();
+        let stmt = env.d1("DB")?.prepare(&up.sql).bind(&binds)?;
         if let Err(e) = stmt.run().await {
             console_error!("newsletter insert failed: {e}");
             return json_response(500, &error_body("storage_failed"));
