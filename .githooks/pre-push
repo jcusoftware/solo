@@ -75,32 +75,38 @@ done
 # --- branch pushes: run the full verify gate before the code leaves the machine ---
 # Tags-only pushes skip this: release.yml runs the full verify on tags anyway.
 # Escape hatch (use knowingly): SWS_SKIP_VERIFY=1 git push ...
-if [ "$fail" -eq 0 ] && [ "$saw_branch" -eq 1 ] && [ -z "$SWS_SKIP_VERIFY" ]; then
-	# Hooks run without a login shell: make nvm-managed node and cargo visible.
+# Toolchain env for the gate commands: hooks run without a login shell, so
+# nvm-managed node and cargo tooling (worker-build, wasm-bindgen) may be missing.
+if [ "$saw_branch" -eq 1 ]; then
 	if ! command -v npm >/dev/null 2>&1 && [ -f "$HOME/.nvm/nvm.sh" ]; then
 		. "$HOME/.nvm/nvm.sh" && nvm use --lts >/dev/null 2>&1
 	fi
 	PATH="$HOME/.cargo/bin:$PATH"
 	export PATH
+fi
+
+if [ "$fail" -eq 0 ] && [ "$saw_branch" -eq 1 ] && [ -z "$SWS_SKIP_VERIFY" ]; then
 	echo "PRE-PUSH: running 'npm run verify' (skip with SWS_SKIP_VERIFY=1)..."
 	if ! npm run verify; then
 		echo "PRE-PUSH: verify FAILED — push aborted. Fix the failing gate first." >&2
 		echo "  (If you must bypass: SWS_SKIP_VERIFY=1 git push ... — CI will still gate the PR.)" >&2
 		exit 1
 	fi
-	# Server-dependent browser specs: playwright spins up its own dev server and
-	# runs the a11y/header/checkout/scheduling suites — the same set CI's `web`
-	# job runs. These are the only gates that execute pages in a real browser,
-	# so a push is the last local chance to catch a spec or rendered-output
-	# regression before CI. Skip with SWS_SKIP_WEBTESTS=1.
-	if [ -z "$SWS_SKIP_WEBTESTS" ]; then
-		echo "PRE-PUSH: running browser specs via 'npx playwright test' (skip with SWS_SKIP_WEBTESTS=1)..."
-		if ! npx playwright test; then
-			echo "PRE-PUSH: browser specs FAILED — push aborted. Fix the failing spec first." >&2
-			echo "  (Reproduce: npx playwright show-trace test-results/<dir>/trace.zip)" >&2
-			echo "  (Bypass: SWS_SKIP_WEBTESTS=1 git push ... — CI's web job still gates the PR.)" >&2
-			exit 1
-		fi
+fi
+
+# Server-dependent browser specs: playwright spins up its own dev server and
+# runs the a11y/header/checkout/scheduling suites — the same set CI's `web`
+# job runs. These are the only gates that execute pages in a real browser,
+# so a push is the last local chance to catch a spec or rendered-output
+# regression before CI. Independent of SWS_SKIP_VERIFY; skip with
+# SWS_SKIP_WEBTESTS=1.
+if [ "$fail" -eq 0 ] && [ "$saw_branch" -eq 1 ] && [ -z "$SWS_SKIP_WEBTESTS" ]; then
+	echo "PRE-PUSH: running browser specs via 'npx playwright test' (skip with SWS_SKIP_WEBTESTS=1)..."
+	if ! npx playwright test; then
+		echo "PRE-PUSH: browser specs FAILED — push aborted. Fix the failing spec first." >&2
+		echo "  (Reproduce: npx playwright show-trace test-results/<dir>/trace.zip)" >&2
+		echo "  (Bypass: SWS_SKIP_WEBTESTS=1 git push ... — CI's web job still gates the PR.)" >&2
+		exit 1
 	fi
 fi
 
