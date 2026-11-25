@@ -1,0 +1,73 @@
+#!/bin/sh
+# Release-tag guard: keeps `v*` / `pack-hospitality-v*` tags in sync with the
+# workspace Cargo version (AGENTS.md release discipline).
+#
+# Blocks the push when any pushed release tag:
+#   1. names a version that differs from the `[workspace.package]` `version`
+#      in the tag's own tree (the exact defect that shipped v0.1.1 as a
+#      0.1.0-versioned CLI), or
+#   2. is a lightweight (unsigned, non-annotated) tag, or
+#   3. carries no cryptographic signature block.
+#
+# Non-release tags and branch pushes pass through untouched.
+#
+# One-time install (see CONTRIBUTING.md "Release tag guard"):
+#   npm run setup:hooks
+# (equivalent to: git config core.hooksPath .githooks)
+
+zero="0000000000000000000000000000000000000000"
+
+workspace_version_of() {
+	# $1 = commit-ish. Print the [workspace.package] version of that tree.
+	git show "$1:Cargo.toml" 2>/dev/null |
+		sed -n '/^\[workspace\.package\]/,/^\[/p' |
+		grep '^version' | head -n 1 |
+		sed 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/'
+}
+
+fail=0
+
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	# Tag deletions have a zero local sha: nothing to check.
+	[ "$local_sha" = "$zero" ] && continue
+
+	case "$remote_ref" in
+	refs/tags/pack-hospitality-v*) tag=${remote_ref#refs/tags/pack-hospitality-v}; prefix=pack-hospitality-v ;;
+	refs/tags/v*) tag=${remote_ref#refs/tags/v}; prefix=v ;;
+	*) continue ;; # not a release tag: allow
+	esac
+	tag_name="$prefix$tag"
+
+	# Release tags must be annotated tag objects (not lightweight refs).
+	if [ "$(git cat-file -t "$local_sha" 2>/dev/null)" != "tag" ]; then
+		echo "RELEASE GUARD: '$tag_name' is a lightweight tag; use 'git tag -s $tag_name -m ...' (annotated + signed)." >&2
+		fail=1
+		continue
+	fi
+
+	# And they must carry a signature block (SSH or PGP).
+	if ! git cat-file tag "$local_sha" 2>/dev/null | grep -q -- '-----BEGIN.*SIGNATURE-----'; then
+		echo "RELEASE GUARD: '$tag_name' is not signed; re-create it with 'git tag -s $tag_name' (tag.gpgsign makes -s automatic)." >&2
+		fail=1
+	fi
+
+	# Tag name version must equal the workspace version in the tagged tree.
+	commit=$(git rev-parse --verify --quiet "$local_sha^{commit}")
+	ws_version=$(workspace_version_of "$commit")
+	if [ -z "$ws_version" ]; then
+		echo "RELEASE GUARD: cannot read [workspace.package] version from Cargo.toml at $tag_name's commit ($commit)." >&2
+		fail=1
+		continue
+	fi
+	if [ "$ws_version" != "$tag" ]; then
+		echo "RELEASE GUARD: '$tag_name' points at a tree whose workspace version is '$ws_version'." >&2
+		echo "  The built CLI would report --version $ws_version on a $tag release." >&2
+		echo "  Fix: merge a release PR bumping [workspace.package] version to $tag, re-tag on that commit, then push." >&2
+		fail=1
+		continue
+	fi
+
+	echo "RELEASE GUARD: $tag_name matches workspace version $ws_version"
+done
+
+exit $fail

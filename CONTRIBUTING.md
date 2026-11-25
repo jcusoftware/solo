@@ -134,7 +134,22 @@ SWS enforces a strict separation between public/open-source assets and private c
   git config --global tag.gpgsign true
   ```
   Then add the same public key as a **Signing Key** under **GitHub → Settings → SSH and GPG keys**. GPG signing (`git config --global commit.gpgsign true` with `user.signingkey`) is equally accepted.
+- **Release tag guard:** install the repo's git hooks once per clone with `npm run setup:hooks` (equivalent to `git config core.hooksPath .githooks`). The `pre-push` hook rejects pushes of `v*` / `pack-hospitality-v*` tags whose version does not match the `[workspace.package]` version in `Cargo.toml` at the tagged commit, and rejects lightweight or unsigned release tags. The same version check also runs in the `release.yml` CI workflow, so a release cannot ship with a mismatched `--version`. See the release runbook in `CONTRIBUTING.md` before tagging.
 - Use [Conventional Commits](https://www.conventionalcommits.org/) referencing the related issue when applicable:
   - `feat(sws-compiler): enforce heading hierarchy validation (fixes #12)`
   - `fix(sws-css): preserve media query order during minification`
 - Include verification command results in your pull request description.
+
+### 7. Release Runbook (tag-only pipeline)
+
+Releases are tag-triggered only (`.github/workflows/release.yml`). There are two tag families, and **both must match the workspace version in `Cargo.toml`** (enforced by the pre-push hook and by CI):
+
+1. **Prepare the release via PR.** On an isolated `chore/release-...` branch:
+   - Bump `[workspace.package] version` in `Cargo.toml` (all crates inherit via `version.workspace = true`); run `cargo update --workspace --precise <no-op>`/`cargo check` so `Cargo.lock` picks up the new version.
+   - Move the relevant `CHANGELOG.md` `[Unreleased]` entries under a new dated `## [x.y.z]` heading.
+   - Open the PR, get it merged to `main`.
+2. **Tag `main`** at the release commit — annotated and signed (with `tag.gpgsign true`, `git tag -a -m "..." vX.Y.Z` signs automatically):
+   - `git tag -a -m "Solo vX.Y.Z" vX.Y.Z` — full release: workspace verify → CLI binaries (5 targets) → GitHub Release with SHA256SUMS → landing/docs Cloudflare deploy (if `CLOUDFLARE_API_TOKEN` is configured).
+   - `git tag -a -m "SWS Hospitality Pack vX.Y.Z" pack-hospitality-vX.Y.Z` — pack release: pack tests/clippy/deny → `packs/hospitality` tarball → GitHub Release.
+3. **Push the tags** (pushing tags needs maintainer confirmation): `git push origin vX.Y.Z pack-hospitality-vX.Y.Z`.
+4. Watch the `release` workflow; confirm the GitHub Release assets and `solo --version` output match the tag.
