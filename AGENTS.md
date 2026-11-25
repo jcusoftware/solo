@@ -9,6 +9,7 @@ This repository is the open-source Solo (Solo Website System, SWS) workspace. Th
 | `crates/`, `core/` | A (public) | Reusable SWS core engine (`sws-ir`, `sws-css`, `sws-compiler`, `sws-plugin`, `sws-security`, `sws-cli`, `sws-wasm`, `sws-worker-site`), D1 migrations, tenant-agnostic tools (`core/tools`), rendered demo output (`core/public`) | `MIT OR Apache-2.0` |
 | `packs/hospitality/` | A (public) | Open-source reference hospitality pack (schema, crate, VA ABC lint, and fictional `packs/hospitality/demo/venue.json`) | `MIT OR Apache-2.0` |
 | `sites/` | A (public) | Static landing (`sws-landing`) and docs (`sws-docs`) generator and output | `MIT OR Apache-2.0` |
+| `integrations/` | A (public, tracked) | Standalone integrations (Devvit subreddit release bot) | Per-package: `integrations/devvit-release-bot` is `BSD-3-Clause` |
 | `docs/` | A (public) | Architecture documentation (`ARCHITECTURE.md`) | `MIT OR Apache-2.0` |
 | `private/` | **B** (gitignored) | Private client assets, prospect dossiers, credentials (`*.env`, `.dev.vars`) | Never commit |
 
@@ -23,6 +24,8 @@ This repository is the open-source Solo (Solo Website System, SWS) workspace. Th
 `cargo deny check` must pass. The allowlist is MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-DFS-2016 and CC0-1.0. That blocks GPL, AGPL, LGPL, MPL and any source-available license (SSPL, BUSL, Elastic).
 
 The only exceptions are narrow per-crate `Unicode-3.0` entries for ICU/unicode-ident, documented in `deny.toml`. Never broaden the global list; add a scoped exception with a justification and ask the user first. npm devDependencies are tooling only and never ship in the Worker.
+
+Per-package licensing (not cargo dependencies): tracked integration packages under `integrations/` carry their own license — `integrations/devvit-release-bot` is `BSD-3-Clause` (a permissive allowlisted license, never a Rust crate dependency, so `cargo deny check` is unaffected).
 
 ## 3. Rust / Wasm constraints
 
@@ -64,7 +67,7 @@ The linters in `packs/hospitality/tools/abc-lint.mjs` (Node) and `packs/hospital
 - "2-for-1" (and "2 for 1" or "2for1")
 - "two for one" (and "two-for-one")
 - "unlimited drinks"
-- any happy-hour end time from 21:00 through 02:00
+- any happy-hour start or end time from 21:00 through 05:59 (the overnight window, midnight wrap included)
 
 This covers 3 VAC 5-20-10 to -100 and 3 VAC 5-50-160. Re-verify the rules against current Virginia ABC regulations before client use. **A human signs off on every drink-related copy change.** This is not legal advice.
 
@@ -82,6 +85,7 @@ This covers 3 VAC 5-20-10 to -100 and 3 VAC 5-50-160. Re-verify the rules agains
 | Build static landing & docs sites | `npm run sites:build` (`npm run sites:check` in CI) |
 | VA ABC lint | `npm run lint:abc` |
 | Header parity (static / live) | `npm run check:headers` / `npm run check:headers:live` |
+| Negative ABC fixture check | `npm run lint:abc:fixture-negative` (also inside `npm run verify`) |
 | Local D1 migrate | `npm run db:migrate:local` |
 | Local dev server (builds Worker) | `npm run dev` → http://127.0.0.1:8787 |
 | Rust tests / wasm clippy | `cargo test --workspace --locked` / `cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings` |
@@ -89,6 +93,8 @@ This covers 3 VAC 5-20-10 to -100 and 3 VAC 5-50-160. Re-verify the rules agains
 | a11y + header E2E | `npm run test:a11y` (set `BASE_URL` to reuse a running server) |
 | Lighthouse | `npm run lhci` (needs a running server) |
 | All fast gates | `npm run verify` |
+
+**Gate scoping.** `npm run verify` is the fast contributor subset: it never needs a running server. The server-dependent gates — `check:headers:live`, `test:a11y` and `lhci` — run unconditionally in CI (the `web` job starts the dev server first) and are CI-only for contributors; run them locally against a dev server only when you want to.
 
 Make sure `~/.cargo/bin` is on `PATH` so `wrangler dev` can find `worker-build`.
 

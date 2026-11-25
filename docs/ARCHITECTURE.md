@@ -75,23 +75,28 @@ crates/                       Open-source Rust workspace (MIT OR Apache-2.0)
   sws-wasm/                   wasm-bindgen target for browser visual canvas
   sws-cli/                    `solo` CLI + MCP server
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          v0.2.0 studio control-plane Worker (Durable Objects, D1, R2, Queues)
+  sws-worker-studio/          planned v0.2.0 — studio control-plane Worker (Durable Objects, D1, R2, Queues)
 
-apps/                         Visual authoring web apps (MIT OR Apache-2.0)
+apps/                         planned v0.3.0 — visual authoring web apps (MIT OR Apache-2.0)
   builder/                    Studio shell (inspector, theme tokens, publish controls)
   canvas/                     Live interactive canvas backed by `sws-wasm`
 
-packages/                     Published JS/TS packages (`@solo-website-system/*`, MIT OR Apache-2.0)
+packages/                     planned v0.3.0 — published JS/TS packages (`@solo-website-system/*`, MIT OR Apache-2.0)
 
 packs/                        Industry verticals & domain plugins
   hospitality/                Open-source reference hospitality pack (`pack-hospitality`, MIT OR Apache-2.0)
 
-core/                         Active Phase 0/1 Rust Worker & renderer workspace (transitioning into crates/)
-  src/                        lib.rs, headers.rs, abc.rs, validate.rs, routes.rs
-  migrations/                 D1 migrations
+integrations/                 Standalone integrations (per-package licensing)
+  devvit-release-bot/         Devvit subreddit release bot (BSD-3-Clause)
+
+core/                         Tenant-agnostic rendered demo output & CLI tools (the Rust engine lives in `crates/`)
   public/                     Deterministic rendered static output + _headers
-  schema/ & tools/            JSON Schema & CLI utilities
+  tools/                      CLI utilities (header parity check)
+
+D1 migrations live at `crates/sws-worker-site/migrations/0001_init.sql`.
 ```
+
+Entries above marked *v0.2.0*/*v0.3.0* are planned targets, not present directories: `sws-worker-studio/` is planned for v0.2.0, and `apps/` (builder, canvas) and `packages/` (`@solo-website-system/*`) are planned for v0.3.0. Today's repository contains `crates/`, `packs/`, `integrations/`, `core/` (output + tools only), `sites/`, `docs/` and `tests/`.
 
 ### Multi-track release model
 
@@ -146,7 +151,7 @@ The Phase 1 hospitality showcase exposes 10 routes: `/`, `/menu`, `/happy-hour`,
 
 ### Advisory Virginia ABC copy lint (`packs/hospitality`)
 
-`packs/hospitality` includes an advisory copy linter (implemented in Node and Rust) covering 3 VAC 5-20-10 to -100 and 3 VAC 5-50-160. It flags phrases such as `"bottomless"`, `"2-for-1"` / `"2 for 1"` / `"2for1"`, `"two for one"` / `"two-for-one"`, `"unlimited drinks"`, and happy-hour end times from `21:00` through `02:00`. It is advisory only (not legal advice) and requires human review on drink-related copy.
+`packs/hospitality` includes an advisory copy linter (implemented in Node and Rust) covering 3 VAC 5-20-10 to -100 and 3 VAC 5-50-160. It flags phrases such as `"bottomless"`, `"2-for-1"` / `"2 for 1"` / `"2for1"`, `"two for one"` / `"two-for-one"`, `"unlimited drinks"`, and happy-hour start or end times from `21:00` through `05:59` (the overnight window, midnight wrap included). It is advisory only (not legal advice) and requires human review on drink-related copy.
 
 ---
 
@@ -220,6 +225,7 @@ See the `cloudflare-rust-headers` skill.
 ## 8. Licensing plan for SWS core
 
 - **Core licenses:** Dual **`MIT OR Apache-2.0`** across `crates/*`, `apps/*`, `packages/*`, `core/`, `sites/*`, and `packs/hospitality/`.
+- **Integrations:** Tracked integration packages under `integrations/` carry their own license; `integrations/devvit-release-bot` is **`BSD-3-Clause`** (permissive, never a Rust crate dependency, so the `cargo deny` gate is unaffected).
 - **Dependency gate:** `cargo deny check` (`deny.toml`) allows only `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Unicode-DFS-2016`, and `CC0-1.0`, plus narrowly scoped per-crate `Unicode-3.0` exceptions for ICU/`unicode-ident` crates. Copyleft (GPL/AGPL/LGPL/MPL) and source-available (SSPL/BUSL) licenses are rejected. (Notably, `sws-css` is pure Rust without `lightningcss` or `cssparser`.)
 - **External vertical packs:** Third-party or external industry packs are decoupled behind `sws-plugin` and may be distributed on independent release tracks under their own licenses.
 
@@ -236,4 +242,4 @@ See the `cloudflare-rust-headers` skill.
   - Explicit unchecked consent checkbox, server-stamped `consent_timestamp` and `source_route` in D1, unsubscribes/bounces never silently re-subscribed, and physical mailing address in outbound emails.
 - **Semantic Menus & Virginia ABC (`packs/hospitality`):**
   - Menus render as semantic HTML plus `Menu`/`MenuSection`/`MenuItem` JSON-LD (never PDF-only).
-  - Advisory VA ABC linter (Node + Rust) flags prohibited drink promo language and late happy-hour end times per 3 VAC 5-20 and 3 VAC 5-50-160; human sign-off is required before client publication (not legal advice).
+  - Advisory VA ABC linter (Node + Rust) flags prohibited drink promo language and happy-hour start or end times inside the 21:00–05:59 overnight window per 3 VAC 5-20 and 3 VAC 5-50-160; human sign-off is required before client publication (not legal advice).

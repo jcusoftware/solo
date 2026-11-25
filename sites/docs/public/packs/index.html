@@ -147,7 +147,7 @@
       </ul>
 
       <h3>Advisory Virginia ABC Copy Linter</h3>
-      <p><code>packs/hospitality</code> includes an advisory copy linter (implemented in both Rust and Node with parity tests) covering Virginia ABC advertising guidelines (3 VAC 5-20-10 through -100 and 3 VAC 5-50-160). It flags restricted phrases such as <code>"bottomless"</code>, <code>"2-for-1"</code>, <code>"two for one"</code>, <code>"unlimited drinks"</code>, and happy-hour end times from <code>21:00</code> through <code>02:00</code>.</p>
+      <p><code>packs/hospitality</code> includes an advisory copy linter (implemented in both Rust and Node with parity tests) covering Virginia ABC advertising guidelines (3 VAC 5-20-10 through -100 and 3 VAC 5-50-160). It flags restricted phrases such as <code>"bottomless"</code>, <code>"2-for-1"</code>, <code>"two for one"</code>, <code>"unlimited drinks"</code>, and happy-hour start or end times from <code>21:00</code> through <code>05:59</code> (the overnight window, midnight wrap included).</p>
       <div class="callout">
         <p class="callout-title">Advisory only — not legal advice</p>
         <p>Automated copy linting assists with catching common issues early, but a human must always review and sign off on alcohol-related copy against current local regulations before publication.</p>

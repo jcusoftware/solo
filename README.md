@@ -57,6 +57,8 @@ npm run check:headers:live   # static "/" vs Worker "/api/health" header parity
 npm run lhci                 # Lighthouse CI (accessibility must be 1.0)
 ```
 
+`npm run verify:full` additionally runs the agent tests and the Devvit bot tests (`verify:full (studio)`). **Node >= 23.6 is required for `verify:full`'s devvit tests**, which run `.ts` sources directly via `node --test` (unflagged type stripping); `npm run verify` itself works on Node >= 20.
+
 CI (`.github/workflows/ci.yml`) runs the verification suite on every push and PR.
 
 ## Releasing (tag-only)
@@ -72,7 +74,7 @@ For independent hospitality pack releases, push a `pack-hospitality-v*` tag (for
 
 ## Target monorepo layout
 
-SWS is structured around an open-source core engine (`crates/`, `apps/`, `packages/`) and modular vertical packs (`packs/`):
+SWS is structured around an open-source core engine (`crates/`, plus rendered output and tools under `core/`) and modular vertical packs (`packs/`); the planned v0.2/v0.3 monorepo layout adds `apps/`, `packages/` and `sws-worker-studio/`:
 
 ```
 crates/                       Open-source SWS Rust engine (MIT OR Apache-2.0)
@@ -83,18 +85,21 @@ crates/                       Open-source SWS Rust engine (MIT OR Apache-2.0)
   sws-wasm/                   Browser Wasm bindings for live visual canvas & preview
   sws-cli/                    `solo` CLI & MCP server for local/CI workflows
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          v0.2.0 studio control-plane Worker (Durable Objects, D1, R2, Queues)
+  sws-worker-studio/          planned v0.2.0 — studio control-plane Worker (Durable Objects, D1, R2, Queues)
 
-apps/                         Frontend builder & runtime surfaces (MIT OR Apache-2.0)
+apps/                         planned v0.3.0 — Frontend builder & runtime surfaces (MIT OR Apache-2.0)
   builder/                    Visual website builder shell (properties, tokens, publish)
   canvas/                     Browser-based visual canvas powered by sws-wasm
 
-packages/                     Shared TypeScript/JS SDKs (@solo-website-system/*, MIT OR Apache-2.0)
+packages/                     planned v0.3.0 — Shared TypeScript/JS SDKs (@solo-website-system/*, MIT OR Apache-2.0)
 
 packs/                        Vertical plugins & industry schemas (open-source or external packs)
   hospitality/                Open-source reference pack (`MIT OR Apache-2.0`): M1–M10 modules,
                               semantic menus & hours, Toast/OpenTable/Resy integrations,
                               advisory VA ABC lint, and fictional `shirlington-hearth-demo` fixture
+
+integrations/                 Standalone integrations (per-package licensing)
+  devvit-release-bot/         Devvit subreddit release bot (BSD-3-Clause)
 
 core/                         Static asset output & renderer CLI utilities
   public/                     Static assets (rendered output) + _headers
@@ -123,5 +128,6 @@ private/                      Gitignored Zone B (prospect dossiers, client expor
 ## Licensing
 
 - **Dual open-source core, sites & reference pack (`MIT OR Apache-2.0`):** Core SWS Rust crates (`crates/*`, `core/`), builder applications (`apps/*`), `@solo-website-system/*` packages (`packages/*`), static sites (`sites/*`), and the reference hospitality pack (`packs/hospitality`) are dual-licensed under **MIT OR Apache-2.0**.
+- **Integrations (`integrations/`, per-package licensing):** `integrations/devvit-release-bot` is licensed under **BSD-3-Clause** — tracked public code, but outside the core dual license (and never a Rust crate dependency, so `cargo deny check` is unaffected).
 - **Rust dependency gate:** `cargo deny check` (`deny.toml`) allows only permissive OSI licenses (`MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Unicode-DFS-2016`, `CC0-1.0`) plus narrowly scoped `Unicode-3.0` exceptions. Copyleft and source-available licenses are rejected.
 - **External packs & private workspace:** Third-party or external vertical packs may choose their own licenses. Private client/studio assets (`private/`, `.dev.vars`, `*.env`) are gitignored and never committed.
