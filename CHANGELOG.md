@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-25
+
+Everything since the v0.1.1 tag lands here: the milestone-1 review remediation
+wave, the milestone-2 feature ports into the hospitality pack, and the release
+hardening.
+
+### Added
+
+- Events calendar for the hospitality pack: `events` venue schema with validation, a rendered `/events` page with `Event`/`ItemList` JSON-LD, and the worker events surface with a D1 migration (#43, #46).
+- Sandbox Stripe checkout demo in the hospitality pack, config-gated: `checkout` schema, rendered checkout page, `/api/checkout/*` worker routes, and browser specs scoped like the rest of the pack (#45, #48).
+- Call & booking scheduling for the hospitality pack, config-gated and ported from the pre-refactor feature line: `bookings` schema with availability validation, a `/book-a-call` page with keyboard-accessible slot selection, `/api/bookings`, Zoom meeting creation, and Google Calendar sync/auth routes with a scheduling D1 migration (#44, #50).
+- Deterministic cross-process two-run byte-diff test guarding compiler output (#30).
+- `solo preview` verb serving compiled output locally (#38).
+- Deterministic CSS-text-to-AST parser in `sws-css` (#39).
+- Accessible `<noscript>` notice inside every Turnstile-protected form, before the widget (#40).
+- ABI version handshake and plugin contributions in `sws-plugin` (#41).
+- `sws-wasm` surface for `sws-css` plus a wasm export smoke test (#42).
+- Repository git hooks (`pre-commit` signing/Zone-B checks; `pre-push` tag/version sync, `npm run verify`, and the server-dependent browser specs) documented in CONTRIBUTING §6, with the same version-sync checks mirrored as CI steps in both `release.yml` tag jobs (#47, #51).
+
+### Changed
+
+- Performance: expand page bodies once and remove redundant input copies (#37).
+- Synced AGENTS.md, ARCHITECTURE.md and README with implemented reality (#31); recorded the no-JS vs Turnstile boundary in AGENTS.md (#35).
+
+### Fixed
+
+- Fail closed on Turnstile TEST secrets and `DEV_MODE` bypasses (#27).
+- Execute the emitted export bundle and unify route validation (#28).
+- Give the Playwright webServer its DB and secret prerequisites so a bare run passes (#29).
+- Make `npm run verify` pass on a fresh clone (#26).
+- Surface silent compiler drops and enforce contrast coverage (#33).
+- Cover the newsletter unsubscribed-re-subscription guard with a test (#34).
+- Put cargo-deny on PATH for the CI verify job (#36).
+- Untrack the accidental `node_modules` symlink and close the `.gitignore` gap (#49).
+- **Release integrity:** the v0.1.1 binaries reported `solo --version` as 0.1.0 because the workspace version was not bumped at tag time. The workspace version now moves with the release, and mismatched release tags are rejected by the pre-push hook and CI.
+
+## [0.1.1] - 2026-11-25
+
+### Fixed
+
+- Remediated medium and low findings from the 5-track code review (#3).
+
+## [0.1.0] - 2026-11-24
+
 ### Changed
 
 - Pivoted the repository into **Solo Website System (SWS)**, an industry-agnostic, deterministic website compiler and visual studio workspace organized as a Cargo + pnpm monorepo (`crates/`, `apps/`, `packages/`, `packs/`).

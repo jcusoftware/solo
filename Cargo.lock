@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "sws-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "clap",
  "libc",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "sws-compiler"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "sws-css"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "sws-ir"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "sws-pack-hospitality"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "sws-plugin"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "sws-security"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "sws-wasm"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "sws-worker-site"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "console_error_panic_hook",
  "futures-util",
