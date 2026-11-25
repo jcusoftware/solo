@@ -164,6 +164,13 @@ fn build_compiles_hospitality_demo_manifest() {
     assert!(out_dir.join("index.html").exists());
     assert!(out_dir.join("styles.css").exists());
     cmd_build(&demo_venue, &out_dir, true).expect("build --check demo venue");
+
+    // Issue #32: the newsletter form emits a <noscript> notice with mailto/tel paths.
+    let html = fs::read_to_string(out_dir.join("index.html")).expect("read index.html");
+    assert!(html.contains("<noscript><p>This form requires JavaScript for spam verification"), "{html}");
+    assert!(html.contains("<a href=\"mailto:hello@shirlington-hearth.example\">"), "{html}");
+    assert!(html.contains("<a href=\"tel:+17035550142\">"), "{html}");
+    assert!(html.contains("instead.</p></noscript>"), "{html}");
 }
 
 #[cfg(feature = "pack-hospitality")]
@@ -238,6 +245,10 @@ fn starter_site_uses_forms_contact_js_island_and_baseline_styles() {
     assert!(html.contains("name=\"website\""), "{html}");
     assert!(html.contains("cf-turnstile"), "{html}");
     assert!(!html.contains("/api/inquire"), "{html}");
+
+    // Issue #32: Turnstile-protected form carries an accessible <noscript> notice.
+    assert!(html.contains("<noscript><p>This form requires JavaScript for spam verification"), "{html}");
+    assert!(html.contains("</noscript>"), "{html}");
 
     let css = fs::read_to_string(out_dir.join("styles.css")).expect("read styles.css");
     assert!(css.contains(".skip-link"), "{css}");

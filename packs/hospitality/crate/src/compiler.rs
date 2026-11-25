@@ -1266,6 +1266,50 @@ fn menu_section_nodes(v: &VenueManifest) -> Vec<Node> {
         .collect()
 }
 
+/// Accessible `<noscript>` notice for a Turnstile-protected form (issue #32):
+/// with JavaScript disabled the mandatory Turnstile verification cannot run
+/// (submissions fail closed with `400 turnstile_required`), so no-JS visitors
+/// get a plain statement plus `mailto:`/`tel:` alternative contact paths.
+fn noscript_notice_node(email: Option<&str>, phone: Option<&str>) -> Node {
+    let email = email.map(str::trim).filter(|e| !e.is_empty());
+    let phone = phone.map(str::trim).filter(|p| !p.is_empty());
+
+    let mut paragraph = vec![txt(
+        "This form requires JavaScript for spam verification. Without it, submission is disabled.",
+    )];
+    match (email, phone) {
+        (Some(email), Some(phone)) => {
+            let mailto = format!("mailto:{email}");
+            let (tel_href, tel_display) = phone_parts(phone);
+            paragraph.extend([
+                txt(" Email "),
+                el("a", &[], &[("href", &mailto)], vec![txt(email)]),
+                txt(" or call "),
+                el("a", &[], &[("href", &tel_href)], vec![txt(tel_display)]),
+                txt(" instead."),
+            ]);
+        }
+        (Some(email), None) => {
+            let mailto = format!("mailto:{email}");
+            paragraph.extend([
+                txt(" Email "),
+                el("a", &[], &[("href", &mailto)], vec![txt(email)]),
+                txt(" instead."),
+            ]);
+        }
+        (None, Some(phone)) => {
+            let (tel_href, tel_display) = phone_parts(phone);
+            paragraph.extend([
+                txt(" Call "),
+                el("a", &[], &[("href", &tel_href)], vec![txt(tel_display)]),
+                txt(" instead."),
+            ]);
+        }
+        (None, None) => {}
+    }
+    el("noscript", &[], &[], vec![el("p", &[], &[], paragraph)])
+}
+
 fn newsletter_section(v: &VenueManifest) -> Option<Node> {
     let n = v.newsletter.as_ref().filter(|n| n.enabled)?;
     let site_key = v
@@ -1387,6 +1431,7 @@ fn newsletter_section(v: &VenueManifest) -> Option<Node> {
                 ),
             ],
         ),
+        noscript_notice_node(Some(&v.nap.email), Some(&v.nap.phone)),
         el(
             "div",
             &["cf-turnstile"],
@@ -1667,5 +1712,92 @@ mod tests {
         assert!(diags.iter().all(|d| d.severity == DiagnosticSeverity::Advisory));
         assert!(diags.iter().any(|d| d.rule == "bottomless"));
         assert!(diags.iter().any(|d| d.rule == "happy_hour_late_end"));
+    }
+
+    /// Issue #32: the Turnstile-protected newsletter form must emit an
+    /// accessible `<noscript>` notice with `mailto:`/`tel:` alternative paths.
+    #[test]
+    fn newsletter_form_emits_accessible_noscript_notice() {
+        let val: Value = serde_json::from_str(DEMO_VENUE_JSON).unwrap();
+        let doc = HospitalityPlugin.transform_input(&val).unwrap();
+
+        fn find_form<'a>(nodes: &'a [Node], action: &str) -> Option<&'a Node> {
+            for node in nodes {
+                if let Node::Element { tag, attrs, children, .. } = node {
+                    if tag == "form" && attrs.get("action").is_some_and(|a| a == action) {
+                        return Some(node);
+                    }
+                    if let Some(found) = find_form(children, action) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+
+        fn find_noscript(nodes: &[Node]) -> Option<&Node> {
+            for node in nodes {
+                if let Node::Element { tag, children, .. } = node {
+                    if tag == "noscript" {
+                        return Some(node);
+                    }
+                    if let Some(found) = find_noscript(children) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+
+        fn text_of(node: &Node) -> String {
+            match node {
+                Node::Text { value } => value.clone(),
+                Node::Element { children, .. } => children.iter().map(text_of).collect(),
+                _ => String::new(),
+            }
+        }
+
+        let form = find_form(&doc.pages[0].body, "/api/newsletter").expect("newsletter form");
+        let noscript = find_noscript(std::slice::from_ref(form)).expect("noscript notice");
+
+        let Node::Element { tag, children, .. } = noscript else {
+            panic!("expected element");
+        };
+        assert_eq!(tag, "noscript");
+        // A single plain paragraph: no heading-level disruption of the ladder.
+        assert_eq!(children.len(), 1, "noscript must wrap one paragraph");
+        let Node::Element { tag: p_tag, children: p_children, .. } = &children[0] else {
+            panic!("expected element");
+        };
+        assert_eq!(p_tag, "p");
+
+        let text = text_of(noscript);
+        assert!(
+            text.contains("This form requires JavaScript for spam verification"),
+            "statement missing: {text}"
+        );
+
+        // mailto: and tel: alternative paths, each with discernible text.
+        let links: Vec<(&str, String)> = p_children
+            .iter()
+            .filter_map(|n| match n {
+                Node::Element { tag, attrs, children, .. } if tag == "a" => {
+                    Some((attrs.get("href")?.as_str(), text_of(n)))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            links.iter().any(|(href, label)| href.starts_with("mailto:") && !label.trim().is_empty()),
+            "mailto link with discernible text missing: {links:?}"
+        );
+        assert!(
+            links.iter().any(|(href, label)| href.starts_with("tel:") && !label.trim().is_empty()),
+            "tel link with discernible text missing: {links:?}"
+        );
+        assert!(
+            !p_children.iter().any(|n| matches!(n, Node::Element { tag, .. } if tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" || tag == "h5" || tag == "h6")),
+            "noscript must not contain headings"
+        );
     }
 }
