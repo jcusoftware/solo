@@ -25,12 +25,14 @@
     "setup:rust": "cargo install worker-build@^0.9 --locked",
     "test:rust": "cargo test --workspace",
     "test:unit": "node --test tests/unit/*.test.mjs",
-    "test:agents": "node --test agents/tests/*.test.mjs",
+    "test:agents": "node scripts/run-agents-tests.mjs",
     "test:devvit": "node --test integrations/devvit-release-bot/src/server/releases.test.ts",
+    "bootstrap:devvit": "npm ci --prefix integrations/devvit-release-bot",
     "deny": "cargo deny check",
     "test:a11y": "playwright test",
     "lhci": "lhci autorun",
-    "verify": "npm run render:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run test:unit && npm run test:agents && npm run test:devvit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check"
+    "verify": "npm run render:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run test:unit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check",
+    "verify:full": "npm run render:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run test:unit && npm run test:agents && npm run bootstrap:devvit && npm run test:devvit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
