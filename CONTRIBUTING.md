@@ -117,15 +117,23 @@ Static hosting (`_headers`) and dynamic Worker `/api/*` responses (Rust `SECURIT
 
 SWS enforces a strict separation between public/open-source assets and private client material:
 
-- **Zone A (Public / Open-Source):** `crates/`, `apps/`, `packages/`, `packs/`, docs, tests, CI workflows, and demo fixtures.
+- **Zone A (Public / Open-Source):** `crates/`, `apps/`, `packages/`, `packs/`, `integrations/`, docs, tests, CI workflows, and demo fixtures.
   - Must contain **zero** real third-party business names, logos, menus, addresses, phone numbers, or trademarks.
   - Demo data must be 100% fictional (invented street names, `555-01xx` phone numbers, `.example` domains).
 - **Zone B (Private, Never Committed):** `private/`, `.dev.vars`, `*.env`, and real client assets or secrets.
   - Never read, copy, or commit Zone B files or secrets into Zone A.
 
-### 6. Git Workflow & Conventional Commits
+### 6. Git Workflow, Signed Commits & Conventional Commits
 
 - Create an isolated feature branch per change (`feat/...`, `fix/...`, `docs/...`, `chore/...`).
+- **Signed commits & tags required:** All commits pushed to branches and pull requests must be cryptographically signed (SSH or GPG, verified on GitHub), and release tags should be signed too. To configure Git with an SSH key:
+  ```bash
+  git config --global gpg.format ssh
+  git config --global user.signingkey ~/.ssh/id_ed25519.pub
+  git config --global commit.gpgsign true
+  git config --global tag.gpgsign true
+  ```
+  Then add the same public key as a **Signing Key** under **GitHub → Settings → SSH and GPG keys**. GPG signing (`git config --global commit.gpgsign true` with `user.signingkey`) is equally accepted.
 - Use [Conventional Commits](https://www.conventionalcommits.org/) referencing the related issue when applicable:
   - `feat(sws-compiler): enforce heading hierarchy validation (fixes #12)`
   - `fix(sws-css): preserve media query order during minification`

@@ -25,6 +25,7 @@ Run these checks locally before marking ready for review (paste relevant output 
 - [ ] Dual security-header parity verified (`_headers` <-> Rust `SECURITY_HEADERS` are byte-identical)
 - [ ] Zone A / Zone B trademark firewall grep passes (no real third-party names, trademarks, Zone B files, or secrets in Zone A)
 - [ ] Core crates (`crates/*`) remain strictly industry-agnostic (vertical logic isolated in `packs/*`)
+- [ ] All commits are cryptographically signed (SSH or GPG verified on GitHub)
 
 ## Verification Output
 

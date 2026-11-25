@@ -1,0 +1,24 @@
+{
+  "name": "solo-release-bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "BSD-3-Clause",
+  "description": "Devvit subreddit bot that announces Solo GitHub releases in r/soloweb.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && esbuild src/server/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/server/index.cjs",
+    "test": "node --test src/server/releases.test.ts",
+    "devvit:upload": "devvit upload",
+    "devvit:install": "devvit install r/soloweb"
+  },
+  "dependencies": {
+    "@devvit/web": "0.15.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "devvit": "0.15.6",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}
