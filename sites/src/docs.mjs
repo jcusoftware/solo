@@ -473,7 +473,7 @@ solo export ./my-site/site.json ./dist-bundle</code></pre>
       </ul>
 
       <h3>Advisory Virginia ABC Copy Linter</h3>
-      <p><code>packs/hospitality</code> includes an advisory copy linter (implemented in both Rust and Node with parity tests) covering Virginia ABC advertising guidelines (3 VAC 5-20-10 through -100 and 3 VAC 5-50-160). It flags restricted phrases such as <code>"bottomless"</code>, <code>"2-for-1"</code>, <code>"two for one"</code>, <code>"unlimited drinks"</code>, and happy-hour end times from <code>21:00</code> through <code>02:00</code>.</p>
+      <p><code>packs/hospitality</code> includes an advisory copy linter (implemented in both Rust and Node with parity tests) covering Virginia ABC advertising guidelines (3 VAC 5-20-10 through -100 and 3 VAC 5-50-160). It flags restricted phrases such as <code>"bottomless"</code>, <code>"2-for-1"</code>, <code>"two for one"</code>, <code>"unlimited drinks"</code>, and happy-hour start or end times from <code>21:00</code> through <code>05:59</code> (the overnight window, midnight wrap included).</p>
       <div class="callout">
         <p class="callout-title">Advisory only — not legal advice</p>
         <p>Automated copy linting assists with catching common issues early, but a human must always review and sign off on alcohol-related copy against current local regulations before publication.</p>
@@ -852,6 +852,7 @@ npm run verify</code></pre>
         <li><strong>Open-source core, sites &amp; reference pack (<code>MIT OR Apache-2.0</code>):</strong> Core Rust crates (<code>crates/*</code>, <code>core/</code>), builder applications (<code>apps/*</code>), core packages (<code>packages/*</code>), static sites (<code>sites/*</code>), and the reference hospitality pack (<code>packs/hospitality</code>) are dual-licensed under the MIT License and Apache License 2.0.</li>
         <li><strong>Dependency hygiene:</strong> <code>cargo deny check</code> enforces a strict permissive OSI license allowlist (<code>MIT</code>, <code>Apache-2.0</code>, <code>BSD-2-Clause</code>, <code>BSD-3-Clause</code>, <code>ISC</code>, <code>Unicode-DFS-2016</code>, <code>CC0-1.0</code>, plus narrowly scoped <code>Unicode-3.0</code> entries for ICU/unicode crates). GPL, AGPL, LGPL, MPL, and source-available licenses are rejected.</li>
         <li><strong>External vertical packs:</strong> Third-party or external industry packs are decoupled behind <code>sws-plugin</code> and may be distributed on independent release tracks under their own licenses.</li>
+        <li><strong>Integrations (<code>integrations/</code>, per-package licensing):</strong> <code>integrations/devvit-release-bot</code> is licensed under <code>BSD-3-Clause</code> — tracked public code, but outside the core dual license (and never a Rust crate dependency, so <code>cargo deny check</code> is unaffected).</li>
       </ul>
 
       <h2>Contributing</h2>
