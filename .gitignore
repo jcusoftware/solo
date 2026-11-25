@@ -9,6 +9,7 @@ crates/sws-wasm/pkg/
 
 # Node / tooling
 node_modules/
+node_modules
 .wrangler/
 test-results/
 playwright-report/
