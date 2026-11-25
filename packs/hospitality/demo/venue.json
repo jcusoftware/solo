@@ -118,6 +118,14 @@
       "timezone": "America/New_York"
     }
   },
+  "checkout": {
+    "items": [
+      { "id": "flatbread", "name": "Garden flatbread", "cents": 1200 },
+      { "id": "soup", "name": "Tomato soup", "cents": 650 },
+      { "id": "cookie", "name": "Oatmeal cookie", "cents": 300 }
+    ],
+    "subscription": { "id": "beans", "name": "House coffee beans", "cents": 1600 }
+  },
   "happy_hour": {
     "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
     "start": "15:00",
@@ -189,6 +197,6 @@
   "seo": {
     "title": "Shirlington Hearth — Café & Wine Bar (Fictional Demo)",
     "description": "Fictional demonstration venue: a café and wine bar in Arlington, VA. Menu, hours, happy hour and newsletter.",
-    "routes": ["/"]
+    "routes": ["/", "/takeout"]
   }
 }

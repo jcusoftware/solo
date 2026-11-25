@@ -14,15 +14,16 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+url = "2"
 sws-security = { path = "../sws-security" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 worker = { version = "0.9", features = ["d1"] }
-console_error_panic_hook = { version = "0.1", optional = true }
-# Streamed outbound-response reads with hard byte caps (Google Calendar sync).
+# Streamed body reads with hard byte caps (Google Calendar sync, checkout bodies).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Web Crypto (SubtleCrypto) for the Google service-account JWT assertion.
 web-sys = { version = "0.3", features = ["AbortSignal", "Crypto", "CryptoKey", "SubtleCrypto", "WorkerGlobalScope"] }
+console_error_panic_hook = { version = "0.1", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]

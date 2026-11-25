@@ -7,6 +7,7 @@
 //! - `POST /api/newsletter` -> D1 `newsletter_subscribers` (explicit CAN-SPAM consent)
 //! - `GET /api/events` -> D1 public events calendar listing (config-gated marker asset)
 //! - `GET /api/events/:id/ics` -> single-event RFC 5545 calendar download
+//! - `POST /api/checkout` -> sandbox-only hosted Stripe Checkout handoff (no storage)
 //! - Any other path -> static assets binding (`ASSETS`)
 //!
 //! Events modules (issue #43): `events` (reader + ICS), `google_sync` /
@@ -15,6 +16,7 @@
 //! enabled `events-config.json` with `google_calendar_sync`; cron triggers stay
 //! commented out in `wrangler.jsonc` by default.
 
+pub mod checkout;
 pub mod events;
 pub mod forms;
 pub mod google_auth;
@@ -29,20 +31,27 @@ mod google_sync;
 mod wasm {
     use std::time::Duration;
 
+    use futures_util::StreamExt;
+    use serde::Deserialize;
     use serde_json::Value;
     use worker::wasm_bindgen::JsValue;
     use worker::{
-        AbortSignal, Context, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result,
-        ScheduleContext, ScheduledEvent, console_error, console_log, console_warn, event, web_sys,
+        AbortSignal, ByteStream, Context, Env, Fetch, Headers, Method, Request, RequestInit,
+        RequestRedirect, Response, Result, ScheduleContext, ScheduledEvent, console_error,
+        console_log, console_warn, event, web_sys,
     };
 
     use sws_security::headers::{API_CACHE_CONTROL, with_security_headers};
     use sws_security::response::{error_body, validation_error_body};
-    use sws_security::validate::{ValidationError, iso8601_utc, truncate_str, validate_newsletter};
+    use sws_security::validate::{
+        ValidationError, form_encode, iso8601_utc, is_turnstile_test_secret, truncate_str,
+        validate_newsletter,
+    };
     use sws_security::worker_utils::{
         json_response, read_fields, secret, var, verify_turnstile, with_timeout,
     };
 
+    use crate::checkout;
     use crate::forms::{
         FormSchema, FormSchemaDiagnosticLevel, ValidatedSubmission, load_form_schemas,
         validate_submission,
@@ -52,6 +61,12 @@ mod wasm {
     const RESEND_URL: &str = "https://api.resend.com/emails";
     const OUTBOUND_TIMEOUT: Duration = Duration::from_secs(10);
     const MAX_ERROR_LOG_BYTES: usize = 256;
+    // Same Turnstile endpoint the shared verifier in sws-security uses; the
+    // checkout demo needs a checkout-specific acceptance policy (see below).
+    const SITEVERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+    // Pinned Stripe API version for the sandbox demo; never a live call target.
+    const STRIPE_API_VERSION: &str = "2025-06-30.basil";
+    const MAX_UPSTREAM_BODY: usize = 64 * 1024;
 
     #[event(start)]
     fn start() {
@@ -105,6 +120,7 @@ mod wasm {
             Route::Newsletter => newsletter(&mut req, env, ctx).await,
             Route::Events => crate::events::wasm::handle(&req, env, None).await,
             Route::EventIcs(id) => crate::events::wasm::handle(&req, env, Some(&id)).await,
+            Route::Checkout => demo_checkout(&mut req, env).await,
             Route::MethodNotAllowed(allow) => {
                 let resp = json_response(405, &error_body("method_not_allowed"))?;
                 resp.headers().set("Allow", allow)?;
@@ -344,8 +360,7 @@ mod wasm {
         }
     }
 
-    async fn newsletter(req: &mut Request, env: &Env, _ctx: &Context) -> Result<Response> {
-        let fields = match read_fields(req).await? {
+    async fn newsletter(req: &mut Request, env: &Env, _ctx: &Context) -> Result<Response> {        let fields = match read_fields(req).await? {
             Ok(f) => f,
             Err(resp) => return Ok(resp),
         };
@@ -392,5 +407,204 @@ mod wasm {
             // Generic body: never reveal whether an address was already on the list.
             &serde_json::json!({ "ok": true, "status": "received", "consent_timestamp": now }),
         )
+    }
+
+    // ---------- Sandbox demo checkout (no storage, no webhooks) ----------
+
+    /// Read at most `max` bytes from a body stream; `None` when the cap is exceeded.
+    async fn bounded_body(mut stream: ByteStream, max: usize) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.ok()?;
+            if chunk.len() > max - bytes.len() {
+                return None;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Some(bytes)
+    }
+
+    /// Outbound GET/POST returning parsed JSON; `None` on any failure. Used for
+    /// Turnstile siteverify and the sandbox Stripe API. Never logs upstream errors.
+    async fn checkout_fetch(
+        url: &str,
+        authorization: Option<&str>,
+        body: Option<String>,
+    ) -> Option<Value> {
+        let headers = Headers::new();
+        if let Some(key) = authorization {
+            headers
+                .set("Authorization", &format!("Bearer {key}"))
+                .ok()?;
+            headers.set("Stripe-Version", STRIPE_API_VERSION).ok()?;
+        }
+        let mut init = RequestInit::new();
+        // Never follow upstream redirects: workerd rejects redirect:"error", so
+        // "manual" surfaces any 3xx as a non-200 response and fails closed below.
+        init.with_redirect(RequestRedirect::Manual)
+            .with_headers(headers);
+        if let Some(body) = body {
+            init.headers
+                .set("Content-Type", "application/x-www-form-urlencoded")
+                .ok()?;
+            init.with_method(Method::Post)
+                .with_body(Some(JsValue::from_str(&body)));
+        }
+        let req = Request::new_with_init(url, &init).ok()?;
+        let mut resp = with_timeout(OUTBOUND_TIMEOUT, Fetch::Request(req).send())
+            .await
+            .ok()?
+            .ok()?;
+        if resp.status_code() != 200 {
+            return None;
+        }
+        let bytes = bounded_body(resp.stream().ok()?, MAX_UPSTREAM_BODY).await?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    #[derive(Deserialize)]
+    struct CheckoutSiteVerify {
+        success: bool,
+        #[serde(default)]
+        action: String,
+        #[serde(default)]
+        hostname: String,
+    }
+
+    /// `Ok(url)` = redirect the browser to the hosted sandbox session.
+    /// `Err((status, message))` = render a plain HTML error page.
+    ///
+    /// This path never uses the legacy `DEV_MODE` Turnstile bypass or logs
+    /// upstream error details; it fails closed whenever configuration, the
+    /// Turnstile verdict, or any Stripe response is missing or unexpected.
+    async fn demo_checkout(req: &mut Request, env: &Env) -> Result<Response> {
+        match demo_checkout_inner(req, env).await {
+            Ok(url) => {
+                let resp = Response::empty()?.with_status(303);
+                resp.headers().set("Location", &url)?;
+                resp.headers().set("Cache-Control", API_CACHE_CONTROL)?;
+                Ok(resp)
+            }
+            Err((status, message)) => {
+                let resp = Response::from_html(format!(
+                    "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Demo checkout unavailable</title><main><h1>Demo checkout unavailable</h1><p>{message}</p><p><a href=\"/takeout\">Return to demo checkout</a></p></main></html>"
+                ))?
+                .with_status(status);
+                resp.headers().set("Cache-Control", API_CACHE_CONTROL)?;
+                Ok(resp)
+            }
+        }
+    }
+
+    async fn demo_checkout_inner(
+        req: &mut Request,
+        env: &Env,
+    ) -> std::result::Result<String, (u16, &'static str)> {
+        const INVALID: (u16, &str) = (
+            400,
+            "Check the pickup quantities and complete the security check before trying again.",
+        );
+        const LARGE: (u16, &str) = (
+            413,
+            "The checkout form was too large. Go back and try again.",
+        );
+        const UNAVAILABLE: (u16, &str) = (
+            503,
+            "Demo checkout is not available right now. Please try again later.",
+        );
+        const STRIPE_FAILED: (u16, &str) = (
+            502,
+            "Stripe checkout could not be started. Please try again later.",
+        );
+
+        let content_type = req.headers().get("Content-Type").ok().flatten();
+        if !content_type
+            .as_deref()
+            .is_some_and(|v| v.eq_ignore_ascii_case("application/x-www-form-urlencoded"))
+        {
+            return Err((415, "Use the demo checkout form to continue."));
+        }
+        let request_url = req.url().map_err(|_| INVALID)?;
+        if request_url.query().is_some() {
+            return Err(INVALID);
+        }
+        if req
+            .headers()
+            .get("Content-Length")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<usize>().ok())
+            .is_some_and(|n| n > checkout::MAX_BODY)
+        {
+            return Err(LARGE);
+        }
+        let body = bounded_body(req.stream().map_err(|_| INVALID)?, checkout::MAX_BODY)
+            .await
+            .ok_or(LARGE)?;
+        let origin = var(env, "DEMO_CHECKOUT_ORIGIN")
+            .and_then(|v| checkout::return_origin(&v))
+            .ok_or(UNAVAILABLE)?;
+        let local = matches!(origin.host_str(), Some("localhost" | "127.0.0.1"));
+        let ts_key = secret(env, "TURNSTILE_SECRET_KEY").ok_or(UNAVAILABLE)?;
+        // Cloudflare's documented dummy secrets are for local testing only, and
+        // only when the request origin exactly matches the configured loopback
+        // origin. (sws-security's DEV_MODE bypass is deliberately not used here.)
+        let dummy = is_turnstile_test_secret(&ts_key);
+        if dummy && (!local || request_url.origin() != origin.origin()) {
+            return Err(UNAVAILABLE);
+        }
+        let key = secret(env, "STRIPE_DEMO_SECRET_KEY")
+            .filter(|s| checkout::sandbox_key(s))
+            .ok_or(UNAVAILABLE)?;
+        let ids = var(env, "STRIPE_DEMO_PRICE_IDS")
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .ok_or(UNAVAILABLE)?;
+        let catalog_url = origin
+            .join("/demo-checkout-catalog.json")
+            .map_err(|_| UNAVAILABLE)?;
+        let mut asset = env
+            .assets("ASSETS")
+            .map_err(|_| UNAVAILABLE)?
+            .fetch(catalog_url.as_str(), None)
+            .await
+            .map_err(|_| UNAVAILABLE)?;
+        if asset.status_code() != 200 {
+            return Err(UNAVAILABLE);
+        }
+        // First-party rendered asset, bounded in size by pack validation
+        // (at most 5 items + 1 subscription, cents integers only).
+        let catalog = asset.json::<Value>().await.map_err(|_| UNAVAILABLE)?;
+        let selection = checkout::select(&body, &catalog).ok_or(INVALID)?;
+        let ts_body = form_encode(&[
+            ("secret", ts_key.as_str()),
+            ("response", selection.token.as_str()),
+        ]);
+        let verdict = checkout_fetch(SITEVERIFY_URL, None, Some(ts_body))
+            .await
+            .and_then(|v| serde_json::from_value::<CheckoutSiteVerify>(v).ok())
+            .ok_or(UNAVAILABLE)?;
+        if !verdict.success
+            || (!dummy
+                && (verdict.action != "demo_checkout"
+                    || Some(verdict.hostname.as_str()) != origin.host_str()))
+        {
+            return Err((
+                403,
+                "The security check failed. Go back, complete the check again, and retry.",
+            ));
+        }
+        checkout::create(&selection, &ids, &origin, |path, body| {
+            let key = key.clone();
+            async move {
+                checkout_fetch(
+                    &format!("https://api.stripe.com{path}"),
+                    Some(&key),
+                    body,
+                )
+                .await
+            }
+        })
+        .await
+        .ok_or(STRIPE_FAILED)
     }
 }

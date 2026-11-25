@@ -54,6 +54,14 @@
 	//     The always-pass TEST dummy secret is also rejected with 503 when DEV_MODE is
 	//     unset (fail closed), so a prod deploy can never silently disable bot protection.
 	//   RESEND_API_KEY        optional; if missing, email dispatch is stubbed ("resend stub: skipped")
+	// Sandbox demo checkout (see docs/STRIPE_DEMO.md) — all optional; the demo
+	// checkout fails closed (503) when any piece is missing:
+	//   DEMO_CHECKOUT_ORIGIN  non-secret var: exact public origin of the site (no path);
+	//                         loopback http is accepted for local testing only.
+	//   STRIPE_DEMO_PRICE_IDS non-secret var: JSON object mapping demo item ids
+	//                         (including the subscription) to sandbox Price ids.
+	//   STRIPE_DEMO_SECRET_KEY secret: sandbox-only key (sk_test_/rk_test_ prefixes
+	//                         only). The route is sandbox/test-mode by construction.
 	// Local-only var (in .dev.vars): DEV_MODE="true" skips Turnstile when no secret is set
 	// and lets the TEST dummy secret pass for local development. Never set it in production.
 	"observability": {

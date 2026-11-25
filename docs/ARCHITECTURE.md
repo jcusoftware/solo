@@ -50,10 +50,11 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
        ├── with_security_headers(...)   ◄── byte-identical header set as _headers
        ├── GET  /api/health             → {status, service, version}
        ├── POST /api/inquire            → Turnstile siteverify → D1 form_submissions → Resend (opt.)
-       └── POST /api/newsletter         → Turnstile siteverify → D1 newsletter_subscribers
+       ├── POST /api/newsletter         → Turnstile siteverify → D1 newsletter_subscribers
+       └── POST /api/checkout           → sandbox-only hosted Stripe Checkout handoff (303; no storage)
              │                              │
              ▼                              ▼
-        D1 (SQLite) binding DB       challenges.cloudflare.com / api.resend.com
+        D1 (SQLite) binding DB       challenges.cloudflare.com / api.resend.com / api.stripe.com
 ```
 
 - **Deterministic static rendering.** Published pages are pre-rendered static HTML and CSS compiled from `sws-ir`, yielding zero runtime rendering cost and top Lighthouse performance. Edge Workers execute only on `/api/*`.
@@ -108,6 +109,8 @@ Entries above marked *v0.2.0*/*v0.3.0* are planned targets, not present director
 ---
 
 ## 3. Core edge data model (D1)
+
+The optional [Stripe pickup demo](STRIPE_DEMO.md) is separate from D1: its static `/takeout` page posts to `/api/checkout`, which requires Turnstile and can only redirect to a verified sandbox Stripe Checkout Session. It records no orders, handles no webhooks, and does not fulfill anything.
 
 The published-site edge Worker (`sws-worker-site`, using `crates/sws-worker-site/migrations/0001_init.sql`) uses bound SQLite parameters in Cloudflare D1:
 

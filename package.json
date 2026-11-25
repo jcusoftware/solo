@@ -32,6 +32,7 @@
     "bootstrap:devvit": "npm ci --prefix integrations/devvit-release-bot",
     "deny": "cargo deny check",
     "test:a11y": "playwright test",
+    "test:checkout": "npm run build && playwright test --config playwright.checkout.config.mjs",
     "lhci": "lhci autorun",
     "verify": "npm run render:check && npm run sites:check && npm run lint:abc && npm run lint:abc:fixture-negative && npm run check:headers && npm run sites:check:headers && npm run test:unit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check",
     "verify:full": "npm run render:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run test:unit && npm run test:agents && npm run bootstrap:devvit && npm run test:devvit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check"
@@ -40,6 +41,7 @@
     "@axe-core/playwright": "^4.14.0",
     "@lhci/cli": "^0.16.1",
     "@playwright/test": "^1.65.1",
+    "miniflare": "5.20261123.0-beta",
     "wrangler": "^4.167.0"
   }
 }

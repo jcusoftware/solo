@@ -76,6 +76,9 @@ button[disabled] { cursor: progress; }
 .cf-turnstile { margin: 0 0 1rem; min-height: 65px; }
 .form-status { font-weight: 700; min-height: 1.6em; }
 .hp { height: 1px; left: -10000px; overflow: hidden; position: absolute; width: 1px; }
+.checkout-main { padding-top: 2rem; }
+.checkout-main input[type="number"] { background: var(--surface); border: 2px solid var(--text); border-radius: .25rem; color: var(--text); display: block; font: inherit; min-height: 44px; padding: .25rem .5rem; width: 5rem; }
+.checkout-main button { border-color: var(--text); }
 @media (min-width: 48rem) {
   .footer-grid { grid-template-columns: 3fr 2fr; }
 }

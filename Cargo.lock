@@ -641,6 +641,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sws-security",
+ "url",
  "web-sys",
  "worker",
 ]

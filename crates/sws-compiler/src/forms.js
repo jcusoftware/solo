@@ -189,4 +189,23 @@
 
   var forms = document.querySelectorAll('form.js-api-form');
   for (var i = 0; i < forms.length; i++) enhance(forms[i]);
+
+  // Keep checkout as a native navigation so its 303 can go to hosted Stripe.
+  document.querySelectorAll('[data-demo-checkout]').forEach(function (form) {
+    var total = form.querySelector('[data-cart-total]');
+    if (!total) return;
+    function updateTotal() {
+      var cents = 0;
+      var valid = true;
+      form.querySelectorAll('[data-cents]').forEach(function (input) {
+        valid = valid && input.validity.valid;
+        cents += input.valueAsNumber * Number(input.dataset.cents);
+      });
+      total.textContent = valid ? '$' + (cents / 100).toFixed(2) : 'Check quantities';
+    }
+    form.addEventListener('input', updateTotal);
+    window.addEventListener('pageshow', updateTotal);
+    updateTotal();
+    total.parentElement.hidden = false;
+  });
 })();

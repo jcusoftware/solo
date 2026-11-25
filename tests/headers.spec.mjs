@@ -38,7 +38,7 @@ test("contract parsed from _headers", () => {
   expect(EXPECTED["content-security-policy"]).toContain("https://challenges.cloudflare.com");
 });
 
-for (const path of ["/", "/styles.css"]) {
+for (const path of ["/", "/takeout/"]) {
   test(`static asset ${path} has security headers and does not force no-store`, async ({ request }) => {
     const resp = await request.get(path, { maxRedirects: 0 });
     expect(resp.status()).toBe(200);
@@ -91,6 +91,7 @@ for (const { method, path, allow } of [
   { method: "GET", path: "/api/forms/contact", allow: "POST" },
   { method: "GET", path: "/api/inquire", allow: "POST" },
   { method: "DELETE", path: "/api/newsletter", allow: "POST" },
+  { method: "GET", path: "/api/checkout", allow: "POST" },
 ]) {
   test(`${method} ${path} returns 405 with Allow and security headers`, async ({ request }) => {
     const resp = await request.fetch(path, { method, maxRedirects: 0 });
@@ -459,4 +460,17 @@ test.describe("Newsletter unsubscribed protection (issue #22)", () => {
     expect(after.source_route).toBe("/issue-22-seed");
     expect(after.consent_text).toBe("Issue #22 seeded consent record.");
   });
+});
+
+test("checkout rejects non-form posts and oversized bodies with security headers", async ({ request }) => {
+  for (const [options, status] of [
+    [{ data: { mode: "subscription" } }, 415],
+    [{ headers: { "Content-Type": "application/x-www-form-urlencoded" }, data: "x=" + "a".repeat(4096) }, 413],
+  ]) {
+    const resp = await request.post("/api/checkout", options);
+    expect(resp.status()).toBe(status);
+    expect(resp.headers()["cache-control"]).toBe("no-store");
+    expect(resp.headers().location).toBeUndefined();
+    for (const [name, value] of Object.entries(EXPECTED)) expect(resp.headers()[name]).toBe(value);
+  }
 });

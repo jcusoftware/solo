@@ -52,8 +52,10 @@ pub fn default_compile_options() -> CompileOptions {
 /// Merge pack-contributed extra files into compile options (feature wiring).
 ///
 /// This is the allowed `crates/sws-cli` exception (AGENTS.md §1): hospitality
-/// venues with `scheduling.events.enabled` contribute the deterministic events
-/// assets (`events-config.json` marker + `js/events-client.js`); every other
+/// venues contribute deterministic pack assets — the events calendar assets
+/// (`events-config.json` marker + `js/events-client.js`) when
+/// `scheduling.events.enabled`, and the sandbox demo checkout catalog
+/// (`demo-checkout-catalog.json`) when `checkout` is configured; every other
 /// input compiles unchanged with an empty extra-file map.
 pub fn compile_options_with_pack_extras(input_json: &str) -> Result<CompileOptions, String> {
     let mut options = default_compile_options();
@@ -65,7 +67,7 @@ pub fn compile_options_with_pack_extras(input_json: &str) -> Result<CompileOptio
 
 #[cfg(feature = "pack-hospitality")]
 fn pack_extra_files(input: &Value) -> Result<BTreeMap<String, String>, String> {
-    // Only hospitality manifests (venue shape) carry a scheduling section.
+    // Only hospitality manifests (venue shape) carry pack asset sections.
     if !(input.get("menu").is_some() && input.get("nap").is_some() && input.get("hours").is_some())
     {
         return Ok(BTreeMap::new());
@@ -73,7 +75,10 @@ fn pack_extra_files(input: &Value) -> Result<BTreeMap<String, String>, String> {
     let venue: sws_pack_hospitality::venue::VenueManifest =
         serde_json::from_value(input.clone())
             .map_err(|e| format!("invalid venue manifest: {e}"))?;
-    Ok(sws_pack_hospitality::events::events_extra_files(&venue).unwrap_or_default())
+    let mut files =
+        sws_pack_hospitality::events::events_extra_files(&venue).unwrap_or_default();
+    files.extend(sws_pack_hospitality::compiler::checkout_extra_files(&venue));
+    Ok(files)
 }
 
 #[cfg(not(feature = "pack-hospitality"))]

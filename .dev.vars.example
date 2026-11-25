@@ -7,3 +7,15 @@ RESEND_API_KEY=
 # a TEST secret is rejected with 503 (fail closed) — production must replace the
 # TEST secret via `wrangler secret put TURNSTILE_SECRET_KEY` and must NOT set this.
 DEV_MODE=true
+
+# --- Sandbox demo checkout (all optional; checkout is unavailable without them) ---
+# Non-secret var: exact public origin of the rendered site (no path). Loopback
+# http (127.0.0.1/localhost) is accepted for local testing only.
+DEMO_CHECKOUT_ORIGIN=http://127.0.0.1:8787
+# Non-secret var: JSON object mapping each demo checkout item id (including the
+# subscription) to its sandbox Stripe Price id, e.g.
+# {"flatbread":"price_REPLACE","soup":"price_REPLACE","cookie":"price_REPLACE","beans":"price_REPLACE"}
+STRIPE_DEMO_PRICE_IDS=
+# SECRET (never commit): sandbox Stripe restricted/secret key; only prefixes
+# sk_test_ / rk_test_ are accepted. Set with `wrangler secret put` in production.
+STRIPE_DEMO_SECRET_KEY=

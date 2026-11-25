@@ -14,9 +14,12 @@ use sws_plugin::{
 };
 
 use crate::abc::{CITATIONS, lint_json_value};
-use crate::venue::{DAYS, EventsConfig, VenueManifest, build_json_ld, validate_venue};
+use crate::venue::{
+    DAYS, CheckoutConfig, EventsConfig, VenueManifest, build_json_ld, validate_venue,
+};
 
 const TURNSTILE_SRC: &str = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+const CHECKOUT_NOTICE: &str = "Demo — no real charge or fulfillment";
 
 /// [`SwsPlugin`] implementation for the Solo Website System Hospitality vertical pack.
 #[derive(Debug, Clone, Copy, Default)]
@@ -210,6 +213,14 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
         });
     }
 
+    // The demo checkout page shares forms.js (its cart-total enhancement is
+    // bundled there so the site still works with JS disabled: the form posts
+    // natively and Stripe shows the total before confirmation).
+    let mut styles = build_style_rules();
+    if v.checkout.is_some() {
+        styles.extend(checkout_style_rules());
+    }
+
     let index_title = v
         .seo
         .as_ref()
@@ -281,6 +292,22 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
         scripts: Vec::new(),
         body: build_404_body(v),
     });
+    if let Some(c) = &v.checkout {
+        pages.push(Page {
+            id: "takeout".to_string(),
+            route: RoutePattern::Static {
+                path: "/takeout".to_string(),
+            },
+            title: format!("Demo checkout — {}", v.name),
+            description: Some(CHECKOUT_NOTICE.to_string()),
+            canonical: Some(format!("{base_url}/takeout")),
+            noindex: false,
+            is_not_found: false,
+            json_ld: Vec::new(),
+            scripts: checkout_scripts(),
+            body: build_takeout_body(v, c),
+        });
+    }
 
     SiteDocument {
         schema_version: 1,
@@ -290,7 +317,7 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
         base_url: base_url.clone(),
         tokens,
         breakpoints,
-        styles: build_style_rules(),
+        styles,
         components: BTreeMap::new(),
         forms: BTreeMap::new(),
         pages,
@@ -828,6 +855,311 @@ fn build_style_rules() -> Vec<IrStyleRule> {
 
 // ---------- Node Builders ----------
 
+// ---------- Sandbox demo checkout rendering ----------
+
+/// Scripts for the `/takeout` demo checkout page.
+fn checkout_scripts() -> Vec<ScriptRef> {
+    vec![
+        ScriptRef {
+            src: "/js/forms.js".to_string(),
+            async_load: false,
+            defer: true,
+        },
+        ScriptRef {
+            src: TURNSTILE_SRC.to_string(),
+            async_load: true,
+            defer: true,
+        },
+    ]
+}
+
+fn checkout_style_rules() -> Vec<IrStyleRule> {
+    vec![
+        style_rule("checkout-main", ".checkout-main", None, &[("padding-top", "2rem")]),
+        style_rule(
+            "checkout-quantity",
+            ".checkout-main input[type=\"number\"]",
+            None,
+            &[
+                ("display", "block"),
+                ("width", "5rem"),
+                ("min-height", "44px"),
+                ("padding", ".25rem .5rem"),
+                ("font", "inherit"),
+                ("color", "var(--text)"),
+                ("background", "var(--surface)"),
+                ("border", "2px solid var(--text)"),
+                ("border-radius", ".25rem"),
+            ],
+        ),
+        style_rule(
+            "checkout-button",
+            ".checkout-main button",
+            None,
+            &[("border-color", "var(--text)")],
+        ),
+    ]
+}
+
+fn usd(cents: u64) -> String {
+    format!("${}.{:02}", cents / 100, cents % 100)
+}
+
+fn turnstile_widget(site_key: &str) -> Node {
+    el(
+        "div",
+        &["cf-turnstile"],
+        &[("data-sitekey", site_key), ("data-action", "demo_checkout")],
+        Vec::new(),
+    )
+}
+
+fn build_takeout_body(v: &VenueManifest, c: &CheckoutConfig) -> Vec<Node> {
+    let site_key = v
+        .integrations
+        .turnstile
+        .as_ref()
+        .map(|t| t.site_key.as_str())
+        .unwrap_or("");
+
+    let item_fields: Vec<Node> = c
+        .items
+        .iter()
+        .map(|it| {
+            el(
+                "p",
+                &[],
+                &[],
+                vec![
+                    el(
+                        "label",
+                        &[],
+                        &[("for", &format!("qty-{}", it.id))],
+                        vec![txt(format!(
+                            "{} ({} each) — quantity",
+                            it.name,
+                            usd(it.cents)
+                        ))],
+                    ),
+                    el(
+                        "input",
+                        &[],
+                        &[
+                            ("id", &format!("qty-{}", it.id)),
+                            ("name", &format!("qty-{}", it.id)),
+                            ("type", "number"),
+                            ("min", "0"),
+                            ("max", "5"),
+                            ("step", "1"),
+                            ("value", "0"),
+                            ("required", ""),
+                            ("data-cents", &it.cents.to_string()),
+                        ],
+                        Vec::new(),
+                    ),
+                ],
+            )
+        })
+        .collect();
+
+    let mut payment_children = vec![
+        el("input", &[], &[("type", "hidden"), ("name", "mode"), ("value", "payment")], Vec::new()),
+    ];
+    payment_children.extend(item_fields);
+    payment_children.extend([
+        el(
+            "p",
+            &[],
+            &[("hidden", "")],
+            vec![
+                txt("Cart total: "),
+                el(
+                    "output",
+                    &[],
+                    &[("data-cart-total", "")],
+                    vec![txt("$0.00")],
+                ),
+                txt(" USD"),
+            ],
+        ),
+        el(
+            "p",
+            &[],
+            &[],
+            vec![txt(
+                "Without the cart script, Stripe displays the total before you confirm.",
+            )],
+        ),
+        turnstile_widget(site_key),
+        el(
+            "button",
+            &[],
+            &[("type", "submit")],
+            vec![txt("Continue to Stripe for pickup")],
+        ),
+    ]);
+
+    let subscription_children = vec![
+        el("input", &[], &[("type", "hidden"), ("name", "mode"), ("value", "subscription")], Vec::new()),
+        turnstile_widget(site_key),
+        el(
+            "button",
+            &[],
+            &[("type", "submit")],
+            vec![txt("Continue to Stripe for monthly pickup")],
+        ),
+    ];
+
+    let mut nodes = site_header_nodes(v);
+    nodes.push(el(
+        "main",
+        &["wrap", "checkout-main"],
+        &[("id", "main"), ("tabindex", "-1")],
+        vec![
+            el("h1", &[], &[], vec![txt("Demo checkout")]),
+            el(
+                "p",
+                &[],
+                &[("id", "checkout-instructions")],
+                vec![
+                    el("strong", &[], &[], vec![txt(format!("{CHECKOUT_NOTICE}."))]),
+                    txt(" Use only fictional information and Stripe’s test card "),
+                    el("strong", &[], &[], vec![txt("4242 4242 4242 4242")]),
+                    txt(", any future expiry and any three-digit CVC. Do not enter real payment or personal information. Checkout opens on Stripe after the security check."),
+                ],
+            ),
+            el(
+                "noscript",
+                &[],
+                &[],
+                vec![el(
+                    "p",
+                    &[],
+                    &[],
+                    vec![txt(
+                        "The required Turnstile security check needs browser JavaScript. Enable it to continue.",
+                    )],
+                )],
+            ),
+            el(
+                "section",
+                &["card"],
+                &[("aria-labelledby", "pickup-heading")],
+                vec![
+                    el("h2", &[], &[("id", "pickup-heading")], vec![txt("Takeout pickup cart")]),
+                    el(
+                        "p",
+                        &[],
+                        &[],
+                        vec![
+                            el("strong", &[], &[], vec![txt(format!("{CHECKOUT_NOTICE}."))]),
+                            txt(" USD. Set quantity to zero to remove an item. Limit: 5 per item, 10 items and $100 per cart."),
+                        ],
+                    ),
+                    el(
+                        "form",
+                        &[],
+                        &[
+                            ("method", "post"),
+                            ("action", "/api/checkout"),
+                            ("data-demo-checkout", ""),
+                            ("aria-describedby", "checkout-instructions"),
+                        ],
+                        payment_children,
+                    ),
+                ],
+            ),
+            el(
+                "section",
+                &["card"],
+                &[("aria-labelledby", "subscription-heading")],
+                vec![
+                    el(
+                        "h2",
+                        &[],
+                        &[("id", "subscription-heading")],
+                        vec![txt("Monthly pickup subscription")],
+                    ),
+                    el(
+                        "p",
+                        &[],
+                        &[],
+                        vec![
+                            el("strong", &[], &[], vec![txt(format!("{CHECKOUT_NOTICE}."))]),
+                            txt(format!(
+                                " {} — {} USD per month for one pickup. This starts a separate test subscription, not a takeout order.",
+                                c.subscription.name,
+                                usd(c.subscription.cents)
+                            )),
+                        ],
+                    ),
+                    el(
+                        "form",
+                        &[],
+                        &[
+                            ("method", "post"),
+                            ("action", "/api/checkout"),
+                            ("data-demo-checkout", ""),
+                            ("aria-describedby", "checkout-instructions"),
+                        ],
+                        subscription_children,
+                    ),
+                ],
+            ),
+            el(
+                "section",
+                &[],
+                &[("id", "returned"), ("aria-labelledby", "returned-heading")],
+                vec![
+                    el(
+                        "h2",
+                        &[],
+                        &[("id", "returned-heading")],
+                        vec![txt("Returning from Stripe?")],
+                    ),
+                    el(
+                        "p",
+                        &[],
+                        &[],
+                        vec![txt(
+                            "This demo does not verify or fulfill orders. If you canceled, you can start over above.",
+                        )],
+                    ),
+                ],
+            ),
+        ],
+    ));
+    nodes.push(site_footer_node(v, false));
+    nodes
+}
+
+/// Public, read-only sandbox catalog (item keys and cents only — never Stripe
+/// configuration). The Worker validates every posted amount against it.
+pub fn checkout_catalog_json(v: &VenueManifest) -> Option<String> {
+    let c = v.checkout.as_ref()?;
+    let mut items = serde_json::Map::new();
+    for it in &c.items {
+        items.insert(it.id.clone(), serde_json::json!(it.cents));
+    }
+    Some(format!(
+        "{}\n",
+        serde_json::json!({
+            "items": Value::Object(items),
+            "subscription": {"id": c.subscription.id, "cents": c.subscription.cents},
+        })
+    ))
+}
+
+/// Additional static asset files the pack contributes for this manifest
+/// (currently only the sandbox demo checkout catalog). Empty for venues whose
+/// manifest has no `checkout` configuration.
+pub fn checkout_extra_files(v: &VenueManifest) -> BTreeMap<String, String> {
+    checkout_catalog_json(v)
+        .map(|json| ("demo-checkout-catalog.json".to_string(), json))
+        .into_iter()
+        .collect()
+}
+
 fn txt(s: impl Into<String>) -> Node {
     Node::Text { value: s.into() }
 }
@@ -1001,6 +1333,14 @@ fn site_header_nodes(v: &VenueManifest) -> Vec<Node> {
         &[],
         vec![el("a", &[], &[("href", "/#menu")], vec![txt("Menu")])],
     )];
+    if v.checkout.is_some() {
+        nav_items.push(el(
+            "li",
+            &[],
+            &[],
+            vec![el("a", &[], &[("href", "/takeout")], vec![txt("Demo checkout")])],
+        ));
+    }
     if v.happy_hour.is_some() {
         nav_items.push(el(
             "li",
@@ -1758,8 +2098,10 @@ mod tests {
 
         let doc = plugin.transform_input(&val).unwrap();
         assert_eq!(doc.slug, "shirlington-hearth-demo");
-        // Demo ships events enabled (issue #43): index + events + 404.
-        assert_eq!(doc.pages.len(), 3);
+        // Demo ships events AND checkout enabled: index + events + takeout + 404.
+        assert_eq!(doc.pages.len(), 4);
+        assert!(doc.pages.iter().any(|p| p.id == "events"));
+        assert!(doc.pages.iter().any(|p| p.id == "takeout"));
         assert!(doc.metadata.contains_key("venue_manifest"));
         assert!(sws_ir::validate_ir(&doc).is_empty());
         assert!(plugin.lint(&doc, Some(&val)).is_empty());
@@ -1845,7 +2187,10 @@ mod tests {
         let doc2 = HospitalityPlugin
             .transform_input(&serde_json::to_value(&disabled).unwrap())
             .unwrap();
-        assert_eq!(doc2.pages.len(), 2);
+        // Events disabled; the sandbox demo checkout page keeps the count at
+        // three (index, takeout, 404) instead of the bare two.
+        assert_eq!(doc2.pages.len(), 3);
+        assert!(doc2.pages.iter().all(|p| p.id != "events"));
         assert!(!doc2.seo.sitemap_routes.contains(&"/events".to_string()));
     }
 
