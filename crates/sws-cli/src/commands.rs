@@ -259,6 +259,15 @@ pub fn cmd_export(input: &Path, outdir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Serve a compiled site directory over local HTTP on 127.0.0.1 (`solo preview`).
+///
+/// Blocks in the foreground until Ctrl-C (SIGINT) terminates the process.
+/// The Cloudflare `_headers` file, if present, is served as a static file and
+/// never applied as HTTP headers (it is a Cloudflare-only directive).
+pub fn cmd_preview(outdir: &Path, port: u16) -> Result<(), String> {
+    crate::preview::serve_forever(outdir, port)
+}
+
 /// Convert a parsed JSON value (`SiteDocument` or plugin-supported manifest) into [`SiteDocument`].
 pub fn parse_value_to_ir(
     raw: &Value,

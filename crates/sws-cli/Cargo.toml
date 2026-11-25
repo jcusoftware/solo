@@ -18,6 +18,7 @@ pack-hospitality = ["dep:sws-pack-hospitality"]
 
 [dependencies]
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sws-ir = { path = "../sws-ir" }

@@ -2,6 +2,7 @@
 
 mod commands;
 mod mcp;
+mod preview;
 mod templates;
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,14 @@ enum Command {
         /// Output directory receiving public/, wrangler.jsonc, and migrations/0001_init.sql.
         outdir: PathBuf,
     },
+    /// Serve compiled site output over local HTTP on 127.0.0.1 (localhost only).
+    Preview {
+        /// Directory containing compiled site files to serve.
+        outdir: PathBuf,
+        /// TCP port to bind on 127.0.0.1 (0 selects a random free port).
+        #[arg(long, default_value_t = preview::DEFAULT_PREVIEW_PORT)]
+        port: u16,
+    },
     /// Run the stdio JSON-RPC 2.0 MCP server.
     Mcp {
         /// Workspace root directory that MCP file reads are jailed to (defaults to current working directory).
@@ -97,6 +106,10 @@ fn run() -> Result<ExitCode, String> {
         }
         Command::Export { input, outdir } => {
             commands::cmd_export(&input, &outdir)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Preview { outdir, port } => {
+            commands::cmd_preview(&outdir, port)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Mcp { root } => {
