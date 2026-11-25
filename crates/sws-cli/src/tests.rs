@@ -278,8 +278,10 @@ fn export_emits_standalone_rust_worker_wrangler_and_d1_migration() {
 
     let dev_vars_example =
         fs::read_to_string(out_dir.join(".dev.vars.example")).expect("read .dev.vars.example");
-    assert!(dev_vars_example.contains("# DEV_MODE=true"));
-    assert!(!dev_vars_example.lines().any(|l| l.trim() == "DEV_MODE=true"));
+    // Local dev runs with the TEST dummy secret, which now fails closed unless
+    // DEV_MODE is set (issue #6), so the example must ship DEV_MODE enabled.
+    assert!(dev_vars_example.contains("DEV_MODE=true"));
+    assert!(dev_vars_example.contains("fail closed"));
 
     let wrangler = fs::read_to_string(out_dir.join("wrangler.jsonc")).expect("read wrangler.jsonc");
     assert!(wrangler.contains("\"starter-site-demo\""), "{wrangler}");

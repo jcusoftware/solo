@@ -40,12 +40,19 @@
 		"INQUIRY_TO": "events@shirlington-hearth.example",
 		// Pack-specific hospitality inquiry form schema (decoupled from core sws-worker-site defaults).
 		"FORM_SCHEMAS_JSON": "{\"inquire\":{\"id\":\"inquire\",\"turnstile_action\":\"inquire\",\"fields\":[{\"name\":\"kind\",\"required\":true,\"kind\":{\"enum\":[\"private_event\",\"contact\"]}},{\"name\":\"name\",\"required\":true,\"kind\":{\"text\":{\"max_chars\":100,\"multiline\":false}}},{\"name\":\"email\",\"required\":true,\"kind\":\"email\"},{\"name\":\"phone\",\"required\":false,\"kind\":{\"phone\":{\"max_chars\":32}}},{\"name\":\"event_date\",\"required\":false,\"kind\":\"date\"},{\"name\":\"guest_count\",\"required\":false,\"kind\":{\"integer\":{\"min\":1,\"max\":1000}}},{\"name\":\"message\",\"required\":true,\"kind\":{\"text\":{\"max_chars\":4000,\"multiline\":true}}},{\"name\":\"source_route\",\"required\":true,\"kind\":{\"route\":{\"allowed\":[\"/book-an-event\",\"/contact\"]}}}]}}"
+		// Optional defense-in-depth (issue #6): set ALLOWED_HOSTNAMES in production to a
+		// comma-separated list of the exact hostnames siteverify should accept, e.g.
+		//   "ALLOWED_HOSTNAMES": "www.example.com, example.com"
+		// Leave it unset locally: `wrangler dev` reports 127.0.0.1:8787 and would fail the check.
 	},
 	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
 	// or in .dev.vars for local `wrangler dev` (copy .dev.vars.example):
-	//   TURNSTILE_SECRET_KEY  required; if missing the API answers 503 unless DEV_MODE="true"
+	//   TURNSTILE_SECRET_KEY  required; if missing the API answers 503 unless DEV_MODE="true".
+	//     The always-pass TEST dummy secret is also rejected with 503 when DEV_MODE is
+	//     unset (fail closed), so a prod deploy can never silently disable bot protection.
 	//   RESEND_API_KEY        optional; if missing, email dispatch is stubbed ("resend stub: skipped")
-	// Optional local-only var (in .dev.vars): DEV_MODE="true" skips Turnstile when no secret is set.
+	// Local-only var (in .dev.vars): DEV_MODE="true" skips Turnstile when no secret is set
+	// and lets the TEST dummy secret pass for local development. Never set it in production.
 	"observability": {
 		"enabled": true
 	}

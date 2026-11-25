@@ -349,3 +349,39 @@ test("forms.js browser valid submission flow succeeds and clears invalid state",
   await expect(emailInput).toHaveValue("");
   await expect(consentBox).not.toBeChecked();
 });
+
+// Isolated block for issue #6 (Turnstile fail-closed): invalid-token failure path.
+// Kept separate to minimize merge conflicts with other spec work.
+test.describe("Turnstile failure paths (issue #6)", () => {
+  // Observed against `wrangler dev` with the repo's only secret, the always-pass
+  // Cloudflare TEST dummy key:
+  //   - DEV_MODE active (CI passes --var DEV_MODE:true; .dev.vars.example ships
+  //     DEV_MODE=true): the TEST secret accepts every token, so the request
+  //     succeeds (201). The strict 403 invalid-token arm is therefore unreachable
+  //     in local dev and is covered by unit tests in
+  //     crates/sws-security/src/turnstile.rs.
+  //   - DEV_MODE unset with the TEST secret: the new fail-closed guard rejects
+  //     with 503 {"error":"turnstile_unconfigured"} BEFORE siteverify is called
+  //     (verified: the same request answered 503 on port 8788 with --var
+  //     DEV_MODE:false).
+  // This test pins that an invalid token shape can never produce an unexplained
+  // 4xx/5xx other than the two documented outcomes above.
+  test("POST with invalid Turnstile token shape stays within documented outcomes", async ({ request }) => {
+    const resp = await request.post("/api/newsletter", {
+      data: {
+        email: `e2e-turnstile-invalid-${Date.now()}@example.test`,
+        consent: "yes",
+        consent_text: "Issue #6 invalid Turnstile token probe.",
+        source_route: "/menu",
+        "cf-turnstile-response": "XXXX.invalid-token-shape.XXXX",
+      },
+    });
+    expect([201, 503]).toContain(resp.status());
+    if (resp.status() === 503) {
+      const body = await resp.json();
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe("turnstile_unconfigured");
+    }
+    expectSecurityHeaders(resp, "POST /api/newsletter invalid turnstile token");
+  });
+});

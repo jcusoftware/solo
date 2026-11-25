@@ -182,7 +182,20 @@ pub async fn verify_turnstile(
             &error_body("turnstile_unconfigured"),
         )?));
     };
-    let relax_dev_checks = dev_mode && validate::is_turnstile_test_secret(&secret_key);
+    // Fail closed in production: the always-pass TEST secret must never
+    // silently disable bot protection when DEV_MODE is unset (issue #6).
+    let is_test_secret = validate::is_turnstile_test_secret(&secret_key);
+    if is_test_secret && !dev_mode {
+        console_error!(
+            "TURNSTILE_SECRET_KEY is a Cloudflare TEST key but DEV_MODE is unset; \
+             refusing submission (fail closed)"
+        );
+        return Ok(Some(json_response(
+            503,
+            &error_body("turnstile_unconfigured"),
+        )?));
+    }
+    let relax_dev_checks = dev_mode && is_test_secret;
     let Some(token) = token else {
         return Ok(Some(json_response(
             400,
@@ -234,41 +247,45 @@ pub async fn verify_turnstile(
             None
         }
     };
-    match verdict {
-        Some(v) if v.success => {
-            if !relax_dev_checks {
-                if v.action != expected_action {
+    let outcome = verdict.map(|v| crate::turnstile::SiteVerifyOutcome {
+        success: v.success,
+        action: v.action,
+        hostname: v.hostname,
+        error_codes: v.error_codes,
+    });
+    let allowed_hosts = var(env, "ALLOWED_HOSTNAMES");
+    match crate::turnstile::turnstile_verdict(
+        outcome.as_ref(),
+        expected_action,
+        allowed_hosts.as_deref(),
+        relax_dev_checks,
+    ) {
+        crate::turnstile::TurnstileVerdict::Allow => Ok(None),
+        crate::turnstile::TurnstileVerdict::Reject(reason) => {
+            match reason {
+                crate::turnstile::RejectReason::Unavailable => {
+                    // Already logged at the fetch/parse site above.
+                }
+                crate::turnstile::RejectReason::Failed => {
+                    console_log!(
+                        "turnstile rejected: {:?}",
+                        outcome.map(|o| o.error_codes).unwrap_or_default()
+                    );
+                }
+                crate::turnstile::RejectReason::ActionMismatch => {
                     console_warn!(
                         "turnstile action mismatch: expected {expected_action}, got {:?}",
-                        v.action
+                        outcome.map(|o| o.action).unwrap_or_default()
                     );
-                    return Ok(Some(json_response(403, &error_body("turnstile_failed"))?));
                 }
-                if let Some(raw_hosts) = var(env, "ALLOWED_HOSTNAMES") {
-                    let allowed: Vec<&str> = raw_hosts
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    if !allowed.is_empty()
-                        && !allowed
-                            .iter()
-                            .any(|h| h.eq_ignore_ascii_case(v.hostname.trim()))
-                    {
-                        console_warn!("turnstile hostname rejected: {:?}", v.hostname);
-                        return Ok(Some(json_response(403, &error_body("turnstile_failed"))?));
-                    }
+                crate::turnstile::RejectReason::HostnameRejected => {
+                    console_warn!(
+                        "turnstile hostname rejected: {:?}",
+                        outcome.map(|o| o.hostname).unwrap_or_default()
+                    );
                 }
             }
-            Ok(None)
+            Ok(Some(json_response(reason.status(), &error_body(reason.code()))?))
         }
-        Some(v) => {
-            console_log!("turnstile rejected: {:?}", v.error_codes);
-            Ok(Some(json_response(403, &error_body("turnstile_failed"))?))
-        }
-        None => Ok(Some(json_response(
-            503,
-            &error_body("turnstile_unavailable"),
-        )?)),
     }
 }

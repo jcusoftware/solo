@@ -2,6 +2,7 @@
 
 pub mod headers;
 pub mod response;
+pub mod turnstile;
 pub mod validate;
 
 #[cfg(target_arch = "wasm32")]
