@@ -13,6 +13,9 @@ pub enum Route {
     Events,
     /// `GET /api/events/:id/ics` — single-event calendar download.
     EventIcs(String),
+    /// Sandbox demo checkout: validates the cart, verifies Turnstile, then
+    /// redirects (303) to a hosted Stripe Checkout session. No storage.
+    Checkout,
     /// Known API path, wrong method. Carries the `Allow` header value.
     MethodNotAllowed(&'static str),
     /// Unknown `/api/*` path.
@@ -179,6 +182,10 @@ pub fn route(method: &str, path: &str) -> Route {
                 Route::NotFound
             }
         }
+        "/api/checkout" => match m.as_str() {
+            "POST" => Route::Checkout,
+            _ => Route::MethodNotAllowed("POST"),
+        },
         p if p.starts_with("/api/forms/") => {
             let id = &p["/api/forms/".len()..];
             if is_valid_form_id(id) {
@@ -286,6 +293,12 @@ mod tests {
         );
         assert_eq!(route("GET", "/api/events/900000001"), Route::NotFound);
         assert_eq!(route("GET", "/api/events/900000001/Ics"), Route::NotFound);
+
+        assert_eq!(route("POST", "/api/checkout"), Route::Checkout);
+        assert_eq!(
+            route("GET", "/api/checkout"),
+            Route::MethodNotAllowed("POST")
+        );
 
         assert_eq!(route("GET", "/api/nope"), Route::NotFound);
         assert_eq!(route("GET", "/api"), Route::NotFound);

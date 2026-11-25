@@ -64,8 +64,29 @@ pub struct VenueManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub happy_hour: Option<HappyHour>,
     pub menu: Menu,
+    /// Optional sandbox demo checkout configuration; absent means the venue
+    /// renders no checkout pages, catalog, or nav links at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<CheckoutConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seo: Option<SeoConfig>,
+}
+
+/// One fixed-price sandbox checkout catalog entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckoutItem {
+    pub id: String,
+    pub name: String,
+    /// USD cents (50..=10000); the demo never takes variable amounts.
+    pub cents: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckoutConfig {
+    /// 2–5 one-time pickup items.
+    pub items: Vec<CheckoutItem>,
+    /// Exactly one fixed monthly subscription item.
+    pub subscription: CheckoutItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,7 +680,49 @@ pub fn validate_venue(v: &VenueManifest) -> Vec<String> {
         validate_events_config(events, &mut errs);
     }
 
+    if let Some(c) = &v.checkout {
+        validate_checkout_config(c, v, &mut errs);
+    }
+
     errs
+}
+
+/// Validates the optional sandbox demo `checkout` catalog.
+fn validate_checkout_config(c: &CheckoutConfig, v: &VenueManifest, errs: &mut Vec<String>) {
+    let mut need = |cond: bool, msg: String| {
+        if !cond {
+            errs.push(msg);
+        }
+    };
+    let valid_item = |it: &CheckoutItem| {
+        checkout_item_id(&it.id)
+            && !it.name.trim().is_empty()
+            && (50..=10_000).contains(&it.cents)
+    };
+    let mut ids: Vec<&str> = c
+        .items
+        .iter()
+        .map(|it| it.id.as_str())
+        .chain(std::iter::once(c.subscription.id.as_str()))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    need(
+        (2..=5).contains(&c.items.len())
+            && c.items.iter().all(valid_item)
+            && valid_item(&c.subscription)
+            && ids.len() == c.items.len() + 1,
+        "checkout needs 2-5 items and one subscription with distinct ids and valid USD cents (50-10000)".into(),
+    );
+    let has_key = v
+        .integrations
+        .turnstile
+        .as_ref()
+        .is_some_and(|t| !t.site_key.trim().is_empty());
+    need(
+        has_key,
+        "integrations.turnstile.site_key required for checkout".into(),
+    );
 }
 
 /// Validates `scheduling.events`. The time zone only gets a structural check
@@ -696,6 +759,17 @@ fn validate_events_config(events: &EventsConfig, errs: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// Catalog item id pattern: `^[a-z][a-z0-9-]{0,31}$`.
+fn checkout_item_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 32
+        && b[0].is_ascii_lowercase()
+        && b[1..]
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
 fn capitalize_ascii(s: &str) -> String {

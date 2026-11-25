@@ -697,6 +697,7 @@ pub fn starter_hospitality_venue() -> VenueManifest {
                 },
             ],
         },
+        checkout: None,
         seo: Some(SeoConfig {
             title: Some("Cedar & Rye Café — Fictional Starter Venue".to_string()),
             description: Some(

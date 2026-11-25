@@ -145,6 +145,8 @@ jobs:
         run: npm run test:a11y
         env:
           BASE_URL: http://127.0.0.1:8787
+      - name: Compiled checkout mock (no external traffic)
+        run: npm run test:checkout
       - name: Lighthouse CI
         run: npm run lhci
       - name: Upload reports

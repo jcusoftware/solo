@@ -2,7 +2,7 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-const ROUTES = (process.env.A11Y_ROUTES ?? "/").split(",").map((r) => r.trim()).filter(Boolean);
+const ROUTES = (process.env.A11Y_ROUTES ?? "/,/takeout").split(",").map((r) => r.trim()).filter(Boolean);
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 // Third-party "accessibility overlay" widgets are banned (they do not fix native semantics).
 const OVERLAY_PATTERNS = [/accessibe/i, /acsbapp/i, /userway/i, /audioeye/i, /equalweb/i, /maxaccess/i, /purpose-?ui/i, /accessibilityassistant/i];

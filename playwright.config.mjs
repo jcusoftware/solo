@@ -9,6 +9,8 @@ const baseURL = externalBase ?? "http://127.0.0.1:8787";
 export default defineConfig({
   testDir: "./tests",
   testMatch: /.*\.spec\.mjs$/,
+  // The compiled-Worker checkout mock runs separately via `npm run test:checkout`.
+  testIgnore: "checkout-worker.spec.mjs",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,

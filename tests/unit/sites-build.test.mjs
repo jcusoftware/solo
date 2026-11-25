@@ -253,6 +253,7 @@ describe('sites/build static site generation', async () => {
       'schema.org',
       'spdx.org',
       'challenges.cloudflare.com',
+      'checkout.stripe.com',
       'www.sitemaps.org',
       '127.0.0.1',
     ]);
