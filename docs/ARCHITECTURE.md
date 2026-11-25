@@ -51,10 +51,14 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
        ├── GET  /api/health             → {status, service, version}
        ├── POST /api/inquire            → Turnstile siteverify → D1 form_submissions → Resend (opt.)
        ├── POST /api/newsletter         → Turnstile siteverify → D1 newsletter_subscribers
+       ├── GET  /api/bookings/slots     → D1 claims ∩ Google Calendar free/busy (config-gated)
+       ├── POST /api/bookings           → Turnstile siteverify → D1 `bookings` claim → Calendar
+       │                                  invitation (+ optional Zoom meeting; issue #44)
        └── POST /api/checkout           → sandbox-only hosted Stripe Checkout handoff (303; no storage)
              │                              │
              ▼                              ▼
-        D1 (SQLite) binding DB       challenges.cloudflare.com / api.resend.com / api.stripe.com
+        D1 (SQLite) binding DB       challenges.cloudflare.com / www.googleapis.com /
+                                     api.zoom.us / api.resend.com / api.stripe.com
 ```
 
 - **Deterministic static rendering.** Published pages are pre-rendered static HTML and CSS compiled from `sws-ir`, yielding zero runtime rendering cost and top Lighthouse performance. Edge Workers execute only on `/api/*`.
@@ -94,7 +98,7 @@ core/                         Tenant-agnostic rendered demo output & CLI tools (
   public/                     Deterministic rendered static output + _headers
   tools/                      CLI utilities (header parity check)
 
-D1 migrations live at `crates/sws-worker-site/migrations/0001_init.sql`.
+D1 migrations live at `crates/sws-worker-site/migrations/` (`0001_init.sql`, `0002_public_events.sql`, `0003_event_sync.sql`, `0004_scheduling_bookings.sql`).
 ```
 
 Entries above marked *v0.2.0*/*v0.3.0* are planned targets, not present directories: `sws-worker-studio/` is planned for v0.2.0, and `apps/` (builder, canvas) and `packages/` (`@solo-website-system/*`) are planned for v0.3.0. Today's repository contains `crates/`, `packs/`, `integrations/`, `core/` (output + tools only), `sites/`, `docs/` and `tests/`.
@@ -117,7 +121,7 @@ The published-site edge Worker (`sws-worker-site`, using `crates/sws-worker-site
 - **`form_submissions` (Phase 0/1 table: `inquiries`).** Stores structured form payloads (`kind` such as `contact` or pack-defined kinds like `private_event`), contact fields, `message`, `source_route`, `status` (`new` | `responded` | `closed` | `spam`), and `created_at`.
 - **`newsletter_subscribers`.** Stores `email` (unique, `NOCASE`), `status` (`subscribed` | `unsubscribed` | `bounced`), `consent_timestamp` (ISO-8601 UTC stamped by the Worker), `source_route`, `consent_text`, `created_at`, `updated_at`, and `unsubscribed_at`.
   - Public web forms never flip `unsubscribed` or `bounced` rows back to `subscribed` (re-subscription requires explicit double opt-in).
-- **Pack-extended tables (e.g., `events` in `packs/hospitality`).** Optional schema tables are enabled when the corresponding pack feature is active: `events` (`slug`, `title`, `description`, legacy `starts_at`/`ends_at`/`is_ticketed`, public-event columns `external_uid`, `location`, `start_utc`, `end_utc`, `is_free`, `updated_at`) in `migrations/0002_public_events.sql`, and the one-row `event_sync_state` snapshot marker (with the reserved `identity_fingerprint` column carried over from the old `0004_event_snapshot_identity.sql`) in `migrations/0003_event_sync.sql`. All queries bind parameters.
+- **Pack-extended tables (e.g., `events` and `bookings` in `packs/hospitality`).** Optional schema tables are enabled when the corresponding pack feature is active: `events` (`slug`, `title`, `description`, legacy `starts_at`/`ends_at`/`is_ticketed`, public-event columns `external_uid`, `location`, `start_utc`, `end_utc`, `is_free`, `updated_at`) in `migrations/0002_public_events.sql`, the one-row `event_sync_state` snapshot marker (with the reserved `identity_fingerprint` column carried over from the old `0004_event_snapshot_identity.sql`) in `migrations/0003_event_sync.sql`, and the call-booking claims table `bookings` (with pending/uncertain/confirmed/cancelled status and half-open overlap-guard triggers) in `migrations/0004_scheduling_bookings.sql`. All queries bind parameters.
 
 ---
 
@@ -125,7 +129,7 @@ The published-site edge Worker (`sws-worker-site`, using `crates/sws-worker-site
 
 All hospitality-specific schemas, UI templates, third-party restaurant integrations, and compliance linters live in `packs/hospitality` rather than SWS core. Its showcase fixture is the 100% fictional **`shirlington-hearth-demo`** (`packs/hospitality/demo/venue.json`).
 
-### Hospitality module map (M1–M10)
+### Hospitality module map (M1–M11)
 
 | Module | Name | Routes | Data | Default flag | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -135,12 +139,13 @@ All hospitality-specific schemas, UI templates, third-party restaurant integrati
 | M4 | Contact | `/contact` → `POST /api/inquire` (`kind=contact`) | D1 `inquiries` / `form_submissions` | on | API ✅, page Phase 1 |
 | M5 | Newsletter + CAN-SPAM Consent | Footer form → `POST /api/newsletter` | D1 `newsletter_subscribers` | on | Phase 0 ✅ |
 | M6 | Events Calendar | `/events`, `Event` JSON-LD | `scheduling.events`, D1 `events` + `event_sync_state` | on in demo (`d1_or_cms`) | API + render ✅ (port #43) |
-| M7 | Visit | `/visit` (hours, holiday overrides, directions, venue accessibility) | `venue.json` | on | Phase 1 |
-| M8 | About / Story / Gallery | `/about` | `venue.json` + optimized images | off in demo until Phase 1 | Phase 1 |
-| M9 | SEO & Discovery | `sitemap.xml`, `robots.txt`, NAP drift audit | `venue.json` | on (required) | Phase 0 ✅ |
-| M10 | Security, a11y & Observability Gate | `_headers` + `with_security_headers`, `/api/health`, CI gates | — | on (required) | Phase 0 ✅ |
+| M7 | Call Booking | `/book-a-call`, `GET /api/bookings/slots`, `POST /api/bookings` | `scheduling.bookings`, D1 `bookings`, Google Calendar free/busy + invitations, optional Zoom | off (on in demo) | API + render ✅ (port #44); Zoom/Google require setup |
+| M8 | Visit | `/visit` (hours, holiday overrides, directions, venue accessibility) | `venue.json` | on | Phase 1 |
+| M9 | About / Story / Gallery | `/about` | `venue.json` + optimized images | off in demo until Phase 1 | Phase 1 |
+| M10 | SEO & Discovery | `sitemap.xml`, `robots.txt`, NAP drift audit | `venue.json` | on (required) | Phase 0 ✅ |
+| M11 | Security, a11y & Observability Gate | `_headers` + `with_security_headers`, `/api/health`, CI gates | — | on (required) | Phase 0 ✅ |
 
-The Phase 1 hospitality showcase exposes 10 routes: `/`, `/menu`, `/happy-hour`, `/events`, `/book-an-event`, `/visit`, `/about`, `/contact`, `/accessibility`, `/privacy`.
+The Phase 1 hospitality showcase exposes 11 routes: `/`, `/menu`, `/happy-hour`, `/events`, `/book-a-call`, `/book-an-event`, `/visit`, `/about`, `/contact`, `/accessibility`, `/privacy`. `/events` and `/book-a-call` are independently opt-in through their manifest flags.
 
 ### Hospitality pluggable integrations (`venue.json` `integrations`)
 
@@ -154,7 +159,11 @@ The Phase 1 hospitality showcase exposes 10 routes: `/`, `/menu`, `/happy-hour`,
 
 ### Public events calendar (M6 — `scheduling.events`)
 
-Venues with `scheduling.events.enabled: true` in `venue.json` render a deterministic `/events` page (semantic list hydrated by `/js/events-client.js`, `noscript` link to the JSON API, per-event `.ics` downloads) and emit `events-config.json` plus `js/events-client.js` as build assets. The Worker routes `GET /api/events` and `GET /api/events/:id/ics` stay inert (404) unless the enabled marker asset is present, so zero-backend sites are unaffected. An optional Google Calendar import (`source: "google_calendar_sync"`) runs only on a Cron trigger and only with the `GOOGLE_SA_EMAIL`, `GOOGLE_SA_PRIVATE_KEY`, `GOOGLE_SYNC_SUBJECT`, and `GOOGLE_SYNC_CALENDAR_ID` secrets provisioned in the Worker environment; it atomically replaces the importer's own `gcal:` rows and is fully inert without configuration. Setup details: `docs/EVENTS_SETUP.md`. Native call booking / Zoom (`scheduling.bookings`) is a separate wave-B feature layered on the same `scheduling` section.
+Venues with `scheduling.events.enabled: true` in `venue.json` render a deterministic `/events` page (semantic list hydrated by `/js/events-client.js`, `noscript` link to the JSON API, per-event `.ics` downloads) and emit `events-config.json` plus `js/events-client.js` as build assets. The Worker routes `GET /api/events` and `GET /api/events/:id/ics` stay inert (404) unless the enabled marker asset is present, so zero-backend sites are unaffected. An optional Google Calendar import (`source: "google_calendar_sync"`) runs only on a Cron trigger and only with the `GOOGLE_SA_EMAIL`, `GOOGLE_SA_PRIVATE_KEY`, `GOOGLE_SYNC_SUBJECT`, and `GOOGLE_SYNC_CALENDAR_ID` secrets provisioned in the Worker environment; it atomically replaces the importer's own `gcal:` rows and is fully inert without configuration. Setup details: `docs/EVENTS_SETUP.md`.
+
+### Call booking (M7 — `scheduling.bookings`)
+
+Venues with `scheduling.bookings.enabled: true` render a deterministic `/book-a-call` page (native date input, keyboard-selectable time slots hydrated by `/js/booking-client.js`, hidden form with a `noscript` phone fallback because Turnstile verification is mandatory) and emit `booking-config.json` plus `js/booking-client.js`. The Worker routes `GET /api/bookings/slots` (rate-limited by the `BOOKING_SLOTS_LIMIT` binding) and `POST /api/bookings` stay inert (404) without the marker. Slots derive from `scheduling.bookings.working_hours` in `scheduling.events.timezone`; the free-slot listing intersects D1 claims (`bookings` table, atomically overlap-guarded by triggers) with Google Calendar free/busy, and the POST claims the buffered slot in D1 before writing the Calendar invitation and — when `auto_zoom` is on and the `ZOOM_*` secrets are provisioned — a Zoom meeting. Everything is config-gated: without the enabled marker or the provisioning secrets the endpoints answer 404/503 fail-closed. Setup, the API contract, and the pending/uncertain reconciliation runbook: `docs/SCHEDULING_SETUP.md`.
 
 ### Advisory Virginia ABC copy lint (`packs/hospitality`)
 

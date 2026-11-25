@@ -7,6 +7,9 @@
 //! - `POST /api/newsletter` -> D1 `newsletter_subscribers` (explicit CAN-SPAM consent)
 //! - `GET /api/events` -> D1 public events calendar listing (config-gated marker asset)
 //! - `GET /api/events/:id/ics` -> single-event RFC 5545 calendar download
+//! - `GET /api/bookings/slots` and `POST /api/bookings` -> call booking
+//!   (`scheduling.bookings`; config-gated marker asset, D1 `bookings`,
+//!   Google Calendar free/busy + invitations, optional Zoom; issue #44)
 //! - `POST /api/checkout` -> sandbox-only hosted Stripe Checkout handoff (no storage)
 //! - Any other path -> static assets binding (`ASSETS`)
 //!
@@ -15,7 +18,11 @@
 //! scheduled handler runs the snapshot sync only when the deployment ships an
 //! enabled `events-config.json` with `google_calendar_sync`; cron triggers stay
 //! commented out in `wrangler.jsonc` by default.
+//! Booking modules (issue #44): `bookings` (slot math + Worker handlers) and
+//! `zoom` (config-gated meeting creation), both gated on the enabled
+//! `booking-config.json` marker and inert without the provisioning secrets.
 
+pub mod bookings;
 pub mod checkout;
 pub mod events;
 pub mod forms;
@@ -23,6 +30,7 @@ pub mod google_auth;
 pub mod newsletter;
 pub mod routes;
 pub mod timestamp;
+pub mod zoom;
 
 #[cfg(target_arch = "wasm32")]
 mod google_sync;
@@ -120,6 +128,8 @@ mod wasm {
             Route::Newsletter => newsletter(&mut req, env, ctx).await,
             Route::Events => crate::events::wasm::handle(&req, env, None).await,
             Route::EventIcs(id) => crate::events::wasm::handle(&req, env, Some(&id)).await,
+            Route::BookingSlots => crate::bookings::wasm::handle(&mut req, env, true).await,
+            Route::Bookings => crate::bookings::wasm::handle(&mut req, env, false).await,
             Route::Checkout => demo_checkout(&mut req, env).await,
             Route::MethodNotAllowed(allow) => {
                 let resp = json_response(405, &error_body("method_not_allowed"))?;

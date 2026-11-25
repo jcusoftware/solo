@@ -206,6 +206,7 @@ fn build_emits_events_assets_only_when_enabled() {
             google_calendar_id: None,
             timezone: "America/New_York".to_string(),
         }),
+        bookings: None,
     });
     let slug = venue.slug.clone();
     fs::write(
