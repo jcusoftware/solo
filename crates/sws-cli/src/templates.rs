@@ -334,6 +334,21 @@ pub fn starter_site_document() -> SiteDocument {
                                         ],
                                     ),
                                     el(
+                                        None,
+                                        "noscript",
+                                        [],
+                                        &[],
+                                        vec![el(
+                                            None,
+                                            "p",
+                                            [],
+                                            &[],
+                                            vec![text(
+                                                "This form requires JavaScript for spam verification. Without it, submission is disabled.",
+                                            )],
+                                        )],
+                                    ),
+                                    el(
                                         Some("contact-turnstile"),
                                         "div",
                                         [
