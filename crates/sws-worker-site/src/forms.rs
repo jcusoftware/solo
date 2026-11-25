@@ -264,23 +264,69 @@ pub fn default_form_schemas() -> BTreeMap<String, FormSchema> {
     schemas
 }
 
+/// Severity of a form-schema loading diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormSchemaDiagnosticLevel {
+    /// Load-blocking problem (parse failure): the override was discarded.
+    Error,
+    /// A single malformed entry was skipped; the rest of the override applied.
+    Warning,
+}
+
+/// Diagnostic emitted while loading `FORM_SCHEMAS_JSON`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormSchemaDiagnostic {
+    pub level: FormSchemaDiagnosticLevel,
+    pub code: &'static str,
+    pub message: String,
+}
+
 /// Parse an optional `FORM_SCHEMAS_JSON` override and merge it over `default_form_schemas()`.
-/// Invalid JSON or invalid form IDs are ignored safely without panicking.
-pub fn load_form_schemas(json_override: Option<&str>) -> BTreeMap<String, FormSchema> {
+///
+/// Returns the merged schemas plus a deterministic diagnostics list describing
+/// any parse failure (override discarded, defaults used) or skipped entry so
+/// callers can log it instead of failing silently.
+pub fn load_form_schemas(
+    json_override: Option<&str>,
+) -> (BTreeMap<String, FormSchema>, Vec<FormSchemaDiagnostic>) {
     let mut schemas = default_form_schemas();
+    let mut diagnostics = Vec::new();
     let Some(raw) = json_override.map(str::trim).filter(|s| !s.is_empty()) else {
-        return schemas;
+        return (schemas, diagnostics);
     };
-    let Ok(parsed) = serde_json::from_str::<BTreeMap<String, FormSchema>>(raw) else {
-        return schemas;
+    let parsed = match serde_json::from_str::<BTreeMap<String, FormSchema>>(raw) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            diagnostics.push(FormSchemaDiagnostic {
+                level: FormSchemaDiagnosticLevel::Error,
+                code: "form_schemas_parse_failed",
+                message: format!("FORM_SCHEMAS_JSON invalid: {e}; falling back to default schemas"),
+            });
+            return (schemas, diagnostics);
+        }
     };
     for (key, mut schema) in parsed {
         if !is_valid_form_id(&key) {
+            diagnostics.push(FormSchemaDiagnostic {
+                level: FormSchemaDiagnosticLevel::Warning,
+                code: "form_schema_invalid_id",
+                message: format!(
+                    "FORM_SCHEMAS_JSON entry '{key}' skipped: not a valid form id"
+                ),
+            });
             continue;
         }
         if schema.id.is_empty() {
             schema.id = key.clone();
         } else if schema.id != key {
+            diagnostics.push(FormSchemaDiagnostic {
+                level: FormSchemaDiagnosticLevel::Warning,
+                code: "form_schema_id_mismatch",
+                message: format!(
+                    "FORM_SCHEMAS_JSON entry '{key}' skipped: schema id '{}' does not match its map key",
+                    schema.id
+                ),
+            });
             continue;
         }
         if schema.turnstile_action.is_empty() {
@@ -288,7 +334,7 @@ pub fn load_form_schemas(json_override: Option<&str>) -> BTreeMap<String, FormSc
         }
         schemas.insert(key, schema);
     }
-    schemas
+    (schemas, diagnostics)
 }
 
 #[cfg(test)]
@@ -396,7 +442,7 @@ mod tests {
 
     #[test]
     fn inquire_valid_normalizes() {
-        let schemas = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
+        let (schemas, _) = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
         let inquire = &schemas["inquire"];
 
         let mut f = good_inquire();
@@ -414,7 +460,7 @@ mod tests {
 
     #[test]
     fn inquire_minimal_contact() {
-        let schemas = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
+        let (schemas, _) = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
         let inquire = &schemas["inquire"];
 
         let f = fields(&[
@@ -433,7 +479,7 @@ mod tests {
 
     #[test]
     fn inquire_rejections_all_rules() {
-        let schemas = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
+        let (schemas, _) = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
         let inquire = &schemas["inquire"];
 
         let cases: &[(&str, &str, &str)] = &[
@@ -503,7 +549,7 @@ mod tests {
 
     #[test]
     fn honeypot_short_circuits() {
-        let schemas = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
+        let (schemas, _) = load_form_schemas(Some(HOSPITALITY_INQUIRE_JSON));
         let mut f = good_inquire();
         f.insert(HONEYPOT_FIELD.into(), "https://spam.example".into());
         assert_eq!(
@@ -521,12 +567,39 @@ mod tests {
 
     #[test]
     fn load_form_schemas_merges_and_falls_back_safely() {
-        // None / blank / invalid JSON -> defaults only
+        // None / blank / invalid JSON -> defaults only, no diagnostics
         let base = default_form_schemas();
-        assert_eq!(load_form_schemas(None), base);
-        assert_eq!(load_form_schemas(Some("   ")), base);
-        assert_eq!(load_form_schemas(Some("{not valid json")), base);
-        assert_eq!(load_form_schemas(Some("[1, 2, 3]")), base);
+        for input in [None, Some("   ")] {
+            let (schemas, diagnostics) = load_form_schemas(input);
+            assert_eq!(schemas, base);
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        }
+        for input in ["{not valid json", "[1, 2, 3]"] {
+            let (schemas, diagnostics) = load_form_schemas(Some(input));
+            assert_eq!(schemas, base);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == "form_schemas_parse_failed"
+                        && d.level == FormSchemaDiagnosticLevel::Error),
+                "{input}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics[0].message.contains("FORM_SCHEMAS_JSON invalid")
+                    && diagnostics[0].message.contains("falling back to default schemas"),
+                "{diagnostics:?}"
+            );
+        }
+
+        // Garbage input logs a diagnostic and falls back to defaults
+        let (fallback, diagnostics) = load_form_schemas(Some("]]>not-json<[["));
+        assert_eq!(fallback, base);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "form_schemas_parse_failed");
+        assert!(
+            diagnostics[0].message.contains("FORM_SCHEMAS_JSON invalid"),
+            "{diagnostics:?}"
+        );
 
         // Valid custom schema + override contact + invalid form_id ignored
         let json = r#"{
@@ -549,7 +622,7 @@ mod tests {
             }
         }"#;
 
-        let loaded = load_form_schemas(Some(json));
+        let (loaded, loaded_diags) = load_form_schemas(Some(json));
         assert!(!loaded.contains_key("inquire"));
         assert!(loaded.contains_key("lead"));
         assert!(!loaded.contains_key("INVALID_ID"));
@@ -558,6 +631,14 @@ mod tests {
         assert_eq!(loaded["contact"].id, "contact");
         assert_eq!(loaded["contact"].turnstile_action, "contact");
         assert_eq!(loaded["contact"].fields.len(), 1);
+        // Invalid form id entry is warned, not silently dropped
+        assert!(
+            loaded_diags
+                .iter()
+                .any(|d| d.code == "form_schema_invalid_id"
+                    && d.message.contains("'INVALID_ID'")),
+            "{loaded_diags:?}"
+        );
 
         // Validate against custom schema
         let lead_fields = fields(&[
@@ -579,7 +660,16 @@ mod tests {
                 "fields": []
             }
         }"#;
-        let loaded_mismatch = load_form_schemas(Some(mismatched));
+        let (loaded_mismatch, mismatch_diags) = load_form_schemas(Some(mismatched));
         assert!(!loaded_mismatch.contains_key("feedback"));
+        assert!(
+            mismatch_diags
+                .iter()
+                .any(|d| d.code == "form_schema_id_mismatch"
+                    && d.level == FormSchemaDiagnosticLevel::Warning
+                    && d.message.contains("'feedback'")
+                    && d.message.contains("other_form")),
+            "{mismatch_diags:?}"
+        );
     }
 }

@@ -29,7 +29,8 @@ mod wasm {
     };
 
     use crate::forms::{
-        FormSchema, ValidatedSubmission, load_form_schemas, validate_submission,
+        FormSchema, FormSchemaDiagnosticLevel, ValidatedSubmission, load_form_schemas,
+        validate_submission,
     };
     use crate::routes::{Route, health_body, is_safe_webhook_url, route};
 
@@ -84,7 +85,13 @@ mod wasm {
     }
 
     fn resolve_schema(env: &Env, form_id: &str) -> Option<FormSchema> {
-        let mut schemas = load_form_schemas(var(env, "FORM_SCHEMAS_JSON").as_deref());
+        let (mut schemas, diagnostics) = load_form_schemas(var(env, "FORM_SCHEMAS_JSON").as_deref());
+        for diag in &diagnostics {
+            match diag.level {
+                FormSchemaDiagnosticLevel::Error => console_error!("{}", diag.message),
+                FormSchemaDiagnosticLevel::Warning => console_warn!("{}", diag.message),
+            }
+        }
         schemas.remove(form_id)
     }
 

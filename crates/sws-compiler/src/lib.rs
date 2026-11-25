@@ -161,6 +161,10 @@ fn compile_site_internal(
     })?;
 
     let mut files = BTreeMap::new();
+    // Tracks lowercased output paths so case-insensitive filesystems
+    // (macOS APFS, Windows NTFS) cannot silently overwrite one page with
+    // another (e.g. `About/index.html` vs `about/index.html`).
+    let mut lowercased_paths: BTreeMap<String, String> = BTreeMap::new();
     let mut needs_forms_js = doc.scripts.iter().any(|s| s.src == "/js/forms.js");
 
     for page in &doc.pages {
@@ -179,6 +183,19 @@ fn compile_site_internal(
             ));
             return Err(CompileError::new(msg, diagnostics));
         }
+        let lowercased = out_path.to_ascii_lowercase();
+        if let Some(previous) = lowercased_paths.get(&lowercased) {
+            let msg = format!(
+                "output paths '{previous}' and '{out_path}' differ only by case and collide on case-insensitive filesystems; rename one route or use a single casing"
+            );
+            diagnostics.push(CompilerDiagnostic::error(
+                "output_path_collision",
+                out_path.clone(),
+                msg.clone(),
+            ));
+            return Err(CompileError::new(msg, diagnostics));
+        }
+        lowercased_paths.insert(lowercased, out_path.clone());
         let html = render_page_html(doc, page);
         files.insert(out_path, html);
     }
@@ -1003,6 +1020,206 @@ mod tests {
         assert!(!rendered.contains("onclick"), "{rendered}");
         assert!(!rendered.contains("style="), "{rendered}");
         assert!(!rendered.contains("javascript:"), "{rendered}");
+    }
+
+    #[test]
+    fn rejects_case_insensitive_output_path_collision() {
+        // /about and /About produce distinct routes but collide on
+        // case-insensitive filesystems; the compile must fail cleanly.
+        let mut doc = base_doc();
+        doc.pages.push(valid_page(
+            "about",
+            "/about",
+            false,
+            vec![elem("h1", BTreeMap::new(), vec![text("About Lower")])],
+        ));
+        doc.pages.push(valid_page(
+            "about-upper",
+            "/About",
+            false,
+            vec![elem("h1", BTreeMap::new(), vec![text("About Upper")])],
+        ));
+        let err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        let collision = err
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "output_path_collision")
+            .expect("expected case-insensitive output_path_collision");
+        assert!(
+            collision.message.contains("about/index.html")
+                && collision.message.contains("About/index.html"),
+            "diagnostic must name both colliding paths: {}",
+            collision.message
+        );
+    }
+
+    #[test]
+    fn still_rejects_exact_duplicate_output_paths() {
+        // /404 and /404.html are distinct routes but both emit 404.html.
+        let mut doc = base_doc();
+        doc.pages.push(valid_page(
+            "nf-route",
+            "/404",
+            false,
+            vec![elem("h1", BTreeMap::new(), vec![text("NF Route")])],
+        ));
+        doc.pages.push(valid_page(
+            "alt-404",
+            "/404.html",
+            false,
+            vec![elem("h1", BTreeMap::new(), vec![text("Alt 404")])],
+        ));
+        let err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|d| d.code == "output_path_collision"
+                    && d.message.contains("duplicate compiled output path '404.html'")),
+            "{:?}",
+            err.diagnostics
+        );
+    }
+
+    #[test]
+    fn warns_on_unresolved_template_expression_and_drops_token() {
+        let mut doc = base_doc();
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+            && let Some(Node::Element { children, .. }) = children
+                .iter_mut()
+                .find(|n| matches!(n, Node::Element { tag, .. } if tag == "h1"))
+        {
+            children.push(text("Acme {{heelings}}"));
+        }
+
+        let compiled = compile_site(&doc, None, &CompileOptions::default())
+            .expect("unresolved expression is a warning, not an error");
+        let warning = compiled
+            .diagnostics
+            .iter()
+            .find(|d| d.level == DiagnosticLevel::Warning && d.code == "unresolved_expression")
+            .expect("expected unresolved_expression warning");
+        assert!(warning.message.contains("heelings"), "{:?}", warning.message);
+        assert!(warning.path.starts_with("pages["), "{:?}", warning.path);
+        assert!(
+            !compiled.files["index.html"].contains("heelings"),
+            "unresolved token must still be dropped from output"
+        );
+        assert!(compiled.files["index.html"].contains("Acme"));
+    }
+
+    #[test]
+    fn warns_on_unresolvable_loop_collection() {
+        let mut doc = base_doc();
+        doc.data.remove("items");
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(Node::Loop {
+                item_var: "it".to_string(),
+                collection_expr: "missing_items".to_string(),
+                body: vec![elem("li", BTreeMap::new(), vec![text("{{it}}")])],
+            });
+        }
+
+        let compiled = compile_site(&doc, None, &CompileOptions::default())
+            .expect("unresolvable loop is a warning, not an error");
+        let warning = compiled
+            .diagnostics
+            .iter()
+            .find(
+                |d| d.level == DiagnosticLevel::Warning && d.code == "unresolvable_loop_collection",
+            )
+            .expect("expected unresolvable_loop_collection warning");
+        assert!(
+            warning.message.contains("missing_items"),
+            "{:?}",
+            warning.message
+        );
+        assert!(
+            !compiled.files["index.html"].contains("<li>"),
+            "loop with unresolvable collection renders nothing"
+        );
+    }
+
+    #[test]
+    fn warns_on_non_array_loop_collection() {
+        let mut doc = base_doc();
+        doc.data
+            .insert("not_an_array".to_string(), json!("just a string"));
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(Node::Loop {
+                item_var: "it".to_string(),
+                collection_expr: "not_an_array".to_string(),
+                body: vec![elem("li", BTreeMap::new(), vec![text("{{it}}")])],
+            });
+        }
+
+        let compiled = compile_site(&doc, None, &CompileOptions::default()).unwrap();
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "unresolvable_loop_collection"
+                    && d.message.contains("non-array")),
+            "{:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
+    fn requires_contrast_pair_coverage_for_text_and_background_tokens() {
+        // 1. text/bg tokens with no covering pair -> compile error.
+        let mut doc = base_doc();
+        doc.tokens.contrast_pairs.clear();
+        let err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|d| d.code == "contrast_pair_uncovered"),
+            "{:?}",
+            err.diagnostics
+        );
+
+        // 2. Restoring a covering pair compiles cleanly.
+        doc.tokens.contrast_pairs.push(ContrastPair {
+            foreground: "text".to_string(),
+            background: "bg".to_string(),
+            min_ratio: 4.5,
+            usage: Some("body text".to_string()),
+        });
+        assert!(compile_site(&doc, None, &CompileOptions::default()).is_ok());
+
+        // 3. Coverage is also required for the `foreground`/`background` spelling.
+        let mut fg_bg_doc = base_doc();
+        fg_bg_doc.tokens.colors.remove("bg");
+        fg_bg_doc.tokens.colors.remove("text");
+        fg_bg_doc
+            .tokens
+            .colors
+            .insert("background".to_string(), "#FFFFFF".to_string());
+        fg_bg_doc
+            .tokens
+            .colors
+            .insert("foreground".to_string(), "#333333".to_string());
+        fg_bg_doc.styles = Vec::new();
+        let err = compile_site(&fg_bg_doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|d| d.code == "contrast_pair_uncovered"
+                    && d.message.contains("'foreground'/'background'")),
+            "{:?}",
+            err.diagnostics
+        );
     }
 
     #[test]
