@@ -2,6 +2,7 @@
 // (crates/sws-security/src/headers.rs) must emit the identical header set.
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { parseHeadersFile } from "../core/tools/check-headers.mjs";
 
 function contractHeaders() {
@@ -383,5 +384,79 @@ test.describe("Turnstile failure paths (issue #6)", () => {
       expect(body.error).toBe("turnstile_unconfigured");
     }
     expectSecurityHeaders(resp, "POST /api/newsletter invalid turnstile token");
+  });
+});
+
+// Isolated block for issue #22 (CAN-SPAM re-subscribe prevention): seeds an
+// `unsubscribed` row directly into local D1, re-subscribes for that email, and
+// verifies both the generic 201 (no enumeration) and that the stored status and
+// original consent timestamp survive untouched.
+//
+// Seeding mechanics: shells out to the repo's local `node_modules/.bin/wrangler`
+// (`d1 execute <DB_NAME> --local --json --command ...`, DB name from
+// wrangler.jsonc, schema from crates/sws-worker-site/migrations/0001_init.sql).
+// Local state lives in `.wrangler/state`, which `wrangler dev` — started by the
+// Playwright webServer (playwright.config.mjs, after e2e-setup.mjs has applied
+// migrations) — reads from the same directory, so the seeded row is visible to
+// the running server and no network or Cloudflare account is involved.
+test.describe("Newsletter unsubscribed protection (issue #22)", () => {
+  const seedOrQuery = (sql) => {
+    const out = execFileSync(
+      "node_modules/.bin/wrangler",
+      ["d1", "execute", "sws-demo", "--local", "--json", "--command", sql],
+      { encoding: "utf8", cwd: new URL("..", import.meta.url).pathname },
+    );
+    const start = out.indexOf("[");
+    const end = out.lastIndexOf("]");
+    if (start < 0 || end < 0) {
+      throw new Error(`wrangler d1 execute did not emit JSON: ${out.slice(0, 200)}`);
+    }
+    const statements = JSON.parse(out.slice(start, end + 1));
+    return statements[0]?.results ?? [];
+  };
+  const seedUnsubscribed = (email) => {
+    seedOrQuery(
+      `INSERT OR REPLACE INTO newsletter_subscribers (email, status, consent_timestamp, source_route, consent_text) VALUES ('${email}', 'unsubscribed', strftime('%Y-%m-%dT%H:%M:%SZ','now'), '/issue-22-seed', 'Issue #22 seeded consent record.')`,
+    );
+    const [seeded] = seedOrQuery(
+      `SELECT status, consent_timestamp, source_route, consent_text FROM newsletter_subscribers WHERE email = '${email}'`,
+    );
+    expect(seeded, "seeded unsubscribed row must exist").toBeTruthy();
+    expect(seeded.status).toBe("unsubscribed");
+    return seeded;
+  };
+
+  test("re-subscribing cannot overwrite an unsubscribed row's status or original consent timestamp", async ({ request }) => {
+    const email = `e2e-issue22-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const seeded = seedUnsubscribed(email);
+
+    const resp = await request.post("/api/newsletter", {
+      data: {
+        email,
+        consent: "yes",
+        consent_text: "Attempted re-subscribe consent wording.",
+        source_route: "/menu",
+        "cf-turnstile-response": "XXXX.DUMMY.TOKEN.XXXX",
+      },
+    });
+    // Same generic 201 as any other success: no enumeration of prior status.
+    expect(resp.status()).toBe(201);
+    expect(resp.headers()["cache-control"]).toContain("no-store");
+    expectSecurityHeaders(resp, "POST /api/newsletter re-subscribe");
+    const body = await resp.json();
+    expect(body.ok).toBe(true);
+    expect(body.status).toBe("received");
+    expect(typeof body.consent_timestamp).toBe("string");
+    expect(JSON.stringify(body).toLowerCase()).not.toContain("unsubscribed");
+
+    // The seeded row survives the re-subscribe attempt byte-for-byte.
+    const [after] = seedOrQuery(
+      `SELECT status, consent_timestamp, source_route, consent_text FROM newsletter_subscribers WHERE email = '${email}'`,
+    );
+    expect(after).toBeTruthy();
+    expect(after.status).toBe("unsubscribed");
+    expect(after.consent_timestamp).toBe(seeded.consent_timestamp);
+    expect(after.source_route).toBe("/issue-22-seed");
+    expect(after.consent_text).toBe("Issue #22 seeded consent record.");
   });
 });
