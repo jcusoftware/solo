@@ -32,6 +32,9 @@
 			"database_id": "00000000-0000-0000-0000-000000000000"
 		}
 	],
+	// Optional events calendar (issue #43): only after provisioning the GOOGLE_*
+	// secrets, applying the D1 migrations, and operator approval, uncomment:
+	// "triggers": { "crons": ["*/30 * * * *"] },
 	"vars": {
 		"BUILD_VERSION": "0.1.0-dev",
 		// Cloudflare Turnstile always-pass TEST site key. Replace per tenant in production.

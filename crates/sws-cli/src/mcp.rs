@@ -10,7 +10,7 @@ use sws_compiler::{DiagnosticLevel, compile_from_json};
 use sws_ir::{IrPatch, apply_patch};
 
 use crate::commands::{
-    default_compile_options, default_registry, parse_value_to_ir, run_checks_on_value,
+    compile_options_with_pack_extras, default_registry, parse_value_to_ir, run_checks_on_value,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -460,7 +460,7 @@ fn tool_compile_preview(args: &Value) -> Result<String, String> {
     };
 
     let registry = default_registry();
-    let options = default_compile_options();
+    let options = compile_options_with_pack_extras(&input_str)?;
     let compiled = compile_from_json(&input_str, &registry, &options)
         .map_err(|e| format!("compilation failed: {e}"))?;
 

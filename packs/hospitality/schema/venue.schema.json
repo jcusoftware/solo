@@ -241,6 +241,25 @@
         "privacy_note": { "type": "string" }
       }
     },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "source", "google_calendar_id", "timezone"],
+          "if": { "properties": { "enabled": { "const": true }, "source": { "const": "google_calendar_sync" } } },
+          "then": { "properties": { "google_calendar_id": { "type": "string", "pattern": "\\S" } } },
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "source": { "enum": ["d1_or_cms", "google_calendar_sync"] },
+            "google_calendar_id": { "type": ["string", "null"], "minLength": 1 },
+            "timezone": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
     "happy_hour": {
       "type": "object",
       "required": ["days", "start", "end", "offers"],

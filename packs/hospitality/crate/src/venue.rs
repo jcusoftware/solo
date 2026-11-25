@@ -60,6 +60,8 @@ pub struct VenueManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub newsletter: Option<NewsletterConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling: Option<SchedulingConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub happy_hour: Option<HappyHour>,
     pub menu: Menu,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,6 +207,38 @@ pub struct NewsletterConfig {
     pub consent_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privacy_note: Option<String>,
+}
+
+/// Event source for the public events calendar (issue #43 port).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventsSource {
+    /// Manual rows / D1-managed records only.
+    D1OrCms,
+    /// Scheduled Google Calendar snapshot import (config-gated; secrets are
+    /// provisioned in the Worker environment only, never in the manifest).
+    GoogleCalendarSync,
+}
+
+/// Public events calendar configuration (`scheduling.events`).
+///
+/// `google_calendar_id` is declarative only: the Worker reads the actual
+/// calendar from its `GOOGLE_SYNC_CALENDAR_ID` secret at sync time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventsConfig {
+    pub enabled: bool,
+    pub source: EventsSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_calendar_id: Option<String>,
+    pub timezone: String,
+}
+
+/// Scheduling configuration. Native call booking (wave B, issue #44) adds its
+/// own section under `scheduling` on top of `events`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SchedulingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<EventsConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -621,7 +655,47 @@ pub fn validate_venue(v: &VenueManifest) -> Vec<String> {
         );
     }
 
+    if let Some(events) = v.scheduling.as_ref().and_then(|s| s.events.as_ref()) {
+        validate_events_config(events, &mut errs);
+    }
+
     errs
+}
+
+/// Validates `scheduling.events`. The time zone only gets a structural check
+/// here (IANA names are resolved client-side by `Intl.DateTimeFormat`); the
+/// `google_calendar_id` is declarative and never shipped to the Worker.
+fn validate_events_config(events: &EventsConfig, errs: &mut Vec<String>) {
+    let tz = events.timezone.trim();
+    let tz_ok = !tz.is_empty()
+        && tz.len() <= 64
+        && tz
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'+' | b'.'))
+        && !tz.starts_with('/')
+        && !tz.ends_with('/')
+        && !tz.contains("//")
+        && !tz.contains("..");
+    if !tz_ok {
+        errs.push("scheduling.events.timezone must be a valid IANA time zone".into());
+    }
+
+    match events.google_calendar_id.as_deref() {
+        Some(id) => {
+            let id = id.trim();
+            if id.is_empty() || id.len() > 320 || id.bytes().any(|b| b.is_ascii_control()) {
+                errs.push("scheduling.events.google_calendar_id invalid".into());
+            }
+        }
+        None => {
+            if events.enabled && events.source == EventsSource::GoogleCalendarSync {
+                errs.push(
+                    "scheduling.events.google_calendar_id required for google_calendar_sync"
+                        .into(),
+                );
+            }
+        }
+    }
 }
 
 fn capitalize_ascii(s: &str) -> String {
@@ -832,6 +906,28 @@ mod tests {
         assert_eq!(v.slug, "shirlington-hearth-demo");
         assert_eq!(v.schema_version, 1);
         assert!(validate_venue(&v).is_empty());
+    }
+
+    #[test]
+    fn scheduling_events_validation() {
+        let v = demo_venue();
+        assert!(validate_venue(&v).is_empty());
+
+        let mut v = demo_venue();
+        v.scheduling.as_mut().unwrap().events.as_mut().unwrap().source = EventsSource::GoogleCalendarSync;
+        let errs = validate_venue(&v);
+        assert!(errs.iter().any(|e| e.contains("google_calendar_id")), "{errs:?}");
+
+        let mut v = demo_venue();
+        v.scheduling.as_mut().unwrap().events.as_mut().unwrap().google_calendar_id =
+            Some("calendar@example.test".into());
+        assert!(validate_venue(&v).is_empty());
+
+        let mut v = demo_venue();
+        v.scheduling.as_mut().unwrap().events.as_mut().unwrap().timezone =
+            "Not A Zone\n".into();
+        let errs = validate_venue(&v);
+        assert!(errs.iter().any(|e| e.contains("timezone")), "{errs:?}");
     }
 
     #[test]

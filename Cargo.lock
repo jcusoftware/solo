@@ -637,9 +637,11 @@ name = "sws-worker-site"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
+ "futures-util",
  "serde",
  "serde_json",
  "sws-security",
+ "web-sys",
  "worker",
 ]
 

@@ -2,5 +2,6 @@
 
 pub mod abc;
 pub mod compiler;
+pub mod events;
 pub mod inquiry;
 pub mod venue;

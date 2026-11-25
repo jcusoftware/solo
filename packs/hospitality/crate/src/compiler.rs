@@ -14,7 +14,7 @@ use sws_plugin::{
 };
 
 use crate::abc::{CITATIONS, lint_json_value};
-use crate::venue::{DAYS, VenueManifest, build_json_ld, validate_venue};
+use crate::venue::{DAYS, EventsConfig, VenueManifest, build_json_ld, validate_venue};
 
 const TURNSTILE_SRC: &str = "https://challenges.cloudflare.com/turnstile/v0/api.js";
 
@@ -237,6 +237,51 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| vec!["/".to_string()]);
 
+    let events = v.scheduling.as_ref().and_then(|s| s.events.as_ref());
+    let events_enabled = events.is_some_and(|e| e.enabled);
+    let mut sitemap_routes = sitemap_routes;
+    if events_enabled {
+        // Deterministic sitemap: /events is published by this build, not the
+        // manifest author's route list.
+        sitemap_routes.retain(|r| !matches!(r.as_str(), "/events" | "/events/" | "/events.html"));
+        sitemap_routes.push("/events".to_string());
+    }
+
+    let mut pages = vec![Page {
+        id: "index".to_string(),
+        route: RoutePattern::Static {
+            path: "/".to_string(),
+        },
+        title: index_title,
+        description: index_desc.clone(),
+        canonical: Some(format!("{base_url}/")),
+        noindex: false,
+        is_not_found: false,
+        json_ld: vec![JsonLdBlock {
+            id: Some("venue".to_string()),
+            data: build_json_ld(v),
+        }],
+        scripts: index_scripts,
+        body: build_index_body(v),
+    }];
+    if let Some(events) = events.filter(|e| e.enabled) {
+        pages.push(events_page(v, &base_url, events));
+    }
+    pages.push(Page {
+        id: "not-found".to_string(),
+        route: RoutePattern::Static {
+            path: "/404".to_string(),
+        },
+        title: format!("Page not found — {}", v.name),
+        description: Some(not_found_desc),
+        canonical: None,
+        noindex: true,
+        is_not_found: true,
+        json_ld: Vec::new(),
+        scripts: Vec::new(),
+        body: build_404_body(v),
+    });
+
     SiteDocument {
         schema_version: 1,
         slug: v.slug.clone(),
@@ -248,39 +293,7 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
         styles: build_style_rules(),
         components: BTreeMap::new(),
         forms: BTreeMap::new(),
-        pages: vec![
-            Page {
-                id: "index".to_string(),
-                route: RoutePattern::Static {
-                    path: "/".to_string(),
-                },
-                title: index_title,
-                description: index_desc.clone(),
-                canonical: Some(format!("{base_url}/")),
-                noindex: false,
-                is_not_found: false,
-                json_ld: vec![JsonLdBlock {
-                    id: Some("venue".to_string()),
-                    data: build_json_ld(v),
-                }],
-                scripts: index_scripts,
-                body: build_index_body(v),
-            },
-            Page {
-                id: "not-found".to_string(),
-                route: RoutePattern::Static {
-                    path: "/404".to_string(),
-                },
-                title: format!("Page not found — {}", v.name),
-                description: Some(not_found_desc),
-                canonical: None,
-                noindex: true,
-                is_not_found: true,
-                json_ld: Vec::new(),
-                scripts: Vec::new(),
-                body: build_404_body(v),
-            },
-        ],
+        pages,
         seo: SeoMeta {
             title_template: None,
             default_description: index_desc,
@@ -1001,6 +1014,14 @@ fn site_header_nodes(v: &VenueManifest) -> Vec<Node> {
             )],
         ));
     }
+    if events_enabled(v) {
+        nav_items.push(el(
+            "li",
+            &[],
+            &[],
+            vec![el("a", &[], &[("href", "/events")], vec![txt("Events")])],
+        ));
+    }
     nav_items.push(el(
         "li",
         &[],
@@ -1516,6 +1537,92 @@ fn site_footer_node(v: &VenueManifest, with_form: bool) -> Node {
     )
 }
 
+/// Whether the public events calendar is enabled (`scheduling.events.enabled`).
+fn events_enabled(v: &VenueManifest) -> bool {
+    v.scheduling
+        .as_ref()
+        .and_then(|s| s.events.as_ref())
+        .is_some_and(|e| e.enabled)
+}
+
+/// The public `/events` page: semantic markup hydrated by `js/events-client.js`
+/// from `GET /api/events`; without JavaScript it links to the JSON listing.
+/// Deterministic: times are formatted client-side in `scheduling.events.timezone`.
+fn events_page(v: &VenueManifest, base_url: &str, events: &EventsConfig) -> Page {
+    let timezone = events.timezone.trim();
+
+    let main_children = vec![
+        el("h1", &[], &[], vec![txt("Upcoming free events")]),
+        el(
+            "p",
+            &[],
+            &[],
+            vec![txt(format!(
+                "Times are shown in the venue’s local time ({timezone})."
+            ))],
+        ),
+        el(
+            "p",
+            &["form-status"],
+            &[("id", "event-status"), ("role", "status")],
+            Vec::new(),
+        ),
+        el(
+            "noscript",
+            &[],
+            &[],
+            vec![el(
+                "p",
+                &[],
+                &[],
+                vec![
+                    el(
+                        "a",
+                        &[],
+                        &[("href", "/api/events")],
+                        vec![txt("View the event data")],
+                    ),
+                    txt(" or contact the venue for upcoming dates."),
+                ],
+            )],
+        ),
+        el(
+            "ul",
+            &[],
+            &[("id", "event-list"), ("data-timezone", timezone)],
+            Vec::new(),
+        ),
+    ];
+
+    let mut nodes = site_header_nodes(v);
+    nodes.push(el(
+        "main",
+        &[],
+        &[("id", "main"), ("tabindex", "-1")],
+        vec![el("div", &["wrap", "intro"], &[], main_children)],
+    ));
+    nodes.push(site_footer_node(v, false));
+
+    Page {
+        id: "events".to_string(),
+        route: RoutePattern::Static {
+            path: "/events".to_string(),
+        },
+        title: format!("Events — {}", v.name),
+        description: Some("Upcoming free events.".to_string()),
+        canonical: Some(format!("{base_url}/events")),
+        noindex: false,
+        is_not_found: false,
+        json_ld: Vec::new(),
+        scripts: vec![ScriptRef {
+            src: "/js/events-client.js".to_string(),
+            async_load: false,
+            defer: true,
+        }],
+        body: nodes,
+    }
+}
+
 fn build_index_body(v: &VenueManifest) -> Vec<Node> {
     let mut nodes = site_header_nodes(v);
 
@@ -1651,7 +1758,8 @@ mod tests {
 
         let doc = plugin.transform_input(&val).unwrap();
         assert_eq!(doc.slug, "shirlington-hearth-demo");
-        assert_eq!(doc.pages.len(), 2);
+        // Demo ships events enabled (issue #43): index + events + 404.
+        assert_eq!(doc.pages.len(), 3);
         assert!(doc.metadata.contains_key("venue_manifest"));
         assert!(sws_ir::validate_ir(&doc).is_empty());
         assert!(plugin.lint(&doc, Some(&val)).is_empty());
@@ -1695,6 +1803,50 @@ mod tests {
         let err = HospitalityPlugin.transform_input(&val).unwrap_err();
         assert_eq!(err.plugin_id, "hospitality");
         assert!(err.message.contains("slug"));
+    }
+
+    #[test]
+    fn hospitality_plugin_emits_deterministic_events_page_and_assets() {
+        let val: Value = serde_json::from_str(DEMO_VENUE_JSON).unwrap();
+        let doc = HospitalityPlugin.transform_input(&val).unwrap();
+
+        let events = doc
+            .pages
+            .iter()
+            .find(|p| p.id == "events")
+            .expect("demo ships events enabled");
+        match &events.route {
+            RoutePattern::Static { path } => assert_eq!(path, "/events"),
+            other => panic!("unexpected events route: {other:?}"),
+        }
+        assert_eq!(events.title, "Events — Shirlington Hearth");
+        assert!(events.scripts.iter().any(|s| s.src == "/js/events-client.js"));
+        let body = format!("{:?}", events.body);
+        assert!(body.contains("Upcoming free events"), "{body}");
+        assert!(body.contains("event-status"), "{body}");
+        assert!(doc.seo.sitemap_routes.contains(&"/events".to_string()));
+
+        let venue: VenueManifest = serde_json::from_str(DEMO_VENUE_JSON).unwrap();
+        let extra = crate::events::events_extra_files(&venue).expect("events assets");
+        assert!(extra.contains_key("events-config.json"));
+        assert!(extra.contains_key("js/events-client.js"));
+
+        // Disabling events removes the page and both assets deterministically.
+        let mut disabled = venue.clone();
+        disabled
+            .scheduling
+            .as_mut()
+            .unwrap()
+            .events
+            .as_mut()
+            .unwrap()
+            .enabled = false;
+        assert!(crate::events::events_extra_files(&disabled).is_none());
+        let doc2 = HospitalityPlugin
+            .transform_input(&serde_json::to_value(&disabled).unwrap())
+            .unwrap();
+        assert_eq!(doc2.pages.len(), 2);
+        assert!(!doc2.seo.sitemap_routes.contains(&"/events".to_string()));
     }
 
     #[test]

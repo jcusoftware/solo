@@ -5,11 +5,25 @@
 //! - `POST /api/forms/<id>` -> schema-driven validation + D1 `form_submissions` + optional email/webhook
 //! - `POST /api/inquire` -> backward-compatible alias using the `"inquire"` form schema
 //! - `POST /api/newsletter` -> D1 `newsletter_subscribers` (explicit CAN-SPAM consent)
+//! - `GET /api/events` -> D1 public events calendar listing (config-gated marker asset)
+//! - `GET /api/events/:id/ics` -> single-event RFC 5545 calendar download
 //! - Any other path -> static assets binding (`ASSETS`)
+//!
+//! Events modules (issue #43): `events` (reader + ICS), `google_sync` /
+//! `google_auth` / `timestamp` (config-gated Google Calendar import). The
+//! scheduled handler runs the snapshot sync only when the deployment ships an
+//! enabled `events-config.json` with `google_calendar_sync`; cron triggers stay
+//! commented out in `wrangler.jsonc` by default.
 
+pub mod events;
 pub mod forms;
+pub mod google_auth;
 pub mod newsletter;
 pub mod routes;
+pub mod timestamp;
+
+#[cfg(target_arch = "wasm32")]
+mod google_sync;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
@@ -19,7 +33,7 @@ mod wasm {
     use worker::wasm_bindgen::JsValue;
     use worker::{
         AbortSignal, Context, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result,
-        console_error, console_log, console_warn, event, web_sys,
+        ScheduleContext, ScheduledEvent, console_error, console_log, console_warn, event, web_sys,
     };
 
     use sws_security::headers::{API_CACHE_CONTROL, with_security_headers};
@@ -43,6 +57,20 @@ mod wasm {
     fn start() {
         #[cfg(feature = "console_error_panic_hook")]
         console_error_panic_hook::set_once();
+    }
+
+    // Optional Google Calendar import (issue #43): only fires when the
+    // deployment ships an enabled `events-config.json` marker with
+    // `source: "google_calendar_sync"`. Enable `triggers.crons` in
+    // wrangler.jsonc (e.g. `*/30 * * * *`) only after provisioning the
+    // GOOGLE_* secrets. Failed runs retain the stored snapshot.
+    #[event(scheduled)]
+    async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+        if crate::google_sync::sync(&env, event.schedule()).await.is_err() {
+            console_error!("Google Calendar sync failed; existing snapshot retained");
+            // workers-rs 0.9 discards the scheduled handler's return value.
+            worker::wasm_bindgen::throw_str("Google Calendar sync failed");
+        }
     }
 
     #[event(fetch)]
@@ -75,6 +103,8 @@ mod wasm {
             Route::FormSubmit(form_id) => submit_form(&mut req, env, ctx, &form_id, false).await,
             Route::InquireCompat => submit_form(&mut req, env, ctx, "inquire", true).await,
             Route::Newsletter => newsletter(&mut req, env, ctx).await,
+            Route::Events => crate::events::wasm::handle(&req, env, None).await,
+            Route::EventIcs(id) => crate::events::wasm::handle(&req, env, Some(&id)).await,
             Route::MethodNotAllowed(allow) => {
                 let resp = json_response(405, &error_body("method_not_allowed"))?;
                 resp.headers().set("Allow", allow)?;

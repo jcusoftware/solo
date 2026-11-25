@@ -638,6 +638,7 @@ pub fn starter_hospitality_venue() -> VenueManifest {
                 "We never sell your email. Every message includes an unsubscribe link.".to_string(),
             ),
         }),
+        scheduling: None,
         happy_hour: Some(HappyHour {
             days: vec![
                 "monday".to_string(),

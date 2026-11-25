@@ -49,6 +49,38 @@ pub fn default_compile_options() -> CompileOptions {
     }
 }
 
+/// Merge pack-contributed extra files into compile options (feature wiring).
+///
+/// This is the allowed `crates/sws-cli` exception (AGENTS.md §1): hospitality
+/// venues with `scheduling.events.enabled` contribute the deterministic events
+/// assets (`events-config.json` marker + `js/events-client.js`); every other
+/// input compiles unchanged with an empty extra-file map.
+pub fn compile_options_with_pack_extras(input_json: &str) -> Result<CompileOptions, String> {
+    let mut options = default_compile_options();
+    let raw: Value = serde_json::from_str(input_json)
+        .map_err(|e| format!("invalid JSON input: {e}"))?;
+    options.extra_files = pack_extra_files(&raw)?;
+    Ok(options)
+}
+
+#[cfg(feature = "pack-hospitality")]
+fn pack_extra_files(input: &Value) -> Result<BTreeMap<String, String>, String> {
+    // Only hospitality manifests (venue shape) carry a scheduling section.
+    if !(input.get("menu").is_some() && input.get("nap").is_some() && input.get("hours").is_some())
+    {
+        return Ok(BTreeMap::new());
+    }
+    let venue: sws_pack_hospitality::venue::VenueManifest =
+        serde_json::from_value(input.clone())
+            .map_err(|e| format!("invalid venue manifest: {e}"))?;
+    Ok(sws_pack_hospitality::events::events_extra_files(&venue).unwrap_or_default())
+}
+
+#[cfg(not(feature = "pack-hospitality"))]
+fn pack_extra_files(_input: &Value) -> Result<BTreeMap<String, String>, String> {
+    Ok(BTreeMap::new())
+}
+
 /// Structured issue emitted by `solo check` and MCP `run_a11y_and_plugin_checks`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckIssue {
@@ -136,7 +168,7 @@ pub fn cmd_build(input: &Path, outdir: &Path, check: bool) -> Result<(), String>
         .map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
 
     let registry = default_registry();
-    let options = default_compile_options();
+    let options = compile_options_with_pack_extras(&input_json)?;
     let compiled = compile_from_json(&input_json, &registry, &options)
         .map_err(|e| format!("compilation failed for '{}': {e}", input.display()))?;
 
@@ -202,7 +234,8 @@ pub fn cmd_export(input: &Path, outdir: &Path) -> Result<(), String> {
 
     let registry = default_registry();
     let (doc, _kind) = parse_value_to_ir(&raw, &registry)?;
-    let options = default_compile_options();
+    let mut options = default_compile_options();
+    options.extra_files = pack_extra_files(&raw)?;
     let compiled = compile_site_with_raw(&doc, Some(&raw), Some(&registry), &options)
         .map_err(|e| format!("compilation failed for '{}': {e}", input.display()))?;
 
