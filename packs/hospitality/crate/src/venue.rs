@@ -254,12 +254,31 @@ pub struct EventsConfig {
     pub timezone: String,
 }
 
-/// Scheduling configuration. Native call booking (wave B, issue #44) adds its
-/// own section under `scheduling` on top of `events`.
+/// Scheduling configuration. Native call booking (issue #44) adds its own
+/// section under `scheduling` on top of `events`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SchedulingConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<EventsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bookings: Option<BookingsConfig>,
+}
+
+/// Call booking configuration (`scheduling.bookings`).
+///
+/// Slots are derived from `working_hours` in the venue's IANA zone
+/// (`scheduling.events.timezone`, which bookings require even when public
+/// events stay disabled). `google_workspace_calendar_id` is declarative only:
+/// the Worker reads the actual calendar from its
+/// `GOOGLE_BOOKING_CALENDAR_ID` secret at request time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookingsConfig {
+    pub enabled: bool,
+    pub google_workspace_calendar_id: String,
+    pub slot_duration_minutes: u16,
+    pub buffer_minutes: u16,
+    pub working_hours: BTreeMap<String, [String; 2]>,
+    pub auto_zoom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -680,6 +699,10 @@ pub fn validate_venue(v: &VenueManifest) -> Vec<String> {
         validate_events_config(events, &mut errs);
     }
 
+    if let Some(bookings) = v.scheduling.as_ref().and_then(|s| s.bookings.as_ref()) {
+        validate_bookings_config(bookings, v, &mut errs);
+    }
+
     if let Some(c) = &v.checkout {
         validate_checkout_config(c, v, &mut errs);
     }
@@ -758,6 +781,77 @@ fn validate_events_config(events: &EventsConfig, errs: &mut Vec<String>) {
                 );
             }
         }
+    }
+}
+
+/// Weekday keys for `scheduling.bookings.working_hours` (slots derive from
+/// venue-local wall time, so both the key spelling and the ordered HH:MM
+/// range are validated here).
+const WEEKDAY_KEYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+/// Validates `scheduling.bookings`. Booking is independent of public events
+/// but shares the venue time zone: `scheduling.events.timezone` must be
+/// present (events may stay disabled). The calendar ID only gets a structural
+/// check here (it is a Workspace mailbox in production; the Worker reads the
+/// real value from its `GOOGLE_BOOKING_CALENDAR_ID` secret at request time).
+fn validate_bookings_config(bookings: &BookingsConfig, v: &VenueManifest, errs: &mut Vec<String>) {
+    let mut need = |cond: bool, msg: String| {
+        if !cond {
+            errs.push(msg);
+        }
+    };
+    let has_timezone = v
+        .scheduling
+        .as_ref()
+        .and_then(|s| s.events.as_ref())
+        .map(|e| !e.timezone.trim().is_empty())
+        .unwrap_or(false);
+    need(
+        has_timezone,
+        "bookings require scheduling.events.timezone (events may stay disabled)".into(),
+    );
+
+    let calendar = bookings.google_workspace_calendar_id.trim();
+    need(
+        !calendar.is_empty()
+            && calendar.len() <= 254
+            && !calendar.bytes().any(|b| b.is_ascii_control())
+            && sws_security::validate::is_valid_email(calendar),
+        "bookings require a Workspace mailbox calendar ID".into(),
+    );
+    need(
+        (5..=240).contains(&bookings.slot_duration_minutes),
+        "booking slot duration must be 5-240 minutes".into(),
+    );
+    need(
+        bookings.buffer_minutes <= 1440,
+        "booking buffer must be 0-1440 minutes".into(),
+    );
+    need(
+        !bookings.working_hours.is_empty(),
+        "booking working hours must be a non-empty object".into(),
+    );
+    for (day, range) in &bookings.working_hours {
+        need(
+            WEEKDAY_KEYS.contains(&day.as_str()),
+            format!("booking working_hours key must be mon|tue|wed|thu|fri|sat|sun: {day}"),
+        );
+        let [open, close] = range;
+        need(
+            is_hhmm(open) && is_hhmm(close) && open < close,
+            format!("booking working hours must be ordered same-day HH:MM pairs: {day}"),
+        );
+    }
+    if bookings.enabled {
+        let has_key = v
+            .integrations
+            .turnstile
+            .as_ref()
+            .is_some_and(|t| !t.site_key.trim().is_empty());
+        need(
+            has_key,
+            "integrations.turnstile.site_key required for booking".into(),
+        );
     }
 }
 
@@ -1002,6 +1096,71 @@ mod tests {
             "Not A Zone\n".into();
         let errs = validate_venue(&v);
         assert!(errs.iter().any(|e| e.contains("timezone")), "{errs:?}");
+    }
+
+    #[test]
+    fn scheduling_bookings_validation() {
+        // The demo manifest itself carries the bookings config; replacing it
+        // must still validate cleanly.
+        let mut v = demo_venue();
+        v.scheduling.as_mut().unwrap().bookings = Some(BookingsConfig {
+            enabled: false,
+            google_workspace_calendar_id: "calls@shirlingtonhearth.example".into(),
+            slot_duration_minutes: 30,
+            buffer_minutes: 15,
+            working_hours: BTreeMap::from([("mon".into(), ["09:00".into(), "17:00".into()])]),
+            auto_zoom: true,
+        });
+        assert!(validate_venue(&v).is_empty());
+
+        // Disabling events must not break booking, but the venue timezone is shared.
+        v.scheduling.as_mut().unwrap().events = None;
+        let errs = validate_venue(&v);
+        assert!(errs.iter().any(|e| e.contains("timezone")), "{errs:?}");
+
+        let mut v = demo_venue();
+        v.scheduling.as_mut().unwrap().bookings = Some(BookingsConfig {
+            enabled: false,
+            google_workspace_calendar_id: "calls@shirlingtonhearth.example".into(),
+            slot_duration_minutes: 30,
+            buffer_minutes: 15,
+            working_hours: BTreeMap::new(),
+            auto_zoom: false,
+        });
+        let errs = validate_venue(&v);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("working hours must be a non-empty object")),
+            "{errs:?}"
+        );
+
+        let invalid = BookingsConfig {
+            enabled: true,
+            google_workspace_calendar_id: "not-a-mailbox".into(),
+            slot_duration_minutes: 4,
+            buffer_minutes: 1441,
+            working_hours: BTreeMap::from([("monday".into(), ["17:00".into(), "09:00".into()])]),
+            auto_zoom: false,
+        };
+        let mut v = demo_venue();
+        v.scheduling.as_mut().unwrap().bookings = Some(invalid);
+        let errs = validate_venue(&v);
+        for fragment in [
+            "Workspace mailbox",
+            "slot duration",
+            "booking buffer",
+            "working_hours key",
+            "ordered same-day HH:MM",
+        ] {
+            assert!(errs.iter().any(|e| e.contains(fragment)), "{errs:?}");
+        }
+
+        // The demo carries the always-pass TEST site key, so an enabled booking
+        // config alone satisfies the Turnstile requirement; a missing key fails.
+        let mut v = demo_venue();
+        v.integrations.turnstile.as_mut().unwrap().site_key.clear();
+        let errs = validate_venue(&v);
+        assert!(errs.iter().any(|e| e.contains("turnstile")), "{errs:?}");
     }
 
     #[test]

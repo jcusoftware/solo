@@ -35,6 +35,11 @@
 	// Optional events calendar (issue #43): only after provisioning the GOOGLE_*
 	// secrets, applying the D1 migrations, and operator approval, uncomment:
 	// "triggers": { "crons": ["*/30 * * * *"] },
+	// Per-tenant/client-IP Workers rate limiter for GET /api/bookings/slots
+	// (issue #44): 20 requests per minute at each Cloudflare location. Requires
+	// the binding on every deployed environment; the edge-rate-limit caveat in
+	// docs/SCHEDULING_SETUP.md still applies.
+	"ratelimits": [{ "name": "BOOKING_SLOTS_LIMIT", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }],
 	"vars": {
 		"BUILD_VERSION": "0.1.0-dev",
 		// Cloudflare Turnstile always-pass TEST site key. Replace per tenant in production.
@@ -62,6 +67,12 @@
 	//                         (including the subscription) to sandbox Price ids.
 	//   STRIPE_DEMO_SECRET_KEY secret: sandbox-only key (sk_test_/rk_test_ prefixes
 	//                         only). The route is sandbox/test-mode by construction.
+	// Call booking (issue #44; see docs/SCHEDULING_SETUP.md) — all optional;
+	// /api/bookings is inert (404) without an enabled booking-config.json asset
+	// and answers 503 fail-closed when the secrets below are missing:
+	//   GOOGLE_BOOKING_CALENDAR_ID  primary calendar ID of the Workspace user mailbox
+	//   ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET, ZOOM_HOST_USER_ID
+	//                         optional auto-Zoom meeting creation (auto_zoom)
 	// Local-only var (in .dev.vars): DEV_MODE="true" skips Turnstile when no secret is set
 	// and lets the TEST dummy secret pass for local development. Never set it in production.
 	"observability": {

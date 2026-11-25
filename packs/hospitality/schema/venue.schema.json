@@ -267,6 +267,26 @@
             "google_calendar_id": { "type": ["string", "null"], "minLength": 1 },
             "timezone": { "type": "string", "minLength": 1 }
           }
+        },
+        "bookings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "google_workspace_calendar_id", "slot_duration_minutes", "buffer_minutes", "working_hours", "auto_zoom"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "google_workspace_calendar_id": { "type": "string", "minLength": 3, "maxLength": 254, "format": "email" },
+            "slot_duration_minutes": { "type": "integer", "minimum": 5, "maximum": 240 },
+            "buffer_minutes": { "type": "integer", "minimum": 0, "maximum": 1440 },
+            "working_hours": {
+              "type": "object", "minProperties": 1, "additionalProperties": false,
+              "patternProperties": {
+                "^(mon|tue|wed|thu|fri|sat|sun)$": {
+                  "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/hhmm" }
+                }
+              }
+            },
+            "auto_zoom": { "type": "boolean" }
+          }
         }
       }
     },

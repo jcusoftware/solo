@@ -13,6 +13,10 @@ pub enum Route {
     Events,
     /// `GET /api/events/:id/ics` — single-event calendar download.
     EventIcs(String),
+    /// `GET /api/bookings/slots` — bookable call slots (issue #44).
+    BookingSlots,
+    /// `POST /api/bookings` — call booking submission (issue #44).
+    Bookings,
     /// Sandbox demo checkout: validates the cart, verifies Turnstile, then
     /// redirects (303) to a hosted Stripe Checkout session. No storage.
     Checkout,
@@ -182,6 +186,14 @@ pub fn route(method: &str, path: &str) -> Route {
                 Route::NotFound
             }
         }
+        "/api/bookings/slots" => match m.as_str() {
+            "GET" => Route::BookingSlots,
+            _ => Route::MethodNotAllowed("GET"),
+        },
+        "/api/bookings" => match m.as_str() {
+            "POST" => Route::Bookings,
+            _ => Route::MethodNotAllowed("POST"),
+        },
         "/api/checkout" => match m.as_str() {
             "POST" => Route::Checkout,
             _ => Route::MethodNotAllowed("POST"),
@@ -299,6 +311,21 @@ mod tests {
             route("GET", "/api/checkout"),
             Route::MethodNotAllowed("POST")
         );
+
+        assert_eq!(route("GET", "/api/bookings/slots"), Route::BookingSlots);
+        assert_eq!(route("get", "/api/bookings/slots"), Route::BookingSlots);
+        assert_eq!(
+            route("POST", "/api/bookings/slots"),
+            Route::MethodNotAllowed("GET")
+        );
+        assert_eq!(route("POST", "/api/bookings"), Route::Bookings);
+        assert_eq!(route("post", "/api/bookings"), Route::Bookings);
+        assert_eq!(
+            route("GET", "/api/bookings"),
+            Route::MethodNotAllowed("POST")
+        );
+        assert_eq!(route("GET", "/api/bookings/"), Route::NotFound);
+        assert_eq!(route("GET", "/api/bookings/other"), Route::NotFound);
 
         assert_eq!(route("GET", "/api/nope"), Route::NotFound);
         assert_eq!(route("GET", "/api"), Route::NotFound);

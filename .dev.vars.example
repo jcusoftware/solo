@@ -19,3 +19,15 @@ STRIPE_DEMO_PRICE_IDS=
 # SECRET (never commit): sandbox Stripe restricted/secret key; only prefixes
 # sk_test_ / rk_test_ are accepted. Set with `wrangler secret put` in production.
 STRIPE_DEMO_SECRET_KEY=
+
+# --- Call booking (issue #44; all optional; /api/bookings answers 503 fail-closed
+# without GOOGLE_BOOKING_CALENDAR_ID) ---
+# Primary calendar ID of the Workspace user mailbox booking lives on.
+GOOGLE_BOOKING_CALENDAR_ID=
+# Optional Zoom meeting creation (auto_zoom): Server-to-Server OAuth app.
+ZOOM_ACCOUNT_ID=
+ZOOM_CLIENT_ID=
+# SECRET (never commit): Zoom Server-to-Server OAuth client secret.
+ZOOM_CLIENT_SECRET=
+# Opaque Zoom host user ID (never an email, never "me").
+ZOOM_HOST_USER_ID=

@@ -77,6 +77,7 @@ fn pack_extra_files(input: &Value) -> Result<BTreeMap<String, String>, String> {
             .map_err(|e| format!("invalid venue manifest: {e}"))?;
     let mut files =
         sws_pack_hospitality::events::events_extra_files(&venue).unwrap_or_default();
+    files.extend(sws_pack_hospitality::bookings::bookings_extra_files(&venue).unwrap_or_default());
     files.extend(sws_pack_hospitality::compiler::checkout_extra_files(&venue));
     Ok(files)
 }

@@ -116,6 +116,20 @@
       "source": "d1_or_cms",
       "google_calendar_id": null,
       "timezone": "America/New_York"
+    },
+    "bookings": {
+      "enabled": true,
+      "google_workspace_calendar_id": "calls@shirlingtonhearth.example",
+      "slot_duration_minutes": 30,
+      "buffer_minutes": 15,
+      "working_hours": {
+        "mon": ["09:00", "17:00"],
+        "tue": ["09:00", "17:00"],
+        "wed": ["09:00", "17:00"],
+        "thu": ["09:00", "17:00"],
+        "fri": ["09:00", "17:00"]
+      },
+      "auto_zoom": true
     }
   },
   "checkout": {

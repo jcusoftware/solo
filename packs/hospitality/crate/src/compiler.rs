@@ -220,6 +220,9 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
     if v.checkout.is_some() {
         styles.extend(checkout_style_rules());
     }
+    if bookings_enabled(v) {
+        styles.extend(booking_style_rules());
+    }
 
     let index_title = v
         .seo
@@ -257,6 +260,11 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
         sitemap_routes.retain(|r| !matches!(r.as_str(), "/events" | "/events/" | "/events.html"));
         sitemap_routes.push("/events".to_string());
     }
+    if bookings_enabled(v) {
+        sitemap_routes
+            .retain(|r| !matches!(r.as_str(), "/book-a-call" | "/book-a-call/" | "/book-a-call.html"));
+        sitemap_routes.push("/book-a-call".to_string());
+    }
 
     let mut pages = vec![Page {
         id: "index".to_string(),
@@ -278,7 +286,14 @@ fn build_site_document(v: &VenueManifest) -> SiteDocument {
     if let Some(events) = events.filter(|e| e.enabled) {
         pages.push(events_page(v, &base_url, events));
     }
-    pages.push(Page {
+    if v
+        .scheduling
+        .as_ref()
+        .and_then(|s| s.bookings.as_ref())
+        .is_some_and(|b| b.enabled)
+    {
+        pages.push(booking_page(v, &base_url));
+    }    pages.push(Page {
         id: "not-found".to_string(),
         route: RoutePattern::Static {
             path: "/404".to_string(),
@@ -1362,6 +1377,14 @@ fn site_header_nodes(v: &VenueManifest) -> Vec<Node> {
             vec![el("a", &[], &[("href", "/events")], vec![txt("Events")])],
         ));
     }
+    if bookings_enabled(v) {
+        nav_items.push(el(
+            "li",
+            &[],
+            &[],
+            vec![el("a", &[], &[("href", "/book-a-call")], vec![txt("Book a call")])],
+        ));
+    }
     nav_items.push(el(
         "li",
         &[],
@@ -1963,6 +1986,395 @@ fn events_page(v: &VenueManifest, base_url: &str, events: &EventsConfig) -> Page
     }
 }
 
+/// Whether call booking is enabled (`scheduling.bookings.enabled`).
+fn bookings_enabled(v: &VenueManifest) -> bool {
+    v.scheduling
+        .as_ref()
+        .and_then(|s| s.bookings.as_ref())
+        .is_some_and(|b| b.enabled)
+}
+
+/// Scripts for the `/book-a-call` page: the booking client plus the Turnstile
+/// widget loader. No forms.js — the booking form manages its own validation
+/// and submission.
+fn booking_scripts() -> Vec<ScriptRef> {
+    vec![
+        ScriptRef {
+            src: "/js/booking-client.js".to_string(),
+            async_load: false,
+            defer: true,
+        },
+        ScriptRef {
+            src: TURNSTILE_SRC.to_string(),
+            async_load: true,
+            defer: true,
+        },
+    ]
+}
+
+/// Port of the old `core/tools/booking.css` into the pack's compiled IR
+/// stylesheet (appended only when booking is enabled).
+fn booking_style_rules() -> Vec<IrStyleRule> {
+    vec![
+        style_rule(
+            "booking-label",
+            ".booking-form label",
+            None,
+            &[("display", "block"), ("margin-top", "1rem")],
+        ),
+        style_rule(
+            "booking-input",
+            ".booking-form input[type=\"date\"], .booking-form textarea",
+            None,
+            &[
+                ("display", "block"),
+                ("width", "100%"),
+                ("max-width", "26rem"),
+                ("min-height", "44px"),
+                ("padding", ".5rem .75rem"),
+                ("font", "inherit"),
+                ("color", "var(--text)"),
+                ("background", "var(--surface)"),
+                ("border", "2px solid var(--footer-text)"),
+                ("border-radius", ".25rem"),
+            ],
+        ),
+        style_rule(
+            "booking-button",
+            ".booking-form button",
+            None,
+            &[("margin-top", ".75rem")],
+        ),
+        style_rule(
+            "booking-fieldset",
+            ".booking-form fieldset",
+            None,
+            &[
+                ("min-width", "0"),
+                ("margin", "1rem 0"),
+                ("border", "1px solid var(--muted)"),
+            ],
+        ),
+        style_rule(
+            "booking-options-label",
+            "#booking-options label",
+            None,
+            &[
+                ("display", "flex"),
+                ("align-items", "center"),
+                ("gap", ".5rem"),
+                ("min-height", "44px"),
+                ("margin", "0"),
+            ],
+        ),
+        style_rule(
+            "booking-options-input",
+            "#booking-options input",
+            None,
+            &[
+                ("flex", "none"),
+                ("width", "24px"),
+                ("height", "24px"),
+                ("accent-color", "var(--accent)"),
+            ],
+        ),
+        style_rule(
+            "booking-inline-error",
+            ".booking-inline-error",
+            None,
+            &[("margin", ".25rem 0 .5rem"), ("font-weight", "700")],
+        ),
+        style_rule(
+            "booking-turnstile",
+            ".booking-form .cf-turnstile",
+            None,
+            &[("margin-top", "1rem")],
+        ),
+    ]
+}
+
+/// The `/book-a-call` page: date picker plus keyboard-selectable time slots,
+/// hydrated by `js/booking-client.js` from `GET /api/bookings/slots`. The form
+/// stays hidden without JavaScript (the mandatory Turnstile check is a
+/// no-JS-fail-closed exception) and the noscript notice offers the phone
+/// fallback.
+fn build_booking_body(v: &VenueManifest) -> Vec<Node> {
+    let timezone = v
+        .scheduling
+        .as_ref()
+        .and_then(|s| s.events.as_ref())
+        .map(|e| e.timezone.trim())
+        .unwrap_or_default();
+    let site_key = v
+        .integrations
+        .turnstile
+        .as_ref()
+        .map(|t| t.site_key.as_str())
+        .unwrap_or("");
+    let (href, display) = phone_parts(&v.nap.phone);
+
+    let mut nodes = site_header_nodes(v);
+    let mut main_children = vec![
+        el("h1", &[], &[], vec![txt("Book a call")]),
+        el(
+            "p",
+            &[],
+            &[],
+            vec![txt(format!(
+                "Choose a date and time in the venue’s time zone ({timezone}). We’ll send a calendar invitation to the email you provide."
+            ))],
+        ),
+        el(
+            "div",
+            &["card"],
+            &[
+                ("id", "booking-errors"),
+                ("tabindex", "-1"),
+                ("aria-labelledby", "booking-errors-title"),
+                ("hidden", ""),
+            ],
+            vec![
+                el(
+                    "h2",
+                    &[],
+                    &[("id", "booking-errors-title")],
+                    vec![txt("Check your booking")],
+                ),
+                el("ul", &[], &[], Vec::new()),
+            ],
+        ),
+        el(
+            "section",
+            &["card"],
+            &[
+                ("id", "booking-confirmation"),
+                ("tabindex", "-1"),
+                ("aria-labelledby", "booking-confirmation-title"),
+                ("hidden", ""),
+            ],
+            vec![
+                el(
+                    "h2",
+                    &[],
+                    &[("id", "booking-confirmation-title")],
+                    vec![txt("Your call is booked")],
+                ),
+                el("p", &[], &[], vec![el("time", &[], &[], Vec::new())]),
+                el(
+                    "p",
+                    &[],
+                    &[],
+                    vec![txt("Check your email for the calendar invitation.")],
+                ),
+            ],
+        ),
+    ];
+
+    let form_children = vec![
+        el(
+            "label",
+            &[],
+            &[("for", "booking-date")],
+            vec![txt("Date (required)")],
+        ),
+        el(
+            "input",
+            &[],
+            &[
+                ("id", "booking-date"),
+                ("type", "date"),
+                ("required", ""),
+                ("aria-describedby", "booking-date-error"),
+            ],
+            Vec::new(),
+        ),
+        el(
+            "p",
+            &["booking-inline-error"],
+            &[("id", "booking-date-error"), ("hidden", "")],
+            Vec::new(),
+        ),
+        el(
+            "button",
+            &[],
+            &[("type", "button"), ("id", "booking-find")],
+            vec![txt("Find times")],
+        ),
+        el(
+            "p",
+            &[],
+            &[("id", "booking-status"), ("role", "status"), ("aria-live", "polite")],
+            Vec::new(),
+        ),
+        el(
+            "fieldset",
+            &[],
+            &[
+                ("id", "booking-times"),
+                ("aria-describedby", "booking-time-error"),
+                ("hidden", ""),
+            ],
+            vec![
+                el(
+                    "legend",
+                    &[],
+                    &[],
+                    vec![txt("Available times (required)")],
+                ),
+                el("div", &[], &[("id", "booking-options")], Vec::new()),
+                el(
+                    "p",
+                    &["booking-inline-error"],
+                    &[("id", "booking-time-error"), ("hidden", "")],
+                    Vec::new(),
+                ),
+            ],
+        ),
+        el(
+            "label",
+            &[],
+            &[("for", "booking-name")],
+            vec![txt("Name (required)")],
+        ),
+        el(
+            "input",
+            &[],
+            &[
+                ("id", "booking-name"),
+                ("name", "guest_name"),
+                ("type", "text"),
+                ("autocomplete", "name"),
+                ("maxlength", "100"),
+                ("required", ""),
+                ("aria-describedby", "booking-name-error"),
+            ],
+            Vec::new(),
+        ),
+        el(
+            "p",
+            &["booking-inline-error"],
+            &[("id", "booking-name-error"), ("hidden", "")],
+            Vec::new(),
+        ),
+        el(
+            "label",
+            &[],
+            &[("for", "booking-email")],
+            vec![txt("Email (required)")],
+        ),
+        el(
+            "input",
+            &[],
+            &[
+                ("id", "booking-email"),
+                ("name", "guest_email"),
+                ("type", "email"),
+                ("autocomplete", "email"),
+                ("maxlength", "254"),
+                ("required", ""),
+                ("aria-describedby", "booking-email-error"),
+            ],
+            Vec::new(),
+        ),
+        el(
+            "p",
+            &["booking-inline-error"],
+            &[("id", "booking-email-error"), ("hidden", "")],
+            Vec::new(),
+        ),
+        el(
+            "label",
+            &[],
+            &[("for", "booking-notes")],
+            vec![txt("Notes (optional)")],
+        ),
+        el(
+            "textarea",
+            &[],
+            &[
+                ("id", "booking-notes"),
+                ("name", "guest_notes"),
+                ("maxlength", "4000"),
+                ("rows", "3"),
+            ],
+            Vec::new(),
+        ),
+        el(
+            "noscript",
+            &[],
+            &[],
+            vec![el(
+                "p",
+                &[],
+                &[],
+                vec![
+                    txt("Online scheduling requires JavaScript. To book by phone, call "),
+                    el(
+                        "a",
+                        &[],
+                        &[("href", &href)],
+                        vec![txt(display)],
+                    ),
+                    txt("."),
+                ],
+            )],
+        ),
+        el(
+            "div",
+            &["cf-turnstile"],
+            &[
+                ("data-sitekey", site_key),
+                ("data-action", "booking"),
+            ],
+            Vec::new(),
+        ),
+        el(
+            "button",
+            &[],
+            &[("id", "booking-submit"), ("type", "submit"), ("disabled", "")],
+            vec![txt("Book this time")],
+        ),
+    ];
+    main_children.push(el(
+        "form",
+        &["card", "booking-form"],
+        &[
+            ("id", "booking-form"),
+            ("action", "/api/bookings"),
+            ("method", "post"),
+            ("data-timezone", timezone),
+            ("hidden", ""),
+        ],
+        form_children,
+    ));
+
+    nodes.push(el(
+        "main",
+        &[],
+        &[("id", "main"), ("tabindex", "-1")],
+        vec![el("div", &["wrap", "intro"], &[], main_children)],
+    ));
+    nodes.push(site_footer_node(v, false));
+    nodes
+}
+
+fn booking_page(v: &VenueManifest, base_url: &str) -> Page {
+    Page {
+        id: "book-a-call".to_string(),
+        route: RoutePattern::Static {
+            path: "/book-a-call".to_string(),
+        },
+        title: format!("Book a call — {}", v.name),
+        description: Some("Choose a time for a call with the venue.".to_string()),
+        canonical: Some(format!("{base_url}/book-a-call")),
+        noindex: false,
+        is_not_found: false,
+        json_ld: Vec::new(),
+        scripts: booking_scripts(),
+        body: build_booking_body(v),
+    }
+}
+
 fn build_index_body(v: &VenueManifest) -> Vec<Node> {
     let mut nodes = site_header_nodes(v);
 
@@ -2098,9 +2510,11 @@ mod tests {
 
         let doc = plugin.transform_input(&val).unwrap();
         assert_eq!(doc.slug, "shirlington-hearth-demo");
-        // Demo ships events AND checkout enabled: index + events + takeout + 404.
-        assert_eq!(doc.pages.len(), 4);
+        // Demo ships events, booking AND checkout enabled: index + events +
+        // book-a-call + takeout + 404.
+        assert_eq!(doc.pages.len(), 5);
         assert!(doc.pages.iter().any(|p| p.id == "events"));
+        assert!(doc.pages.iter().any(|p| p.id == "book-a-call"));
         assert!(doc.pages.iter().any(|p| p.id == "takeout"));
         assert!(doc.metadata.contains_key("venue_manifest"));
         assert!(sws_ir::validate_ir(&doc).is_empty());
@@ -2187,11 +2601,85 @@ mod tests {
         let doc2 = HospitalityPlugin
             .transform_input(&serde_json::to_value(&disabled).unwrap())
             .unwrap();
-        // Events disabled; the sandbox demo checkout page keeps the count at
-        // three (index, takeout, 404) instead of the bare two.
-        assert_eq!(doc2.pages.len(), 3);
+        // Events disabled; the sandbox demo checkout and booking pages keep the
+        // count at four (index, book-a-call, takeout, 404) instead of the bare two.
+        assert_eq!(doc2.pages.len(), 4);
         assert!(doc2.pages.iter().all(|p| p.id != "events"));
         assert!(!doc2.seo.sitemap_routes.contains(&"/events".to_string()));
+    }
+
+    #[test]
+    fn hospitality_plugin_emits_deterministic_booking_page_and_assets() {
+        let val: Value = serde_json::from_str(DEMO_VENUE_JSON).unwrap();
+        let doc = HospitalityPlugin.transform_input(&val).unwrap();
+
+        let booking = doc
+            .pages
+            .iter()
+            .find(|p| p.id == "book-a-call")
+            .expect("demo ships booking enabled");
+        match &booking.route {
+            RoutePattern::Static { path } => assert_eq!(path, "/book-a-call"),
+            other => panic!("unexpected booking route: {other:?}"),
+        }
+        assert_eq!(booking.title, "Book a call — Shirlington Hearth");
+        let srcs: Vec<&str> = booking.scripts.iter().map(|s| s.src.as_str()).collect();
+        assert!(srcs.contains(&"/js/booking-client.js"));
+        assert!(srcs.iter().any(|s| s.starts_with("https://challenges.cloudflare.com/")));
+        let body = format!("{:?}", booking.body);
+        assert!(body.contains("Book a call"), "{body}");
+        assert!(body.contains("booking-form"), "{body}");
+        assert!(body.contains("data-timezone"), "{body}");
+        assert!(body.contains("Online scheduling requires JavaScript"), "{body}");
+        assert!(body.contains("/api/bookings"), "{body}");
+        assert!(doc.seo.sitemap_routes.contains(&"/book-a-call".to_string()));
+
+        // The booking stylesheet compiles through sws_css with the site tokens.
+        let mut sheet = sws_css::Stylesheet::new();
+        for r in doc.styles.iter().filter(|r| r.id.starts_with("booking-")) {
+            sheet
+                .add_rule(sws_css::CssRule {
+                    selector: r.selector.clone(),
+                    breakpoint: r.breakpoint.clone(),
+                    pseudo: r.pseudo.clone(),
+                    declarations: r.declarations.clone(),
+                });
+        }
+        let css = sheet.emit().unwrap();
+        assert!(css.contains("#booking-options input"));
+        assert!(css.contains("min-height: 44px"));
+
+        let index = &doc.pages[0];
+        let index_body = format!("{index:?}");
+        assert!(
+            index_body.contains(r#""href": "/book-a-call""#),
+            "{index_body}"
+        );
+
+        let venue: VenueManifest = serde_json::from_str(DEMO_VENUE_JSON).unwrap();
+        let extra = crate::bookings::bookings_extra_files(&venue).expect("booking assets");
+        assert!(extra.contains_key("booking-config.json"));
+        assert!(extra.contains_key("js/booking-client.js"));
+
+        // Disabling booking removes the page, nav link and assets deterministically.
+        let mut disabled = venue.clone();
+        disabled
+            .scheduling
+            .as_mut()
+            .unwrap()
+            .bookings
+            .as_mut()
+            .unwrap()
+            .enabled = false;
+        assert!(crate::bookings::bookings_extra_files(&disabled).is_none());
+        let doc2 = HospitalityPlugin
+            .transform_input(&serde_json::to_value(&disabled).unwrap())
+            .unwrap();
+        assert_eq!(doc2.pages.len(), 4);
+        assert!(doc2.pages.iter().all(|p| p.id != "book-a-call"));
+        assert!(!doc2.seo.sitemap_routes.contains(&"/book-a-call".to_string()));
+        assert!(!doc2.pages.iter().any(|p| p.id == "index"
+            && format!("{:?}", p.body).contains(r#""href": "/book-a-call""#)));
     }
 
     #[test]
