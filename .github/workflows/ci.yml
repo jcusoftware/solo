@@ -50,6 +50,27 @@ jobs:
       - name: Run solo export and execute the emitted crate's test module
         run: cargo test -p sws-cli --features pack-hospitality --locked --release -- --ignored export
 
+  wasm-smoke:
+    name: wasm export smoke test (node)
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # The wasm-bindgen CLI version must match the wasm-bindgen crate in
+      # Cargo.lock (run-smoke.sh verifies the match before binding).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.130
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build wasm module and execute every export (smoke.mjs)
+        run: crates/sws-wasm/run-smoke.sh
+
   verify:
     name: verify (npm fast gate)
     needs: rust

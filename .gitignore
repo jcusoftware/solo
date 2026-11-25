@@ -4,6 +4,9 @@ core/build/
 crates/*/build/
 build/
 
+# wasm-bindgen smoke-test build output (crates/sws-wasm/run-smoke.sh)
+crates/sws-wasm/pkg/
+
 # Node / tooling
 node_modules/
 .wrangler/

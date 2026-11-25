@@ -1,13 +1,32 @@
 //! Browser Wasm bridge (`wasm-bindgen`) for Solo Website System (SWS).
 //!
 //! Pure logic lives in the host-testable `*_inner` functions so `cargo test`
-//! exercises compilation, IR/diagnostic validation, and WCAG contrast checks
-//! natively while `#[wasm_bindgen]` exports delegate cleanly for browser use.
+//! exercises compilation, IR/diagnostic validation, CSS emission/validation,
+//! and WCAG contrast checks natively while `#[wasm_bindgen]` exports delegate
+//! cleanly for browser use.
+//!
+//! Export surface (all exercised by `crates/sws-wasm/tests/smoke.mjs`):
+//!
+//! - `compile_site(ir_json) -> Result<String, JsValue>`: compile a
+//!   [`SiteDocument`] with default options (files + diagnostics report).
+//! - `validate_site(ir_json) -> Result<String, JsValue>`: IR validation and
+//!   compiler diagnostics (`{ valid, ir_errors, diagnostics }`).
+//! - `compile_css(css_json) -> Result<String, JsValue>`: deserialize a
+//!   serialized [`sws_css::Stylesheet`] and emit sanitized, deterministic CSS.
+//! - `validate_css(css_text) -> Result<String, JsValue>`: parse CSS *text*
+//!   with [`sws_css::parse_stylesheet`] (`{ valid, diagnostics }`; parse
+//!   failures become error-level `css_parse_error` diagnostics).
+//! - `check_contrast(fg, bg) -> Result<f64, JsValue>`: WCAG 2.x contrast
+//!   ratio for a `#RRGGBB` pair.
+//!
+//! Every export maps its host-side `Err(String)` to a `JsValue` string so
+//! callers get a plain message.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 use sws_compiler::{CompileOptions, CompilerDiagnostic, DiagnosticLevel};
+use sws_css::{Stylesheet, parse_stylesheet};
 use sws_ir::{validate_ir, IrValidationError, SiteDocument};
 use wasm_bindgen::prelude::*;
 
@@ -38,6 +57,12 @@ impl From<&IrValidationError> for SerializableIrError {
 struct ValidateOutput {
     valid: bool,
     ir_errors: Vec<SerializableIrError>,
+    diagnostics: Vec<CompilerDiagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidateCssOutput {
+    valid: bool,
     diagnostics: Vec<CompilerDiagnostic>,
 }
 
@@ -103,6 +128,45 @@ pub fn check_contrast_inner(fg: &str, bg: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("invalid #RRGGBB color pair: fg={fg:?}, bg={bg:?}"))
 }
 
+/// Deserialize a serialized [`Stylesheet`] JSON string and emit deterministic,
+/// sanitizer-gated CSS.
+///
+/// This is the same emission path `sws-compiler` uses for `styles.css`
+/// (see `sws_compiler::emit_stylesheet`), so the sanitizer gates in
+/// [`Stylesheet::emit`] apply unchanged.
+pub fn compile_css_inner(css_json: &str) -> Result<String, String> {
+    let sheet: Stylesheet = serde_json::from_str(css_json)
+        .map_err(|err| format!("invalid Stylesheet JSON: {err}"))?;
+    sheet.emit().map_err(|err| format!("CSS emit error: {err}"))
+}
+
+/// Parse CSS text with [`parse_stylesheet`] and report the result.
+///
+/// Returns a serialized JSON object `{ valid, diagnostics }` where
+/// `diagnostics` mirrors the [`CompilerDiagnostic`] shape (a parse failure
+/// yields a single error-level `css_parse_error` diagnostic carrying the
+/// parser's line/column message) rather than rejecting the whole call, so
+/// editors and browser tooling can surface diagnostics without round-trips.
+pub fn validate_css_inner(css_text: &str) -> Result<String, String> {
+    let diagnostics: Vec<CompilerDiagnostic> = match parse_stylesheet(css_text) {
+        Ok(_) => Vec::new(),
+        Err(err) => vec![CompilerDiagnostic {
+            level: DiagnosticLevel::Error,
+            code: "css_parse_error".to_string(),
+            path: "css".to_string(),
+            message: err.to_string(),
+        }],
+    };
+
+    let output = ValidateCssOutput {
+        valid: diagnostics.is_empty(),
+        diagnostics,
+    };
+
+    serde_json::to_string(&output)
+        .map_err(|err| format!("failed to serialize CSS validation output: {err}"))
+}
+
 /// Wasm export for [`compile_site_inner`].
 #[wasm_bindgen]
 pub fn compile_site(ir_json: &str) -> Result<String, JsValue> {
@@ -113,6 +177,18 @@ pub fn compile_site(ir_json: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn validate_site(ir_json: &str) -> Result<String, JsValue> {
     validate_site_inner(ir_json).map_err(|msg| JsValue::from_str(&msg))
+}
+
+/// Wasm export for [`compile_css_inner`].
+#[wasm_bindgen]
+pub fn compile_css(css_json: &str) -> Result<String, JsValue> {
+    compile_css_inner(css_json).map_err(|msg| JsValue::from_str(&msg))
+}
+
+/// Wasm export for [`validate_css_inner`].
+#[wasm_bindgen]
+pub fn validate_css(css_text: &str) -> Result<String, JsValue> {
+    validate_css_inner(css_text).map_err(|msg| JsValue::from_str(&msg))
 }
 
 /// Wasm export for [`check_contrast_inner`].
@@ -305,5 +381,89 @@ mod tests {
             let err = check_contrast_inner(bad, "#FFFFFF").unwrap_err();
             assert!(err.contains("invalid #RRGGBB"), "{bad}: {err}");
         }
+    }
+
+    fn sample_stylesheet() -> Stylesheet {
+        let mut sheet = Stylesheet::new();
+        sheet.comment_header = Some("Generated by SWS. Do not edit.".to_string());
+        sheet.set_var("bg", "#E9E2D2");
+        sheet.set_var("--text", "#241207");
+        sheet.define_breakpoint("sm", "(min-width: 40rem)");
+        sheet.add_simple_rule(
+            "body",
+            BTreeMap::from([
+                ("background".to_string(), "var(--bg)".to_string()),
+                ("color".to_string(), "var(--text)".to_string()),
+            ]),
+        );
+        sheet.add_rule(sws_css::CssRule {
+            selector: ".grid".to_string(),
+            breakpoint: Some("sm".to_string()),
+            pseudo: Some(":hover".to_string()),
+            declarations: BTreeMap::from([(
+                "grid-template-columns".to_string(),
+                "1fr 1fr".to_string(),
+            )]),
+        });
+        sheet
+    }
+
+    #[test]
+    fn compile_css_inner_emits_sanitized_deterministic_css() {
+        let sheet = sample_stylesheet();
+        let css_json =
+            serde_json::to_string(&sheet).expect("serialize Stylesheet fixture");
+
+        let first = compile_css_inner(&css_json).expect("valid stylesheet compiles");
+        let second = compile_css_inner(&css_json).expect("compilation is deterministic");
+        assert_eq!(first, second);
+        assert_eq!(first, sheet.emit().expect("direct emission"));
+        assert!(first.contains(":root {\n  --bg: #E9E2D2;\n  --text: #241207;\n}"));
+        assert!(first.contains("body { background: var(--bg); color: var(--text); }"));
+        assert!(first.contains(
+            "@media (min-width: 40rem) {\n  .grid:hover { grid-template-columns: 1fr 1fr; }\n}"
+        ));
+    }
+
+    #[test]
+    fn compile_css_inner_rejects_invalid_json_and_unsafe_declarations() {
+        let json_err = compile_css_inner("{not valid json").unwrap_err();
+        assert!(json_err.contains("invalid Stylesheet JSON"), "{json_err}");
+
+        let unsafe_sheet = json!({
+            "comment_header": null,
+            "root_vars": {},
+            "media_queries": {},
+            "rules": [{
+                "selector": "body",
+                "breakpoint": null,
+                "pseudo": null,
+                "declarations": { "color": "red; background: blue" }
+            }]
+        })
+        .to_string();
+        let emit_err = compile_css_inner(&unsafe_sheet).unwrap_err();
+        assert!(emit_err.contains("CSS emit error"), "{emit_err}");
+    }
+
+    #[test]
+    fn validate_css_inner_accepts_safe_css_and_reports_parse_errors() {
+        let css = sample_stylesheet().emit().expect("fixture emits");
+        let result = validate_css_inner(&css).expect("valid CSS validates");
+        let parsed: Value = serde_json::from_str(&result).expect("valid JSON output");
+
+        assert_eq!(parsed["valid"], json!(true));
+        assert_eq!(parsed["diagnostics"], json!([]));
+
+        let invalid = validate_css_inner("body { color: ").expect("report JSON on parse error");
+        let parsed: Value = serde_json::from_str(&invalid).expect("valid JSON output");
+        assert_eq!(parsed["valid"], json!(false));
+        let diagnostics = parsed["diagnostics"].as_array().expect("diagnostics array");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["level"], json!("error"));
+        assert_eq!(diagnostics[0]["code"], json!("css_parse_error"));
+        assert!(diagnostics[0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("CSS parse error")));
     }
 }
