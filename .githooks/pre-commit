@@ -1,0 +1,61 @@
+#!/bin/sh
+# Fast pre-commit guard for SWS (see CONTRIBUTING.md "Git hooks").
+#
+# Deliberately fast: full test gates live in CI (every PR) and in the
+# pre-push hook. This hook covers what is cheap to check and expensive
+# if missed:
+#   1. Signing intent: commit.gpgsign must be enabled, else the commit
+#      would be unsigned (AGENTS.md §10 requires signed commits).
+#   2. Zone B leakage: private/, .dev.vars*, env files and key material
+#      must never be staged (AGENTS.md §1/§8). *.example/.template/.sample
+#      templates are allowed.
+#   3. Sanity: staged *.json files must parse.
+#   4. Warning only: rendered output (core/public, sites/*/public) should
+#      come from `npm run render` / `npm run sites:build`, never hand edits.
+#
+# Install once per clone: npm run setup:hooks
+# Escape hatch: --no-verify, or SWS_SKIP_SIGN_CHECK=1 for the signing check.
+
+# --- 1. signing intent ---
+if [ -z "$SWS_SKIP_SIGN_CHECK" ] && [ "$(git config --bool commit.gpgsign || echo false)" != "true" ]; then
+	echo "SIGN GUARD: commit.gpgsign is not enabled — this commit would be unsigned." >&2
+	echo "  Enable it:  git config commit.gpgsign true   (see CONTRIBUTING.md §6)" >&2
+	echo "  Bypass:     SWS_SKIP_SIGN_CHECK=1 git commit ...  (then sign with -S)" >&2
+	exit 1
+fi
+
+staged=$(git diff --cached --name-only)
+[ -z "$staged" ] && exit 0
+
+# --- 2. Zone B guard ---
+# Tracked template files (*.example / *.template / *.sample) are fine.
+leaks=$(printf '%s\n' "$staged" |
+	grep -E '(^|/)private(/|$)|(^|/)\.dev\.vars(\..*)?$|(^|/)\.env(\..*)?$|\.env$|(^|/)id_(rsa|ed25519|ecdsa)(\..*)?$|\.pem$' |
+	grep -vE '\.(example|template|sample)$' || true)
+if [ -n "$leaks" ]; then
+	echo "ZONE B GUARD: private/secret material must never be committed (AGENTS.md §1, §8):" >&2
+	printf '%s\n' "$leaks" | sed 's/^/  staged: /' >&2
+	echo "  Unstage them: git restore --staged <file>   (Zone B lives only in gitignored paths)" >&2
+	exit 1
+fi
+
+# --- 3. staged JSON must parse ---
+if ! command -v node >/dev/null 2>&1 && [ -f "$HOME/.nvm/nvm.sh" ]; then
+	. "$HOME/.nvm/nvm.sh" && nvm use --lts >/dev/null 2>&1
+fi
+if command -v node >/dev/null 2>&1; then
+	for f in $(printf '%s\n' "$staged" | grep '\.json$' || true); do
+		node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" "$f" || {
+			echo "PRE-COMMIT: staged file does not parse as JSON: $f" >&2
+			exit 1
+		}
+	done
+fi
+
+# --- 4. rendered-output reminder (warning only) ---
+if printf '%s\n' "$staged" | grep -qE '^(core/public|sites/[^/]+/public)/'; then
+	echo "RENDER NOTE: staged changes under rendered output (core/public, sites/*/public)." >&2
+	echo "  These are generated files (AGENTS.md §1) — confirm they came from 'npm run render' / 'npm run sites:build'." >&2
+fi
+
+exit 0
