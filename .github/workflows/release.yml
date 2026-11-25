@@ -37,6 +37,18 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+      - name: Tag/version sync (v* tag must match workspace version)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ws_version=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | grep '^version' | head -n 1 | sed 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/')
+          if [ "$tag" != "$ws_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match workspace version '$ws_version'."
+            echo "::error::The built CLI would report --version $ws_version on a $GITHUB_REF_NAME release."
+            echo "::error::Merge a release PR bumping [workspace.package] version to $tag, re-tag, and push again."
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches workspace version $ws_version."
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
       - name: cargo clippy (wasm32)
@@ -240,6 +252,16 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+      - name: Tag/version sync (pack tag must match workspace version)
+        run: |
+          tag="${GITHUB_REF_NAME#pack-hospitality-v}"
+          ws_version=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | grep '^version' | head -n 1 | sed 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/')
+          if [ "$tag" != "$ws_version" ]; then
+            echo "::error::Pack tag $GITHUB_REF_NAME does not match workspace version '$ws_version'."
+            echo "::error::The pack crate inherits version.workspace; merge a release PR bumping [workspace.package] version to $tag, re-tag, and push again."
+            exit 1
+          fi
+          echo "Pack tag $GITHUB_REF_NAME matches workspace version $ws_version."
       - name: Verify sws-pack-hospitality (test + clippy)
         run: |
           cargo test -p sws-pack-hospitality --locked

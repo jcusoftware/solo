@@ -1,0 +1,93 @@
+#!/bin/sh
+# Release-tag guard: keeps `v*` / `pack-hospitality-v*` tags in sync with the
+# workspace Cargo version (AGENTS.md release discipline).
+#
+# Blocks the push when any pushed release tag:
+#   1. names a version that differs from the `[workspace.package]` `version`
+#      in the tag's own tree (the exact defect that shipped v0.1.1 as a
+#      0.1.0-versioned CLI), or
+#   2. is a lightweight (unsigned, non-annotated) tag, or
+#   3. carries no cryptographic signature block.
+#
+# Non-release tags and branch pushes pass through untouched.
+#
+# One-time install (see CONTRIBUTING.md "Release tag guard"):
+#   npm run setup:hooks
+# (equivalent to: git config core.hooksPath .githooks)
+
+zero="0000000000000000000000000000000000000000"
+
+workspace_version_of() {
+	# $1 = commit-ish. Print the [workspace.package] version of that tree.
+	git show "$1:Cargo.toml" 2>/dev/null |
+		sed -n '/^\[workspace\.package\]/,/^\[/p' |
+		grep '^version' | head -n 1 |
+		sed 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/'
+}
+
+fail=0
+saw_branch=0
+
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	# Tag deletions have a zero local sha: nothing to check.
+	[ "$local_sha" = "$zero" ] && continue
+
+	case "$remote_ref" in
+	refs/tags/pack-hospitality-v*) tag=${remote_ref#refs/tags/pack-hospitality-v}; prefix=pack-hospitality-v ;;
+	refs/tags/v*) tag=${remote_ref#refs/tags/v}; prefix=v ;;
+	refs/heads/*) saw_branch=1; continue ;;
+	*) continue ;; # not a release tag or branch: allow
+	esac
+	tag_name="$prefix$tag"
+
+	# Release tags must be annotated tag objects (not lightweight refs).
+	if [ "$(git cat-file -t "$local_sha" 2>/dev/null)" != "tag" ]; then
+		echo "RELEASE GUARD: '$tag_name' is a lightweight tag; use 'git tag -s $tag_name -m ...' (annotated + signed)." >&2
+		fail=1
+		continue
+	fi
+
+	# And they must carry a signature block (SSH or PGP).
+	if ! git cat-file tag "$local_sha" 2>/dev/null | grep -q -- '-----BEGIN.*SIGNATURE-----'; then
+		echo "RELEASE GUARD: '$tag_name' is not signed; re-create it with 'git tag -s $tag_name' (tag.gpgsign makes -s automatic)." >&2
+		fail=1
+	fi
+
+	# Tag name version must equal the workspace version in the tagged tree.
+	commit=$(git rev-parse --verify --quiet "$local_sha^{commit}")
+	ws_version=$(workspace_version_of "$commit")
+	if [ -z "$ws_version" ]; then
+		echo "RELEASE GUARD: cannot read [workspace.package] version from Cargo.toml at $tag_name's commit ($commit)." >&2
+		fail=1
+		continue
+	fi
+	if [ "$ws_version" != "$tag" ]; then
+		echo "RELEASE GUARD: '$tag_name' points at a tree whose workspace version is '$ws_version'." >&2
+		echo "  The built CLI would report --version $ws_version on a $tag release." >&2
+		echo "  Fix: merge a release PR bumping [workspace.package] version to $tag, re-tag on that commit, then push." >&2
+		fail=1
+		continue
+	fi
+
+	echo "RELEASE GUARD: $tag_name matches workspace version $ws_version"
+done
+
+# --- branch pushes: run the full verify gate before the code leaves the machine ---
+# Tags-only pushes skip this: release.yml runs the full verify on tags anyway.
+# Escape hatch (use knowingly): SWS_SKIP_VERIFY=1 git push ...
+if [ "$fail" -eq 0 ] && [ "$saw_branch" -eq 1 ] && [ -z "$SWS_SKIP_VERIFY" ]; then
+	# Hooks run without a login shell: make nvm-managed node and cargo visible.
+	if ! command -v npm >/dev/null 2>&1 && [ -f "$HOME/.nvm/nvm.sh" ]; then
+		. "$HOME/.nvm/nvm.sh" && nvm use --lts >/dev/null 2>&1
+	fi
+	PATH="$HOME/.cargo/bin:$PATH"
+	export PATH
+	echo "PRE-PUSH: running 'npm run verify' (skip with SWS_SKIP_VERIFY=1)..."
+	if ! npm run verify; then
+		echo "PRE-PUSH: verify FAILED — push aborted. Fix the failing gate first." >&2
+		echo "  (If you must bypass: SWS_SKIP_VERIFY=1 git push ... — CI will still gate the PR.)" >&2
+		exit 1
+	fi
+fi
+
+exit $fail

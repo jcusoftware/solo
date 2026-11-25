@@ -1,0 +1,25 @@
+#!/bin/sh
+# Best-effort signature confirmation for the commit that was just created.
+#
+# A pre-commit hook cannot check a signature — the commit does not exist yet,
+# so commit.gpgsign intent is checked there and the RESULT is checked here:
+#   - unsigned HEAD  -> loud fix-it message (amend with -S);
+#   - signed HEAD that this clone cannot fully verify (e.g. SSH signatures
+#     without gpg.ssh.allowedSignersFile) -> informational note only;
+#     GitHub verifies signatures server-side regardless.
+#
+# post-commit cannot abort anything (the commit already exists), so it must
+# always exit 0.
+
+if git cat-file commit HEAD 2>/dev/null | grep -q -- '-----BEGIN \(SSH\|PGP\) SIGNATURE-----'; then
+	if ! git verify-commit HEAD >/dev/null 2>&1; then
+		echo "SIGN GUARD: HEAD carries a signature this clone cannot fully verify" >&2
+		echo "  (common with SSH signing when gpg.ssh.allowedSignersFile is not configured)." >&2
+		echo "  GitHub verifies it server-side; nothing to do if the push shows 'Verified'." >&2
+	fi
+else
+	echo "SIGN GUARD: HEAD is UNSIGNED. Fix it:  git commit --amend -S --no-edit" >&2
+	echo "  Then enable it permanently:  git config commit.gpgsign true" >&2
+fi
+
+exit 0

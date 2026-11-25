@@ -24,6 +24,7 @@
     "dev": "wrangler dev",
     "build": "cd crates/sws-worker-site && worker-build --release",
     "setup:rust": "cargo install worker-build@^0.9 --locked",
+    "setup:hooks": "git config core.hooksPath .githooks",
     "test:rust": "cargo test --workspace",
     "test:unit": "node --test tests/unit/*.test.mjs",
     "test:agents": "node scripts/run-agents-tests.mjs",
