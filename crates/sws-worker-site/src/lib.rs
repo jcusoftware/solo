@@ -31,7 +31,7 @@ mod wasm {
     use crate::forms::{
         FormSchema, ValidatedSubmission, load_form_schemas, validate_submission,
     };
-    use crate::routes::{Route, health_body, route};
+    use crate::routes::{Route, health_body, is_safe_webhook_url, route};
 
     const RESEND_URL: &str = "https://api.resend.com/emails";
     const OUTBOUND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -195,7 +195,7 @@ mod wasm {
         }
 
         if let Some(webhook_url) = var(env, "FORM_WEBHOOK_URL") {
-            if webhook_url.starts_with("https://") {
+            if is_safe_webhook_url(&webhook_url) {
                 let webhook_secret = secret(env, "FORM_WEBHOOK_SECRET");
                 let payload = serde_json::json!({
                     "id": id,

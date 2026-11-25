@@ -20,6 +20,8 @@ export interface SelectedRelease {
 export interface ReleaseStore {
   hasPosted(tag: string): Promise<boolean>;
   markPosted(tag: string, postId: string): Promise<void>;
+  claimPost?(tag: string): Promise<boolean>;
+  releaseClaim?(tag: string): Promise<void>;
 }
 
 export interface SubmitLinkPostInput {
@@ -60,10 +62,15 @@ export function formatReleaseTitle(tag: string, productName = 'Solo'): string {
 export function selectLatestRelease(
   releases: readonly GitHubRelease[],
   productName = 'Solo',
+  expectedRepo?: string,
 ): SelectedRelease | null {
   if (!Array.isArray(releases)) {
     return null;
   }
+
+  const expectedPrefix = expectedRepo
+    ? `https://github.com/${expectedRepo.trim().toLowerCase()}/releases/tag/`
+    : 'https://github.com/';
 
   for (const release of releases) {
     if (!release || release.draft === true || release.prerelease === true) {
@@ -74,10 +81,17 @@ export function selectLatestRelease(
     }
     const tag = release.tag_name.trim();
     const url = release.html_url.trim();
-    if (!CLI_TAG_RE.test(tag)) {
+    if (!tag || CONTROL_CHAR_RE.test(tag) || !CLI_TAG_RE.test(tag)) {
       continue;
     }
-    if (!url.startsWith('https://github.com/')) {
+    if (!url || CONTROL_CHAR_RE.test(url) || /\s/.test(url)) {
+      continue;
+    }
+    if (!url.toLowerCase().startsWith(expectedPrefix)) {
+      continue;
+    }
+    const afterV = tag.replace(/^[vV]/, '');
+    if (!afterV) {
       continue;
     }
     return {
@@ -93,6 +107,7 @@ export function selectLatestRelease(
 export interface SyncLatestReleaseOptions {
   repo: string;
   productName?: string;
+  timeoutMs?: number;
   fetchImpl?: typeof globalThis.fetch;
   store: ReleaseStore;
   submitLinkPost: (input: SubmitLinkPostInput) => Promise<{ id: string }>;
@@ -108,9 +123,11 @@ export async function syncLatestRelease(options: SyncLatestReleaseOptions): Prom
   }
 
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const timeoutMs = options.timeoutMs ?? 10_000;
   const response = await fetchImpl(
     `https://api.github.com/repos/${repo}/releases?per_page=10`,
     {
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'solo-release-bot-devvit',
@@ -123,7 +140,7 @@ export async function syncLatestRelease(options: SyncLatestReleaseOptions): Prom
   }
 
   const payload = (await response.json()) as GitHubRelease[];
-  const latest = selectLatestRelease(payload, options.productName ?? 'Solo');
+  const latest = selectLatestRelease(payload, options.productName ?? 'Solo', repo);
   if (!latest) {
     return { status: 'no-release' };
   }
@@ -137,18 +154,41 @@ export async function syncLatestRelease(options: SyncLatestReleaseOptions): Prom
     };
   }
 
-  const post = await options.submitLinkPost({
-    title: latest.title,
-    url: latest.url,
-  });
+  if (options.store.claimPost) {
+    const claimed = await options.store.claimPost(latest.tag);
+    if (!claimed) {
+      return {
+        status: 'already-posted',
+        tag: latest.tag,
+        title: latest.title,
+        url: latest.url,
+      };
+    }
+  }
 
-  await options.store.markPosted(latest.tag, post.id);
+  try {
+    const post = await options.submitLinkPost({
+      title: latest.title,
+      url: latest.url,
+    });
 
-  return {
-    status: 'posted',
-    tag: latest.tag,
-    title: latest.title,
-    url: latest.url,
-    postId: post.id,
-  };
+    await options.store.markPosted(latest.tag, post.id);
+
+    return {
+      status: 'posted',
+      tag: latest.tag,
+      title: latest.title,
+      url: latest.url,
+      postId: post.id,
+    };
+  } catch (err) {
+    if (options.store.releaseClaim) {
+      try {
+        await options.store.releaseClaim(latest.tag);
+      } catch {
+        // Ignore cleanup failures so the original error surfaces.
+      }
+    }
+    throw err;
+  }
 }

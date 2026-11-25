@@ -11,6 +11,7 @@ import {
   main,
   syncDirectory,
 } from '../../sites/build.mjs';
+import { safeJsonLd } from '../../sites/src/layout.mjs';
 import {
   CLI_TARGETS,
   cliAssetFilename,
@@ -312,7 +313,15 @@ describe('sites/build static site generation', async () => {
       for (const match of html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)) {
         assert.doesNotThrow(() => JSON.parse(match[1]), `${label}: invalid JSON-LD`);
       }
+      assert.ok(html.includes('<link rel="icon" href="data:,">'), `${label}: missing empty data favicon link`);
     }
+
+    const encoded = safeJsonLd({ text: '</script>&>\u2028\u2029' });
+    assert.ok(!encoded.includes('<'));
+    assert.ok(!encoded.includes('>'));
+    assert.ok(!encoded.includes('&'));
+    assert.ok(!encoded.includes('\u2028'));
+    assert.ok(!encoded.includes('\u2029'));
   });
 
   it('emits _headers matching crates/sws-security/src/headers.rs SECURITY_HEADERS exactly', () => {

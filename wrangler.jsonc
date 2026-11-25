@@ -13,7 +13,7 @@
 		"watch_dir": "crates/sws-worker-site/src"
 	},
 	"assets": {
-		// Rendered by core/tools/render-tenant.mjs; _headers applies the security headers.
+		// Rendered by `npm run render` (`solo build`); _headers applies the security headers.
 		"directory": "./core/public",
 		"binding": "ASSETS",
 		// Only /api/* reaches the Worker first; everything else is served as a static asset.

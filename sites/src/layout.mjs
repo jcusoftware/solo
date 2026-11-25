@@ -19,7 +19,12 @@ export function escapeXml(value) {
 }
 
 export function safeJsonLd(data) {
-  return JSON.stringify(data, null, 2).replace(/</g, '\\u003c');
+  return JSON.stringify(data, null, 2)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 export function renderHeadersFile(securityHeaders) {
@@ -709,6 +714,7 @@ function renderDocumentHead({ title, description, canonicalUrl, noindex, jsonLd 
   } else if (canonicalUrl) {
     tags.push(`  <link rel="canonical" href="${escapeHtml(canonicalUrl)}">`);
   }
+  tags.push('  <link rel="icon" href="data:,">');
   tags.push('  <link rel="stylesheet" href="/styles.css">');
   if (jsonLd) {
     tags.push(`  <script type="application/ld+json">\n${safeJsonLd(jsonLd)}\n  </script>`);

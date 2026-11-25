@@ -58,7 +58,7 @@ Gates are `npm run test:a11y` (axe, wcag22aa) and `npm run lhci` (accessibility 
 
 ## 7. Virginia ABC advertising guardrails (`packs/hospitality`)
 
-The linters in `core/tools/abc-lint.mjs` (Node) and `packs/hospitality/crate/src/abc.rs` (Rust) are advisory. They flag:
+The linters in `packs/hospitality/tools/abc-lint.mjs` (Node) and `packs/hospitality/crate/src/abc.rs` (Rust) are advisory. They flag:
 
 - "bottomless"
 - "2-for-1" (and "2 for 1" or "2for1")

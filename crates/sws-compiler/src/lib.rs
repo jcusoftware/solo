@@ -91,6 +91,16 @@ pub fn compile_site(
     compile_site_internal(doc, None, registry, options)
 }
 
+/// Compile a pre-parsed [`SiteDocument`] along with the original raw JSON value for plugin lint.
+pub fn compile_site_with_raw(
+    doc: &SiteDocument,
+    raw_input: Option<&Value>,
+    registry: Option<&PluginRegistry>,
+    options: &CompileOptions,
+) -> Result<CompiledSite, CompileError> {
+    compile_site_internal(doc, raw_input, registry, options)
+}
+
 /// Parse raw JSON (either an IR [`SiteDocument`] or plugin-specific manifest),
 /// apply registered plugins, and compile to static files.
 pub fn compile_from_json(
@@ -1252,6 +1262,65 @@ mod tests {
                 .any(|d| d.code == "output_path_collision"),
             "{:?}",
             col_err.diagnostics
+        );
+    }
+
+    #[test]
+    fn enforces_wcag_large_or_ui_contrast_and_img_alt_diagnostics() {
+        // 1. UI contrast pair (~3.26:1 on #F7F5F0) passes with usage="UI border", fails with usage="body text".
+        let mut doc = base_doc();
+        doc.tokens.colors.insert("ui_mid".to_string(), "#888888".to_string());
+        doc.tokens.contrast_pairs.push(ContrastPair {
+            foreground: "ui_mid".to_string(),
+            background: "bg".to_string(),
+            min_ratio: 3.0,
+            usage: Some("UI border".to_string()),
+        });
+        assert!(
+            compile_site(&doc, None, &CompileOptions::default()).is_ok(),
+            "3.26:1 UI border contrast pair must pass with min_ratio 3.0"
+        );
+
+        doc.tokens.contrast_pairs.last_mut().unwrap().usage = Some("body text".to_string());
+        let body_err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            body_err.diagnostics.iter().any(|d| d.code == "contrast_ratio_too_low"),
+            "{:?}",
+            body_err.diagnostics
+        );
+
+        doc.tokens.contrast_pairs.pop();
+
+        // 2. Visible <img> missing alt fails; alt="" and aria-hidden="true" pass.
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(elem(
+                "img",
+                BTreeMap::from([("src".to_string(), "/photo.webp".to_string())]),
+                Vec::new(),
+            ));
+        }
+        let img_err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            img_err.diagnostics.iter().any(|d| d.code == "img_missing_alt"),
+            "{:?}",
+            img_err.diagnostics
+        );
+
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+            && let Some(Node::Element { attrs, .. }) = children.last_mut()
+        {
+            attrs.insert("alt".to_string(), String::new());
+        }
+        assert!(
+            compile_site(&doc, None, &CompileOptions::default()).is_ok(),
+            "img with alt=\"\" must pass"
         );
     }
 }

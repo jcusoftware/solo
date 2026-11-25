@@ -170,7 +170,7 @@ fn check_validates_demo_venue_headers_and_abc_bad_fixture() {
     let demo_venue = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../packs/hospitality/demo/venue.json");
     let abc_bad = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tools/fixtures/abc-bad.json");
+        .join("../../packs/hospitality/tools/fixtures/abc-bad.json");
 
     let headers_ok = dir.path().join("_headers");
     fs::write(&headers_ok, render_headers_file()).expect("write _headers");
@@ -232,11 +232,14 @@ fn starter_site_uses_forms_contact_js_island_and_baseline_styles() {
     let html = fs::read_to_string(out_dir.join("index.html")).expect("read index.html");
     assert!(html.contains("action=\"/api/forms/contact\""), "{html}");
     assert!(html.contains("js-api-form"), "{html}");
+    assert!(html.contains("name=\"website\""), "{html}");
+    assert!(html.contains("cf-turnstile"), "{html}");
     assert!(!html.contains("/api/inquire"), "{html}");
 
     let css = fs::read_to_string(out_dir.join("styles.css")).expect("read styles.css");
     assert!(css.contains(".skip-link"), "{css}");
     assert!(css.contains(":focus-visible"), "{css}");
+    assert!(css.contains(".hp"), "{css}");
 }
 
 #[test]
@@ -491,11 +494,16 @@ fn mcp_read_site_ir_jails_paths_and_blocks_sensitive_files() {
     let dir = TempDir::new("mcp-jail");
     let root = dir.path().join("workspace");
     let outside = dir.path().join("outside.json");
+    let missing_outside = dir.path().join("does-not-exist.json");
     fs::create_dir_all(root.join("private")).expect("create private dir");
+    fs::create_dir_all(root.join(".wrangler/state")).expect("create .wrangler dir");
     fs::write(&outside, "{}").expect("write outside");
     fs::write(root.join(".dev.vars"), "TURNSTILE_SECRET_KEY=secret").expect("write .dev.vars");
     fs::write(root.join(".env"), "API_KEY=secret").expect("write .env");
     fs::write(root.join("secrets.env"), "SECRET=1").expect("write secrets.env");
+    fs::write(root.join(".npmrc"), "//registry/:_authToken=secret").expect("write .npmrc");
+    fs::write(root.join("id_ed25519"), "PRIVATE").expect("write key");
+    fs::write(root.join(".wrangler/state/db.sqlite"), "SQLITE").expect("write d1");
     fs::write(root.join("private/dossier.json"), "{}").expect("write dossier");
 
     let blocked_paths = [
@@ -504,6 +512,9 @@ fn mcp_read_site_ir_jails_paths_and_blocks_sensitive_files() {
         ".dev.vars",
         ".env",
         "secrets.env",
+        ".npmrc",
+        "id_ed25519",
+        ".wrangler/state/db.sqlite",
         "private/dossier.json",
     ];
 
@@ -528,4 +539,49 @@ fn mcp_read_site_ir_jails_paths_and_blocks_sensitive_files() {
             "expected blocked path '{p}' to error, got: {resp}"
         );
     }
+
+    // Existing vs non-existing absolute paths outside workspace must return the same error (no oracle).
+    let mut err_msgs = Vec::new();
+    for abs in [&outside, &missing_outside] {
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "read_site_ir",
+                "arguments": { "path": abs.to_str().expect("utf8 path") }
+            }
+        });
+        let mut out = Vec::new();
+        serve_mcp(Cursor::new(format!("{req}\n").as_bytes()), &mut out, &root).expect("serve_mcp");
+        let resp: Value = serde_json::from_slice(&out).expect("parse mcp response");
+        err_msgs.push(resp["result"]["content"][0]["text"].as_str().unwrap_or("").to_string());
+    }
+    assert_eq!(err_msgs[0], err_msgs[1]);
+    assert!(err_msgs[0].contains("outside workspace root"), "{}", err_msgs[0]);
+}
+
+#[test]
+fn mcp_rejects_oversized_stdin_line_and_recovers() {
+    let dir = TempDir::new("mcp-line-limit");
+    let huge = " ".repeat((4 * 1024 * 1024) + 128);
+    let ping = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "ping"
+    }))
+    .expect("serialize ping");
+    let stream = format!("{huge}\n{ping}\n");
+    let mut out = Vec::new();
+    serve_mcp(Cursor::new(stream.as_bytes()), &mut out, dir.path()).expect("serve_mcp");
+
+    let out_str = String::from_utf8(out).expect("utf8");
+    let lines: Vec<Value> = out_str
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("valid json"))
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["error"]["code"], json!(-32600));
+    assert_eq!(lines[1]["id"], json!(42));
+    assert_eq!(lines[1]["result"], json!({}));
 }

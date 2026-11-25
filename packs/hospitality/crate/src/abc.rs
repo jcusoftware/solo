@@ -5,7 +5,7 @@
 //! advertising; 3 VAC 5-50-160, happy hour). The rule set is a heuristic: it
 //! MUST be re-verified against current Virginia ABC regulations before client
 //! use, and human sign-off is still required. Mirrored in
-//! `core/tools/abc-lint.mjs`; keep both in sync.
+//! `packs/hospitality/tools/abc-lint.mjs`; keep both in sync.
 
 /// Regulatory citations surfaced with every finding.
 pub const CITATIONS: &str = "3 VAC 5-20-10 through 3 VAC 5-20-100 (advertising); 3 VAC 5-50-160 (happy hour). Advisory only: re-verify against current Virginia ABC regulations; human sign-off required.";

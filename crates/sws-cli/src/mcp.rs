@@ -15,6 +15,7 @@ use crate::commands::{
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_READ_SITE_IR_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_MCP_LINE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 struct ToolDef {
@@ -53,12 +54,72 @@ pub fn run_stdio(workspace_root: &Path) -> Result<(), String> {
 /// Serve newline-delimited JSON-RPC 2.0 MCP messages from `reader` to `writer`
 /// with filesystem reads confined to `workspace_root`.
 pub fn serve_mcp<R: BufRead, W: Write>(
-    reader: R,
+    mut reader: R,
     mut writer: W,
     workspace_root: &Path,
 ) -> io::Result<()> {
-    for line_res in reader.lines() {
-        let line = line_res?;
+    let mut line_buf = Vec::new();
+    loop {
+        line_buf.clear();
+        let mut oversized = false;
+        loop {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                break;
+            }
+            if let Some(nl_pos) = chunk.iter().position(|&b| b == b'\n') {
+                let take = nl_pos + 1;
+                if !oversized {
+                    if line_buf.len().saturating_add(take) > MAX_MCP_LINE_BYTES {
+                        oversized = true;
+                        line_buf.clear();
+                    } else {
+                        line_buf.extend_from_slice(&chunk[..take]);
+                    }
+                }
+                reader.consume(take);
+                break;
+            }
+            let chunk_len = chunk.len();
+            if !oversized {
+                if line_buf.len().saturating_add(chunk_len) > MAX_MCP_LINE_BYTES {
+                    oversized = true;
+                    line_buf.clear();
+                } else {
+                    line_buf.extend_from_slice(chunk);
+                }
+            }
+            reader.consume(chunk_len);
+        }
+
+        if oversized {
+            let err = json_rpc_error(
+                Value::Null,
+                -32600,
+                "Invalid Request: message exceeds maximum size",
+            );
+            let serialized = serde_json::to_string(&err).unwrap_or_else(|e| {
+                eprintln!("solo mcp: failed to serialize error: {e}");
+                r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal serialization error"}}"#.to_string()
+            });
+            writeln!(writer, "{serialized}")?;
+            writer.flush()?;
+            continue;
+        }
+
+        if line_buf.is_empty() {
+            break;
+        }
+
+        let line = match String::from_utf8(std::mem::take(&mut line_buf)) {
+            Ok(s) => s,
+            Err(_) => {
+                let err = json_rpc_error(Value::Null, -32700, "Parse error: invalid UTF-8");
+                writeln!(writer, "{err}")?;
+                writer.flush()?;
+                continue;
+            }
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -244,12 +305,21 @@ fn is_sensitive_component(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "private"
         || lower == ".git"
+        || lower == ".wrangler"
         || lower == ".dev.vars"
         || lower == ".env"
+        || lower == ".npmrc"
+        || lower == ".netrc"
+        || lower == "id_rsa"
+        || lower == "id_ed25519"
+        || lower == "id_ecdsa"
         || lower.starts_with(".env.")
         || lower.ends_with(".env")
         || lower.ends_with(".pem")
         || lower.ends_with(".key")
+        || lower.ends_with(".p12")
+        || lower.ends_with(".pfx")
+        || lower.ends_with(".secret")
 }
 
 fn check_no_sensitive_components(path: &Path) -> Result<(), String> {
@@ -275,7 +345,7 @@ fn resolve_safe_read_path(raw_path: &str, workspace_root: &Path) -> Result<PathB
     let req_path = Path::new(trimmed);
     for comp in req_path.components() {
         if matches!(comp, Component::ParentDir) {
-            return Err(format!("access denied: '..' traversal not allowed in '{raw_path}'"));
+            return Err("access denied: path resolves outside workspace root".to_string());
         }
     }
     check_no_sensitive_components(req_path)?;
@@ -288,6 +358,12 @@ fn resolve_safe_read_path(raw_path: &str, workspace_root: &Path) -> Result<PathB
     })?;
 
     let candidate = if req_path.is_absolute() {
+        // Check workspace prefix before canonicalizing absolute paths so existing vs missing
+        // files outside `workspace_root` cannot be distinguished via error messages.
+        let abs_ok = req_path.starts_with(&canon_root) || req_path.starts_with(workspace_root);
+        if !abs_ok {
+            return Err("access denied: path resolves outside workspace root".to_string());
+        }
         req_path.to_path_buf()
     } else {
         canon_root.join(req_path)
@@ -296,9 +372,7 @@ fn resolve_safe_read_path(raw_path: &str, workspace_root: &Path) -> Result<PathB
         .map_err(|e| format!("failed to resolve path '{raw_path}': {e}"))?;
 
     if !canon_target.starts_with(&canon_root) {
-        return Err(format!(
-            "access denied: path '{raw_path}' resolves outside workspace root"
-        ));
+        return Err("access denied: path resolves outside workspace root".to_string());
     }
 
     let rel_target = canon_target
