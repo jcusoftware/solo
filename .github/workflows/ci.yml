@@ -37,6 +37,29 @@ jobs:
       - name: cargo clippy (wasm32)
         run: cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings
 
+  verify:
+    name: verify (npm fast gate)
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: cargo deny (installs the binary npm run verify calls)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      - name: npm run verify (contributor-safe subset; agents/devvit gates run via verify:full in the studio checkout)
+        run: npm run verify
+
   web:
     name: web (render, ABC lint, header parity, a11y, lighthouse)
     needs: rust
