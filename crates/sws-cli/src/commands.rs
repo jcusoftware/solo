@@ -34,7 +34,9 @@ pub fn default_registry() -> PluginRegistry {
     #[cfg_attr(not(feature = "pack-hospitality"), allow(unused_mut))]
     let mut registry = PluginRegistry::new();
     #[cfg(feature = "pack-hospitality")]
-    registry.register(Box::new(HospitalityPlugin));
+    registry
+        .register(Box::new(HospitalityPlugin))
+        .expect("built-in hospitality pack must satisfy the current plugin ABI");
     registry
 }
 
@@ -278,7 +280,7 @@ pub fn parse_value_to_ir(
             .transform_input_with(None, raw)
             .map_err(|e| format!("plugin input transformation failed: {e}"))?;
         registry
-            .apply_transforms(&mut doc)
+            .apply_to_document(&mut doc)
             .map_err(|e| format!("plugin IR transform failed: {e}"))?;
         return Ok((doc, "venue_manifest".to_string()));
     }
@@ -286,7 +288,7 @@ pub fn parse_value_to_ir(
     let mut doc: SiteDocument = serde_json::from_value(raw.clone())
         .map_err(|e| format!("failed to parse SiteDocument IR: {e}"))?;
     registry
-        .apply_transforms(&mut doc)
+        .apply_to_document(&mut doc)
         .map_err(|e| format!("plugin IR transform failed: {e}"))?;
     Ok((doc, "site_ir".to_string()))
 }

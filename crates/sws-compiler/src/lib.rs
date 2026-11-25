@@ -119,9 +119,14 @@ pub fn compile_from_json(
         // Deserialize straight from the input string instead of deep-cloning
         // the parsed `Value` (issue #13); the `Value` stays alive unchanged as
         // the plugin-lint `raw_input`.
-        let doc: SiteDocument = serde_json::from_str(input_json).map_err(|e| {
+        let mut doc: SiteDocument = serde_json::from_str(input_json).map_err(|e| {
             CompileError::new(format!("invalid SiteDocument JSON: {e}"), Vec::new())
         })?;
+        // Apply plugin contributions and IR transforms before expansion and
+        // rendering so contributed components are renderable (issue #18).
+        registry
+            .apply_to_document(&mut doc)
+            .map_err(|e| CompileError::new(e.to_string(), Vec::new()))?;
         return compile_site_internal(&doc, Some(&val), Some(registry), options);
     }
 
@@ -129,7 +134,7 @@ pub fn compile_from_json(
         .transform_input_with(None, &val)
         .map_err(|e| CompileError::new(e.to_string(), Vec::new()))?;
     registry
-        .apply_transforms(&mut doc)
+        .apply_to_document(&mut doc)
         .map_err(|e| CompileError::new(e.to_string(), Vec::new()))?;
 
     compile_site_internal(&doc, Some(&val), Some(registry), options)
@@ -524,10 +529,13 @@ fn render_sitemap_xml(doc: &SiteDocument) -> String {
 mod tests {
     use serde_json::json;
     use sws_ir::{
-        ComponentDef, ContrastPair, DesignTokens, FontTokens, IrStyleRule, JsonLdBlock, Node,
-        PropKind, PropSpec, SeoMeta,
+        ComponentDef, ContrastPair, DesignTokens, FormFieldKind, FormFieldSchema, FormSchema,
+        FontTokens, IrStyleRule, JsonLdBlock, Node, PropKind, PropSpec, SeoMeta,
     };
-    use sws_plugin::{DiagnosticSeverity, PluginDiagnostic, PluginError, SwsPlugin};
+    use sws_plugin::{
+        DiagnosticSeverity, PluginComponent, PluginDiagnostic, PluginError, PluginFormSchema,
+        SwsPlugin,
+    };
 
     use super::*;
 
@@ -975,7 +983,8 @@ mod tests {
     #[test]
     fn compile_from_json_supports_plugins_and_advisory_diagnostics() {
         let mut reg = PluginRegistry::new();
-        reg.register(Box::new(DummyPlugin));
+        reg.register(Box::new(DummyPlugin))
+            .expect("DummyPlugin uses the current plugin ABI");
 
         let compiled = compile_from_json(r#"{"kind":"dummy"}"#, &reg, &CompileOptions::default())
             .expect("advisory lint should not fail compilation");
@@ -984,6 +993,270 @@ mod tests {
             .iter()
             .any(|d| d.level == DiagnosticLevel::Warning && d.code == "plugin:dummy:advisory-note"));
         assert!(compiled.files.contains_key("index.html"));
+    }
+
+    /// Reusable `ComponentDef` for the contribution tests (issue #18).
+    fn contributed_card_def() -> ComponentDef {
+        ComponentDef {
+            name: "contributed-card".to_string(),
+            props: BTreeMap::from([(
+                "title".to_string(),
+                PropSpec {
+                    kind: PropKind::String,
+                    required: true,
+                    default: None,
+                    description: None,
+                },
+            )]),
+            slots: Vec::new(),
+            template: vec![Node::Element {
+                id: None,
+                tag: "p".to_string(),
+                attrs: BTreeMap::new(),
+                classes: vec!["contributed-card".to_string()],
+                style_refs: Vec::new(),
+                children: vec![Node::Text {
+                    value: "{{title}}".to_string(),
+                }],
+            }],
+        }
+    }
+
+    /// Reusable `FormSchema` for the contribution tests (issue #18).
+    fn contributed_form_schema() -> FormSchema {
+        FormSchema {
+            id: "contributed-contact".to_string(),
+            action: "/api/inquire".to_string(),
+            method: "POST".to_string(),
+            turnstile_action: "inquire".to_string(),
+            fields: vec![FormFieldSchema {
+                name: "email".to_string(),
+                label: "Email".to_string(),
+                kind: FormFieldKind::Email,
+                required: true,
+                placeholder: None,
+                help_text: None,
+                default_value: None,
+                options: Vec::new(),
+                max_chars: Some(254),
+                min: None,
+                max: None,
+                autocomplete: Some("email".to_string()),
+            }],
+        }
+    }
+
+    /// Test plugin contributing a component and a form schema through the
+    /// pack-independent `PluginRegistry` path (issue #18).
+    struct ContributingPlugin;
+
+    impl SwsPlugin for ContributingPlugin {
+        fn id(&self) -> &'static str {
+            "contributor"
+        }
+        fn name(&self) -> &'static str {
+            "Contributing Plugin"
+        }
+        fn version(&self) -> &'static str {
+            "0.1.0"
+        }
+        fn can_transform_input(&self, input: &Value) -> bool {
+            input.get("kind").and_then(Value::as_str) == Some("contributor")
+        }
+        fn transform_input(&self, _input: &Value) -> Result<SiteDocument, PluginError> {
+            let mut doc = base_doc();
+            // Reference the contributed component from the page body. Without
+            // the registry merge this instance renders nothing and IR
+            // validation rejects the unknown component.
+            if let Some(Node::Element { children, .. }) = doc.pages[0]
+                .body
+                .iter_mut()
+                .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+            {
+                children.push(Node::ComponentInstance {
+                    component: "contributed-card".to_string(),
+                    props: BTreeMap::from([("title".to_string(), json!("From Plugin"))]),
+                    slots: BTreeMap::new(),
+                });
+            }
+            Ok(doc)
+        }
+        fn components(&self) -> Vec<PluginComponent> {
+            vec![PluginComponent {
+                name: "contributed-card".to_string(),
+                description: "Card contributed by the test plugin".to_string(),
+                definition: contributed_card_def(),
+            }]
+        }
+        fn form_schemas(&self) -> Vec<PluginFormSchema> {
+            vec![PluginFormSchema {
+                id: "contributed-contact".to_string(),
+                schema: contributed_form_schema(),
+            }]
+        }
+        fn lint(&self, doc: &SiteDocument, _raw: Option<&Value>) -> Vec<PluginDiagnostic> {
+            // Observation channel: `lint` runs on the post-merge document
+            // inside the compiler, so these diagnostics prove the
+            // contributions reached the compile pipeline unmerged-by-hand.
+            let mut out = Vec::new();
+            if doc.components.contains_key("contributed-card") {
+                out.push(PluginDiagnostic {
+                    plugin_id: self.id().to_string(),
+                    rule: "contributed-component-present".to_string(),
+                    severity: DiagnosticSeverity::Advisory,
+                    path: "components.contributed-card".to_string(),
+                    message: "contributed component reached the compiler".to_string(),
+                    citation: None,
+                });
+            }
+            if doc.forms.contains_key("contributed-contact") {
+                out.push(PluginDiagnostic {
+                    plugin_id: self.id().to_string(),
+                    rule: "contributed-form-schema-present".to_string(),
+                    severity: DiagnosticSeverity::Advisory,
+                    path: "forms.contributed-contact".to_string(),
+                    message: "contributed form schema reached the compiler".to_string(),
+                    citation: None,
+                });
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn compile_from_json_plugin_contributions_reach_compiled_output() {
+        let mut reg = PluginRegistry::new();
+        reg.register(Box::new(ContributingPlugin))
+            .expect("test plugin uses the current plugin ABI");
+
+        let compiled =
+            compile_from_json(r#"{"kind":"contributor"}"#, &reg, &CompileOptions::default())
+                .expect("plugin contributions must merge before compilation");
+
+        // The contributed component rendered into the compiled HTML.
+        let html = compiled
+            .files
+            .get("index.html")
+            .expect("compiled index.html");
+        assert!(
+            html.contains("contributed-card") && html.contains("From Plugin"),
+            "contributed component markup missing from HTML: {html}"
+        );
+
+        // The contributed form schema reached the compiled document.
+        assert!(compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "plugin:contributor:contributed-component-present"));
+        assert!(compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "plugin:contributor:contributed-form-schema-present"));
+    }
+
+    #[test]
+    fn compile_from_json_ir_input_merges_plugin_contributions() {
+        let mut reg = PluginRegistry::new();
+        reg.register(Box::new(ContributingPlugin))
+            .expect("test plugin uses the current plugin ABI");
+
+        // Plain SiteDocument IR referencing the contributed component.
+        let ir = json!({
+            "slug": "acme-demo",
+            "name": "Acme Demo",
+            "base_url": "https://acme.example",
+            "pages": [
+                {
+                    "id": "home",
+                    "route": { "kind": "static", "path": "/" },
+                    "title": "Home",
+                    "body": [
+                        {
+                            "type": "element",
+                            "tag": "a",
+                            "classes": ["skip-link"],
+                            "attrs": { "href": "#main" },
+                            "children": [{ "type": "text", "value": "Skip to main content" }]
+                        },
+                        { "type": "element", "tag": "header", "children": [{ "type": "text", "value": "Header" }] },
+                        {
+                            "type": "element",
+                            "tag": "main",
+                            "attrs": { "id": "main", "tabindex": "-1" },
+                            "children": [
+                                { "type": "element", "tag": "h1", "children": [{ "type": "text", "value": "Hello" }] },
+                                {
+                                    "type": "component_instance",
+                                    "component": "contributed-card",
+                                    "props": { "title": "From IR Input" }
+                                }
+                            ]
+                        },
+                        { "type": "element", "tag": "footer", "children": [{ "type": "text", "value": "Footer" }] }
+                    ]
+                }
+            ]
+        })
+        .to_string();
+
+        let compiled = compile_from_json(&ir, &reg, &CompileOptions::default())
+            .expect("IR input must also merge plugin contributions before compilation");
+        let html = compiled
+            .files
+            .get("index.html")
+            .expect("compiled index.html");
+        assert!(
+            html.contains("contributed-card") && html.contains("From IR Input"),
+            "contributed component markup missing from HTML: {html}"
+        );
+    }
+
+    /// Plugin whose `transform_input` already inserts a component under the
+    /// same name it contributes, forcing a merge collision (issue #18).
+    struct CollidingPlugin;
+
+    impl SwsPlugin for CollidingPlugin {
+        fn id(&self) -> &'static str {
+            "collider"
+        }
+        fn name(&self) -> &'static str {
+            "Colliding Plugin"
+        }
+        fn version(&self) -> &'static str {
+            "0.1.0"
+        }
+        fn can_transform_input(&self, input: &Value) -> bool {
+            input.get("kind").and_then(Value::as_str) == Some("collider")
+        }
+        fn transform_input(&self, _input: &Value) -> Result<SiteDocument, PluginError> {
+            let mut doc = base_doc();
+            doc.components
+                .insert("contributed-card".to_string(), contributed_card_def());
+            Ok(doc)
+        }
+        fn components(&self) -> Vec<PluginComponent> {
+            vec![PluginComponent {
+                name: "contributed-card".to_string(),
+                description: "Colliding contribution".to_string(),
+                definition: contributed_card_def(),
+            }]
+        }
+    }
+
+    #[test]
+    fn compile_from_json_rejects_colliding_plugin_contribution() {
+        let mut reg = PluginRegistry::new();
+        reg.register(Box::new(CollidingPlugin))
+            .expect("test plugin uses the current plugin ABI");
+
+        let err = compile_from_json(r#"{"kind":"collider"}"#, &reg, &CompileOptions::default())
+            .expect_err("a name collision must be a hard error, not a silent overwrite");
+        assert!(
+            err.message.contains("contributed-card")
+                && err.message.contains("collides with an existing component"),
+            "unexpected error message: {}",
+            err.message
+        );
     }
 
     #[test]
