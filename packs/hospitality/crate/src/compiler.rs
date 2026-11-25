@@ -57,6 +57,14 @@ impl SwsPlugin for HospitalityPlugin {
                 "brand.fonts.body failed CSS font stack safety check",
             ));
         }
+        if let Some(heading) = &venue.brand.fonts.heading
+            && !sws_css::is_safe_font_stack(heading)
+        {
+            return Err(PluginError::new(
+                self.id(),
+                "brand.fonts.heading failed CSS font stack safety check",
+            ));
+        }
 
         let mut doc = build_site_document(&venue);
         doc.metadata

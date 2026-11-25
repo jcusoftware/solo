@@ -676,8 +676,8 @@ pub const EXPORT_DEV_VARS_EXAMPLE: &str = "\
 # Local-only secrets for `wrangler dev` (copy to .dev.vars; never commit .dev.vars).\n\
 # Cloudflare Turnstile always-pass TEST secret for local development:\n\
 TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA\n\
-# Skip live Turnstile verification locally when no secret key is configured:\n\
-DEV_MODE=true\n";
+# Uncomment ONLY for offline local dev without a Turnstile secret: skips verification.\n\
+# DEV_MODE=true\n";
 
 fn style_rule(id: &str, selector: &str, pseudo: Option<&str>, decls: &[(&str, &str)]) -> IrStyleRule {
     let mut declarations = BTreeMap::new();
@@ -997,6 +997,9 @@ use serde_json::{{Value, json}};
 
 pub const API_CACHE_CONTROL: &str = "{API_CACHE_CONTROL}";
 pub const MAX_BODY_BYTES: usize = 16 * 1024;
+pub const MAX_TURNSTILE_TOKEN: usize = 2048;
+pub const HONEYPOT_FIELD: &str = "website";
+pub const TURNSTILE_FIELD: &str = "cf-turnstile-response";
 
 pub const SECURITY_HEADERS: &[(&str, &str)] = &[
 {headers_entries}];
@@ -1006,10 +1009,17 @@ pub enum Route {{
     Health,
     HealthHead,
     FormSubmit(String),
+    InquireCompat,
     Newsletter,
     MethodNotAllowed(&'static str),
     NotFound,
     Asset,
+}}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaType {{
+    Json,
+    FormUrlEncoded,
 }}
 
 #[must_use]
@@ -1031,6 +1041,10 @@ pub fn route(method: &str, path: &str) -> Route {{
             "GET" => Route::Health,
             "HEAD" => Route::HealthHead,
             _ => Route::MethodNotAllowed("GET, HEAD"),
+        }},
+        "/api/inquire" => match m.as_str() {{
+            "POST" => Route::InquireCompat,
+            _ => Route::MethodNotAllowed("POST"),
         }},
         "/api/newsletter" => match m.as_str() {{
             "POST" => Route::Newsletter,
@@ -1062,40 +1076,133 @@ pub fn health_body(version: &str) -> Value {{
 }}
 
 #[must_use]
+pub fn has_disallowed_control(s: &str, allow_newlines: bool) -> bool {{
+    s.chars()
+        .any(|c| c.is_control() && !(allow_newlines && matches!(c, '\n' | '\r' | '\t')))
+}}
+
+#[must_use]
 pub fn is_valid_email(raw: &str) -> bool {{
-    let s = raw.trim();
-    if s.is_empty() || s.len() > 254 || s.chars().any(char::is_whitespace) {{
+    let email = raw.trim();
+    if email.len() < 3 || email.len() > 254 {{
         return false;
     }}
-    let Some((local, domain)) = s.split_once('@') else {{
+    let Some((local, domain)) = email.split_once('@') else {{
         return false;
     }};
-    !local.is_empty()
-        && !domain.contains('@')
-        && domain.contains('.')
-        && !domain.starts_with('.')
-        && !domain.ends_with('.')
-        && domain
-            .rsplit_once('.')
-            .is_some_and(|(_, tld)| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
+    if local.is_empty() || local.len() > 64 || domain.contains('@') {{
+        return false;
+    }}
+    let local_ok = local.bytes().all(|b| {{
+        b.is_ascii_alphanumeric() || b"!#$%&'*+/=?^_`{{|}}~.-".contains(&b)
+    }}) && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..");
+    let labels: Vec<&str> = domain.split('.').collect();
+    let tld_ok = labels
+        .last()
+        .is_some_and(|tld| tld.len() >= 2 && tld.bytes().any(|b| b.is_ascii_alphabetic()));
+    let domain_ok = labels.len() >= 2
+        && tld_ok
+        && labels.iter().all(|l| {{
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        }});
+    local_ok && domain_ok
 }}
 
 #[must_use]
 pub fn is_valid_route(raw: &str) -> bool {{
-    let s = raw.trim();
-    s.starts_with('/') && !s.starts_with("//") && s.len() <= 200 && !s.contains(['\\', '\r', '\n'])
+    let route = raw.trim();
+    route.starts_with('/')
+        && route.len() <= 200
+        && !route.contains("//")
+        && !route.split('/').any(|seg| seg == "..")
+        && route
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'))
+}}
+
+#[must_use]
+pub fn is_valid_phone(raw: &str) -> bool {{
+    let p = raw.trim();
+    if p.is_empty() || p.len() > 32 {{
+        return false;
+    }}
+    let mut digits = 0usize;
+    for b in p.bytes() {{
+        if b.is_ascii_digit() {{
+            digits += 1;
+        }} else if !matches!(b, b' ' | b'+' | b'-' | b'(' | b')' | b'.' | b'x' | b'X') {{
+            return false;
+        }}
+    }}
+    digits >= 7
+}}
+
+#[must_use]
+pub fn is_valid_date(raw: &str) -> bool {{
+    let b = raw.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {{
+        return false;
+    }}
+    let Ok(year) = raw[0..4].parse::<u32>() else {{
+        return false;
+    }};
+    let Ok(month) = raw[5..7].parse::<u32>() else {{
+        return false;
+    }};
+    let Ok(day) = raw[8..10].parse::<u32>() else {{
+        return false;
+    }};
+    if !(1900..=2100).contains(&year) || !(1..=12).contains(&month) || day == 0 {{
+        return false;
+    }}
+    let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
+    let max_day = match month {{
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    }};
+    day <= max_day
+}}
+
+#[must_use]
+pub fn parse_content_type(content_type: Option<&str>) -> Option<MediaType> {{
+    let mut parts = content_type?.split(';');
+    let mime = parts.next()?.trim().to_ascii_lowercase();
+    for param in parts {{
+        if let Some((k, v)) = param.split_once('=')
+            && k.trim().eq_ignore_ascii_case("charset")
+        {{
+            let cs = v.trim().trim_matches('"').trim_matches('\'');
+            if !cs.eq_ignore_ascii_case("utf-8") && !cs.eq_ignore_ascii_case("utf8") {{
+                return None;
+            }}
+        }}
+    }}
+    match mime.as_str() {{
+        "application/json" => Some(MediaType::Json),
+        "application/x-www-form-urlencoded" => Some(MediaType::FormUrlEncoded),
+        _ => None,
+    }}
 }}
 
 pub fn parse_fields(content_type: Option<&str>, body: &[u8]) -> Result<BTreeMap<String, String>, &'static str> {{
-    let ct = content_type
-        .and_then(|s| s.split(';').next())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let media_type = parse_content_type(content_type).ok_or("unsupported_media_type")?;
+    if body.len() > MAX_BODY_BYTES {{
+        return Err("payload_too_large");
+    }}
+    let text = std::str::from_utf8(body).map_err(|_| "malformed_body")?;
     let mut out = BTreeMap::new();
-    match ct.as_str() {{
-        "application/json" => {{
-            let val: Value = serde_json::from_slice(body).map_err(|_| "malformed_body")?;
+    match media_type {{
+        MediaType::Json => {{
+            let val: Value = serde_json::from_str(text).map_err(|_| "malformed_body")?;
             let obj = val.as_object().ok_or("malformed_body")?;
             for (k, v) in obj {{
                 let s = match v {{
@@ -1109,8 +1216,7 @@ pub fn parse_fields(content_type: Option<&str>, body: &[u8]) -> Result<BTreeMap<
             }}
             Ok(out)
         }}
-        "application/x-www-form-urlencoded" => {{
-            let text = std::str::from_utf8(body).map_err(|_| "malformed_body")?;
+        MediaType::FormUrlEncoded => {{
             for pair in text.split('&') {{
                 if pair.is_empty() {{
                     continue;
@@ -1120,8 +1226,54 @@ pub fn parse_fields(content_type: Option<&str>, body: &[u8]) -> Result<BTreeMap<
             }}
             Ok(out)
         }}
-        _ => Err("unsupported_media_type"),
     }}
+}}
+
+#[must_use]
+pub fn form_encode(pairs: &[(&str, &str)]) -> String {{
+    let mut out = String::new();
+    for (i, (k, v)) in pairs.iter().enumerate() {{
+        if i > 0 {{
+            out.push('&');
+        }}
+        for (j, part) in [k, v].iter().enumerate() {{
+            if j == 1 {{
+                out.push('=');
+            }}
+            for b in part.bytes() {{
+                match b {{
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {{
+                        out.push(b as char);
+                    }}
+                    _ => out.push_str(&format!("%{{b:02X}}")),
+                }}
+            }}
+        }}
+    }}
+    out
+}}
+
+#[must_use]
+pub fn iso8601_utc(millis: u64) -> String {{
+    let secs = millis / 1000;
+    let ms = millis % 1000;
+    let days = (secs / 86_400) as i64;
+    let sod = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 {{ mp + 3 }} else {{ mp - 9 }};
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{{y:04}}-{{m:02}}-{{d:02}}T{{:02}}:{{:02}}:{{:02}}.{{ms:03}}Z",
+        sod / 3600,
+        (sod % 3600) / 60,
+        sod % 60
+    )
 }}
 
 fn decode_form_component(raw: &str) -> Result<String, &'static str> {{
@@ -1154,19 +1306,27 @@ fn decode_form_component(raw: &str) -> Result<String, &'static str> {{
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {{
+    use std::future::Future;
+    use std::task::Poll;
+    use std::time::Duration;
+
     use serde_json::json;
-    use worker::wasm_bindgen::JsValue;
+    use worker::wasm_bindgen::{{JsCast, JsValue}};
+    use worker::wasm_bindgen_futures::JsFuture;
     use worker::{{
-        Context, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result,
-        console_error, console_warn, event,
+        AbortSignal, Context, Delay, Env, Fetch, Headers, Method, Request, RequestInit, Response,
+        Result, console_error, console_warn, event, js_sys, web_sys,
     }};
 
     use super::{{
-        API_CACHE_CONTROL, MAX_BODY_BYTES, Route, SECURITY_HEADERS, health_body, is_valid_email,
-        is_valid_route, parse_fields, route,
+        API_CACHE_CONTROL, HONEYPOT_FIELD, MAX_BODY_BYTES, MAX_TURNSTILE_TOKEN, Route,
+        SECURITY_HEADERS, TURNSTILE_FIELD, form_encode, has_disallowed_control, health_body,
+        is_valid_date, is_valid_email, is_valid_phone, is_valid_route, iso8601_utc,
+        parse_content_type, parse_fields, route,
     }};
 
     const SITEVERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+    const OUTBOUND_TIMEOUT: Duration = Duration::from_secs(10);
 
     #[event(start)]
     fn start() {{
@@ -1217,6 +1377,24 @@ mod wasm {{
             .filter(|s| !s.is_empty())
     }}
 
+    async fn with_timeout<F, T>(dur: Duration, fut: F) -> std::result::Result<T, ()>
+    where
+        F: Future<Output = T>,
+    {{
+        let mut fut = std::pin::pin!(fut);
+        let mut delay = std::pin::pin!(Delay::from(dur));
+        std::future::poll_fn(|cx| {{
+            if let Poll::Ready(v) = fut.as_mut().poll(cx) {{
+                return Poll::Ready(Ok(v));
+            }}
+            if delay.as_mut().poll(cx).is_ready() {{
+                return Poll::Ready(Err(()));
+            }}
+            Poll::Pending
+        }})
+        .await
+    }}
+
     async fn handle(mut req: Request, env: &Env) -> Result<Response> {{
         let method = req.method();
         let path = req.path();
@@ -1232,7 +1410,8 @@ mod wasm {{
                 resp.headers().set("Cache-Control", API_CACHE_CONTROL)?;
                 Ok(resp)
             }}
-            Route::FormSubmit(form_id) => submit_form(&mut req, env, &form_id).await,
+            Route::FormSubmit(form_id) => submit_form(&mut req, env, &form_id, false).await,
+            Route::InquireCompat => submit_form(&mut req, env, "inquire", true).await,
             Route::Newsletter => submit_newsletter(&mut req, env).await,
             Route::MethodNotAllowed(allow) => {{
                 let resp = json_response(405, &json!({{ "ok": false, "error": "method_not_allowed" }}))?;
@@ -1247,30 +1426,112 @@ mod wasm {{
     async fn read_body_fields(
         req: &mut Request,
     ) -> Result<std::result::Result<std::collections::BTreeMap<String, String>, Response>> {{
+        let ct = req.headers().get("Content-Type")?;
+        if parse_content_type(ct.as_deref()).is_none() {{
+            return Ok(Err(json_response(
+                415,
+                &json!({{ "ok": false, "error": "unsupported_media_type" }}),
+            )?));
+        }}
         if let Some(len) = req
             .headers()
             .get("Content-Length")?
             .and_then(|v| v.trim().parse::<usize>().ok())
             && len > MAX_BODY_BYTES
         {{
-            return Ok(Err(json_response(413, &json!({{ "ok": false, "error": "payload_too_large" }}))?));
+            return Ok(Err(json_response(
+                413,
+                &json!({{ "ok": false, "error": "payload_too_large" }}),
+            )?));
         }}
-        let ct = req.headers().get("Content-Type")?;
-        let bytes = req.bytes().await?;
-        if bytes.len() > MAX_BODY_BYTES {{
-            return Ok(Err(json_response(413, &json!({{ "ok": false, "error": "payload_too_large" }}))?));
-        }}
+        let bytes = match req.inner().body() {{
+            None => Vec::new(),
+            Some(stream) => {{
+                let Ok(reader) = stream
+                    .get_reader()
+                    .dyn_into::<web_sys::ReadableStreamDefaultReader>()
+                else {{
+                    return Ok(Err(json_response(
+                        400,
+                        &json!({{ "ok": false, "error": "malformed_body" }}),
+                    )?));
+                }};
+                let mut buf = Vec::new();
+                loop {{
+                    let chunk_js = match JsFuture::from(reader.read()).await {{
+                        Ok(v) => v,
+                        Err(_) => {{
+                            reader.release_lock();
+                            return Ok(Err(json_response(
+                                400,
+                                &json!({{ "ok": false, "error": "malformed_body" }}),
+                            )?));
+                        }}
+                    }};
+                    let done = js_sys::Reflect::get(&chunk_js, &JsValue::from_str("done"))
+                        .ok()
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if done {{
+                        break;
+                    }}
+                    let Ok(val) = js_sys::Reflect::get(&chunk_js, &JsValue::from_str("value")) else {{
+                        reader.release_lock();
+                        return Ok(Err(json_response(
+                            400,
+                            &json!({{ "ok": false, "error": "malformed_body" }}),
+                        )?));
+                    }};
+                    if val.is_undefined() || val.is_null() {{
+                        continue;
+                    }}
+                    let Ok(arr) = val.dyn_into::<js_sys::Uint8Array>() else {{
+                        reader.release_lock();
+                        return Ok(Err(json_response(
+                            400,
+                            &json!({{ "ok": false, "error": "malformed_body" }}),
+                        )?));
+                    }};
+                    let chunk_len = arr.length() as usize;
+                    if buf.len().saturating_add(chunk_len) > MAX_BODY_BYTES {{
+                        let _ = reader.cancel();
+                        reader.release_lock();
+                        return Ok(Err(json_response(
+                            413,
+                            &json!({{ "ok": false, "error": "payload_too_large" }}),
+                        )?));
+                    }}
+                    let old_len = buf.len();
+                    buf.resize(old_len + chunk_len, 0);
+                    arr.copy_to(&mut buf[old_len..]);
+                }}
+                reader.release_lock();
+                buf
+            }}
+        }};
         match parse_fields(ct.as_deref(), &bytes) {{
             Ok(fields) => Ok(Ok(fields)),
             Err("unsupported_media_type") => Ok(Err(json_response(
                 415,
                 &json!({{ "ok": false, "error": "unsupported_media_type" }}),
             )?)),
-            Err(code) => Ok(Err(json_response(400, &json!({{ "ok": false, "error": code }}))?)),
+            Err("payload_too_large") => Ok(Err(json_response(
+                413,
+                &json!({{ "ok": false, "error": "payload_too_large" }}),
+            )?)),
+            Err(code) => Ok(Err(json_response(
+                400,
+                &json!({{ "ok": false, "error": code }}),
+            )?)),
         }}
     }}
 
-    async fn verify_turnstile(env: &Env, token: Option<&str>) -> Result<Option<Response>> {{
+    async fn verify_turnstile(
+        env: &Env,
+        req: &Request,
+        token: Option<&str>,
+        expected_action: &str,
+    ) -> Result<Option<Response>> {{
         let dev_mode = var(env, "DEV_MODE").as_deref() == Some("true");
         let Some(secret_key) = secret(env, "TURNSTILE_SECRET_KEY") else {{
             if dev_mode {{
@@ -1288,22 +1549,89 @@ mod wasm {{
                 &json!({{ "ok": false, "error": "turnstile_required" }}),
             )?));
         }};
+        if token.len() > MAX_TURNSTILE_TOKEN {{
+            return Ok(Some(json_response(
+                400,
+                &json!({{
+                    "ok": false,
+                    "error": "validation_failed",
+                    "fields": {{ TURNSTILE_FIELD: "too_long" }}
+                }}),
+            )?));
+        }}
+        let ip = req.headers().get("CF-Connecting-IP")?.unwrap_or_default();
+        let mut pairs = vec![("secret", secret_key.as_str()), ("response", token)];
+        if !ip.is_empty() {{
+            pairs.push(("remoteip", ip.as_str()));
+        }}
         let headers = Headers::new();
         headers.set("Content-Type", "application/x-www-form-urlencoded")?;
-        let payload = serde_json::json!({{ "secret": secret_key, "response": token }});
-        let form = format!(
-            "secret={{}}&response={{}}",
-            payload["secret"].as_str().unwrap_or(""),
-            payload["response"].as_str().unwrap_or("")
-        );
         let mut init = RequestInit::new();
         init.with_method(Method::Post)
             .with_headers(headers)
-            .with_body(Some(JsValue::from_str(&form)));
+            .with_body(Some(JsValue::from_str(&form_encode(&pairs))));
         let outbound = Request::new_with_init(SITEVERIFY_URL, &init)?;
-        let mut resp = Fetch::Request(outbound).send().await?;
-        let verdict: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({{}}));
+        let controller = web_sys::AbortController::new()?;
+        let signal = AbortSignal::from(controller.signal());
+        let verdict = match with_timeout(OUTBOUND_TIMEOUT, async {{
+            match Fetch::Request(outbound).send_with_signal(&signal).await {{
+                Ok(mut resp) => {{
+                    let status = resp.status_code();
+                    if !(200..300).contains(&status) {{
+                        console_error!("turnstile siteverify HTTP {{status}}");
+                        return None;
+                    }}
+                    resp.json::<serde_json::Value>().await.ok()
+                }}
+                Err(e) => {{
+                    console_error!("turnstile siteverify fetch failed: {{e}}");
+                    None
+                }}
+            }}
+        }})
+        .await
+        {{
+            Ok(v) => v,
+            Err(()) => {{
+                controller.abort();
+                console_error!("turnstile siteverify timed out");
+                None
+            }}
+        }};
+        let Some(verdict) = verdict else {{
+            return Ok(Some(json_response(
+                503,
+                &json!({{ "ok": false, "error": "turnstile_unavailable" }}),
+            )?));
+        }};
         if verdict["success"].as_bool() == Some(true) {{
+            if !dev_mode {{
+                let action = verdict["action"].as_str().unwrap_or("");
+                if action != expected_action {{
+                    console_warn!("turnstile action mismatch: expected {{expected_action}}, got {{action:?}}");
+                    return Ok(Some(json_response(
+                        403,
+                        &json!({{ "ok": false, "error": "turnstile_failed" }}),
+                    )?));
+                }}
+                if let Some(raw_hosts) = var(env, "ALLOWED_HOSTNAMES") {{
+                    let hostname = verdict["hostname"].as_str().unwrap_or("").trim();
+                    let allowed: Vec<&str> = raw_hosts
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !allowed.is_empty()
+                        && !allowed.iter().any(|h| h.eq_ignore_ascii_case(hostname))
+                    {{
+                        console_warn!("turnstile hostname rejected: {{hostname:?}}");
+                        return Ok(Some(json_response(
+                            403,
+                            &json!({{ "ok": false, "error": "turnstile_failed" }}),
+                        )?));
+                    }}
+                }}
+            }}
             Ok(None)
         }} else {{
             Ok(Some(json_response(
@@ -1313,32 +1641,79 @@ mod wasm {{
         }}
     }}
 
-    async fn submit_form(req: &mut Request, env: &Env, form_id: &str) -> Result<Response> {{
+    async fn submit_form(
+        req: &mut Request,
+        env: &Env,
+        form_id: &str,
+        compat_inquire: bool,
+    ) -> Result<Response> {{
         let fields = match read_body_fields(req).await? {{
             Ok(f) => f,
             Err(r) => return Ok(r),
         }};
-        if fields.get("website").is_some_and(|v| !v.trim().is_empty()) {{
+        if fields.get(HONEYPOT_FIELD).is_some_and(|v| !v.trim().is_empty()) {{
             return json_response(400, &json!({{ "ok": false, "error": "submission_rejected" }}));
         }}
 
         let name = fields.get("name").map(|s| s.trim()).unwrap_or("");
         let email = fields.get("email").map(|s| s.trim()).unwrap_or("");
+        let phone = fields.get("phone").map(|s| s.trim()).filter(|s| !s.is_empty());
         let message = fields.get("message").map(|s| s.trim()).unwrap_or("");
         let source_route = fields.get("source_route").map(|s| s.trim()).unwrap_or("/");
+        let kind = fields.get("kind").map(|s| s.trim()).filter(|s| !s.is_empty());
+        let event_date = fields.get("event_date").map(|s| s.trim()).filter(|s| !s.is_empty());
+        let guest_count_raw = fields.get("guest_count").map(|s| s.trim()).filter(|s| !s.is_empty());
+        let token = fields.get(TURNSTILE_FIELD).map(|s| s.trim()).filter(|s| !s.is_empty());
 
         let mut errs = serde_json::Map::new();
         if name.is_empty() {{
             errs.insert("name".into(), json!("required"));
+        }} else if name.chars().count() > 100 {{
+            errs.insert("name".into(), json!("too_long"));
+        }} else if has_disallowed_control(name, false) {{
+            errs.insert("name".into(), json!("invalid_characters"));
         }}
         if !is_valid_email(email) {{
             errs.insert("email".into(), json!(if email.is_empty() {{ "required" }} else {{ "invalid" }}));
         }}
+        if let Some(p) = phone
+            && !is_valid_phone(p)
+        {{
+            errs.insert("phone".into(), json!("invalid"));
+        }}
         if message.is_empty() {{
             errs.insert("message".into(), json!("required"));
+        }} else if message.chars().count() > 4000 {{
+            errs.insert("message".into(), json!("too_long"));
+        }} else if has_disallowed_control(message, true) {{
+            errs.insert("message".into(), json!("invalid_characters"));
         }}
         if !is_valid_route(source_route) {{
             errs.insert("source_route".into(), json!("invalid"));
+        }}
+        let mut guest_count_num: Option<u32> = None;
+        if compat_inquire {{
+            if let Some(k) = kind
+                && !matches!(k, "private_event" | "contact")
+            {{
+                errs.insert("kind".into(), json!("invalid"));
+            }}
+            if let Some(d) = event_date
+                && !is_valid_date(d)
+            {{
+                errs.insert("event_date".into(), json!("invalid"));
+            }}
+            if let Some(gc) = guest_count_raw {{
+                match gc.parse::<u32>() {{
+                    Ok(n) if (1..=1000).contains(&n) => guest_count_num = Some(n),
+                    _ => {{
+                        errs.insert("guest_count".into(), json!("invalid"));
+                    }}
+                }}
+            }}
+        }}
+        if token.is_some_and(|t| t.len() > MAX_TURNSTILE_TOKEN) {{
+            errs.insert(TURNSTILE_FIELD.into(), json!("too_long"));
         }}
         if !errs.is_empty() {{
             return json_response(
@@ -1347,21 +1722,30 @@ mod wasm {{
             );
         }}
 
-        if let Some(resp) = verify_turnstile(
-            env,
-            fields.get("cf-turnstile-response").map(String::as_str),
-        )
-        .await?
-        {{
+        let expected_action = if compat_inquire {{ "inquire" }} else {{ form_id }};
+        if let Some(resp) = verify_turnstile(env, req, token, expected_action).await? {{
             return Ok(resp);
         }}
 
-        let payload_json = json!({{
-            "name": name,
-            "email": email.to_ascii_lowercase(),
-            "message": message,
-        }})
-        .to_string();
+        let mut payload_obj = serde_json::Map::new();
+        payload_obj.insert("name".into(), json!(name));
+        payload_obj.insert("email".into(), json!(email.to_ascii_lowercase()));
+        if let Some(p) = phone {{
+            payload_obj.insert("phone".into(), json!(p));
+        }}
+        payload_obj.insert("message".into(), json!(message));
+        if compat_inquire {{
+            if let Some(k) = kind {{
+                payload_obj.insert("kind".into(), json!(k));
+            }}
+            if let Some(d) = event_date {{
+                payload_obj.insert("event_date".into(), json!(d));
+            }}
+            if let Some(n) = guest_count_num {{
+                payload_obj.insert("guest_count".into(), json!(n));
+            }}
+        }}
+        let payload_json = serde_json::Value::Object(payload_obj).to_string();
 
         let stmt = env
             .d1("DB")?
@@ -1374,8 +1758,22 @@ mod wasm {{
                 JsValue::from_str(&payload_json),
                 JsValue::from_str(source_route),
             ])?;
-        let id = stmt.first::<f64>(Some("id")).await?.unwrap_or(0.0) as i64;
-        json_response(201, &json!({{ "ok": true, "id": id, "form_id": form_id }}))
+        let id = match stmt.first::<f64>(Some("id")).await {{
+            Ok(Some(id)) => id as i64,
+            Ok(None) => {{
+                console_error!("form_submissions insert returned no id");
+                return json_response(500, &json!({{ "ok": false, "error": "storage_failed" }}));
+            }}
+            Err(e) => {{
+                console_error!("form_submissions insert failed: {{e}}");
+                return json_response(500, &json!({{ "ok": false, "error": "storage_failed" }}));
+            }}
+        }};
+        if compat_inquire {{
+            json_response(201, &json!({{ "ok": true, "id": id }}))
+        }} else {{
+            json_response(201, &json!({{ "ok": true, "id": id, "form_id": form_id }}))
+        }}
     }}
 
     async fn submit_newsletter(req: &mut Request, env: &Env) -> Result<Response> {{
@@ -1383,6 +1781,10 @@ mod wasm {{
             Ok(f) => f,
             Err(r) => return Ok(r),
         }};
+        if fields.get(HONEYPOT_FIELD).is_some_and(|v| !v.trim().is_empty()) {{
+            return json_response(400, &json!({{ "ok": false, "error": "submission_rejected" }}));
+        }}
+
         let email = fields.get("email").map(|s| s.trim()).unwrap_or("");
         let consent_ok = fields
             .get("consent")
@@ -1391,8 +1793,8 @@ mod wasm {{
         let consent_text = fields
             .get("consent_text")
             .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("Explicit opt-in");
+            .filter(|s| !s.is_empty());
+        let token = fields.get(TURNSTILE_FIELD).map(|s| s.trim()).filter(|s| !s.is_empty());
 
         let mut errs = serde_json::Map::new();
         if !is_valid_email(email) {{
@@ -1404,6 +1806,16 @@ mod wasm {{
         if !is_valid_route(source_route) {{
             errs.insert("source_route".into(), json!("invalid"));
         }}
+        if let Some(ct) = consent_text {{
+            if ct.chars().count() > 500 {{
+                errs.insert("consent_text".into(), json!("too_long"));
+            }} else if has_disallowed_control(ct, false) {{
+                errs.insert("consent_text".into(), json!("invalid_characters"));
+            }}
+        }}
+        if token.is_some_and(|t| t.len() > MAX_TURNSTILE_TOKEN) {{
+            errs.insert(TURNSTILE_FIELD.into(), json!("too_long"));
+        }}
         if !errs.is_empty() {{
             return json_response(
                 400,
@@ -1411,32 +1823,36 @@ mod wasm {{
             );
         }}
 
-        if let Some(resp) = verify_turnstile(
-            env,
-            fields.get("cf-turnstile-response").map(String::as_str),
-        )
-        .await?
-        {{
+        if let Some(resp) = verify_turnstile(env, req, token, "newsletter").await? {{
             return Ok(resp);
         }}
 
-        let consent_ts = "1970-01-01T00:00:00Z";
-        env.d1("DB")?
+        let now = iso8601_utc(worker::Date::now().as_millis());
+        let consent_js = consent_text.map(JsValue::from_str).unwrap_or(JsValue::NULL);
+        if let Err(e) = env
+            .d1("DB")?
             .prepare(
                 "INSERT INTO newsletter_subscribers (email, status, consent_timestamp, source_route, consent_text) \
-                 VALUES (?1, 'subscribed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?2, ?3) \
-                 ON CONFLICT(email) DO UPDATE SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') \
-                 WHERE status = 'subscribed'",
+                 VALUES (?1, 'subscribed', ?2, ?3, ?4) \
+                 ON CONFLICT(email) DO NOTHING",
             )
             .bind(&[
                 JsValue::from_str(&email.to_ascii_lowercase()),
+                JsValue::from_str(&now),
                 JsValue::from_str(source_route),
-                JsValue::from_str(consent_text),
+                consent_js,
             ])?
             .run()
-            .await?;
+            .await
+        {{
+            console_error!("newsletter insert failed: {{e}}");
+            return json_response(500, &json!({{ "ok": false, "error": "storage_failed" }}));
+        }}
 
-        json_response(201, &json!({{ "ok": true, "status": "received", "hint": consent_ts }}))
+        json_response(
+            201,
+            &json!({{ "ok": true, "status": "received", "consent_timestamp": now }}),
+        )
     }}
 }}
 
@@ -1451,12 +1867,27 @@ mod tests {{
             route("POST", "/api/forms/contact"),
             Route::FormSubmit("contact".to_string())
         );
+        assert_eq!(route("POST", "/api/inquire"), Route::InquireCompat);
         assert_eq!(route("POST", "/api/newsletter"), Route::Newsletter);
         assert_eq!(route("GET", "/"), Route::Asset);
         assert!(is_valid_email("guest@example.test"));
         assert!(!is_valid_email("bad@email"));
+        assert!(!is_valid_email("bad\u{{0007}}@example.test"));
         assert!(is_valid_route("/contact"));
         assert!(!is_valid_route("//evil.example"));
+        assert!(!is_valid_route("/a?b=1"));
+        assert!(!is_valid_route("/../etc/passwd"));
+        assert!(is_valid_phone("+1 (703) 555-0100"));
+        assert!(!is_valid_phone("123"));
+        assert!(is_valid_date("2028-02-29"));
+        assert!(!is_valid_date("2027-02-29"));
+        assert_eq!(
+            form_encode(&[("secret", "live"), ("response", "tok&secret=test")]),
+            "secret=live&response=tok%26secret%3Dtest"
+        );
+        assert_eq!(iso8601_utc(0), "1970-01-01T00:00:00.000Z");
+        assert!(parse_content_type(Some("application/json; charset=utf-8")).is_some());
+        assert!(parse_content_type(Some("application/json; charset=utf-16")).is_none());
         assert_eq!(SECURITY_HEADERS.len(), 7);
     }}
 }}

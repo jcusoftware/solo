@@ -40,7 +40,8 @@ pub fn is_valid_hex_color(color: &str) -> bool {
     hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Return `true` if `url` is a valid `https://` base URL without whitespace or control chars.
+/// Return `true` if `url` is a valid `https://` URL without whitespace, control chars,
+/// backslashes, or embedded credentials.
 #[must_use]
 pub fn is_valid_https_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
@@ -49,13 +50,139 @@ pub fn is_valid_https_url(url: &str) -> bool {
     if rest.is_empty()
         || url
             .bytes()
-            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+            .any(|b| b <= 0x20 || b == 0x7f || b == b'\\')
     {
         return false;
     }
-    let host_part = rest.split('/').next().unwrap_or("");
-    let host = host_part.split(':').next().unwrap_or("");
-    !host.is_empty() && !host.starts_with('.') && !host.ends_with('.')
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let (host, port_opt) = if let Some(after_open) = authority.strip_prefix('[') {
+        let Some((ipv6, tail)) = after_open.split_once(']') else {
+            return false;
+        };
+        if ipv6.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        let port = if tail.is_empty() {
+            None
+        } else if let Some(p) = tail.strip_prefix(':') {
+            Some(p)
+        } else {
+            return false;
+        };
+        (ipv6, port)
+    } else {
+        match authority.split_once(':') {
+            Some((h, p)) => {
+                if p.contains(':') {
+                    return false;
+                }
+                (h, Some(p))
+            }
+            None => (authority, None),
+        }
+    };
+
+    if let Some(port) = port_opt {
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        if !port.parse::<u16>().is_ok_and(|n| n > 0) {
+            return false;
+        }
+    }
+
+    if authority.starts_with('[') {
+        return true;
+    }
+
+    if host.is_empty() || host.len() > 253 || host.starts_with('.') || host.ends_with('.') {
+        return false;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
+fn is_safe_static_segment(seg: &str) -> bool {
+    !seg.is_empty()
+        && seg != "."
+        && seg != ".."
+        && seg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// Return `true` if `path` is a safe static route (starts with `/`, no traversal, no query/fragment).
+#[must_use]
+pub fn is_valid_static_route(path: &str) -> bool {
+    if !path.starts_with('/')
+        || path.len() > 200
+        || path.contains("//")
+        || path
+            .bytes()
+            .any(|b| b <= 0x20 || b == 0x7f || matches!(b, b'\\' | b'?' | b'#'))
+    {
+        return false;
+    }
+    if path == "/" {
+        return true;
+    }
+    let trimmed = path.strip_prefix('/').unwrap_or("");
+    let trimmed = trimmed.strip_suffix('/').unwrap_or(trimmed);
+    !trimmed.is_empty() && trimmed.split('/').all(is_safe_static_segment)
+}
+
+/// Return `true` if `pattern` is a safe dynamic route pattern (segments are static or `{param}`).
+#[must_use]
+pub fn is_valid_dynamic_route(pattern: &str) -> bool {
+    if !pattern.starts_with('/')
+        || pattern.len() > 200
+        || pattern.contains("//")
+        || pattern
+            .bytes()
+            .any(|b| b <= 0x20 || b == 0x7f || matches!(b, b'\\' | b'?' | b'#'))
+    {
+        return false;
+    }
+    let trimmed = pattern.strip_prefix('/').unwrap_or("");
+    let trimmed = trimmed.strip_suffix('/').unwrap_or(trimmed);
+    !trimmed.is_empty()
+        && trimmed.split('/').all(|seg| {
+            if let Some(inner) = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                !inner.is_empty()
+                    && inner
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            } else {
+                is_safe_static_segment(seg)
+            }
+        })
+}
+
+const MAX_IR_NODE_DEPTH: usize = 128;
+
+fn canonical_route_key(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn is_valid_robots_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path.len() <= 200
+        && !path.bytes().any(|b| b <= 0x20 || b == 0x7f)
 }
 
 /// Validate a [`SiteDocument`] and return all discovered [`IrValidationError`] items.
@@ -160,12 +287,14 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
 
         match &page.route {
             RoutePattern::Static { path } => {
-                if !path.starts_with('/') {
+                if !is_valid_static_route(path) {
                     errors.push(IrValidationError::new(
                         format!("pages[{idx}].route.path"),
-                        format!("static route '{path}' must start with '/'"),
+                        format!(
+                            "static route '{path}' must start with '/' and contain only safe path segments"
+                        ),
                     ));
-                } else if !seen_routes.insert(path.clone()) {
+                } else if !seen_routes.insert(canonical_route_key(path)) {
                     errors.push(IrValidationError::new(
                         format!("pages[{idx}].route.path"),
                         format!("duplicate route '{path}'"),
@@ -173,12 +302,14 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
                 }
             }
             RoutePattern::Dynamic { pattern, params } => {
-                if !pattern.starts_with('/') {
+                if !is_valid_dynamic_route(pattern) {
                     errors.push(IrValidationError::new(
                         format!("pages[{idx}].route.pattern"),
-                        format!("dynamic route pattern '{pattern}' must start with '/'"),
+                        format!(
+                            "dynamic route pattern '{pattern}' must start with '/' and contain only safe segments"
+                        ),
                     ));
-                } else if !seen_routes.insert(pattern.clone()) {
+                } else if !seen_routes.insert(canonical_route_key(pattern)) {
                     errors.push(IrValidationError::new(
                         format!("pages[{idx}].route.pattern"),
                         format!("duplicate route '{pattern}'"),
@@ -203,12 +334,48 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
             }
         }
 
+        if let Some(canonical) = &page.canonical
+            && !canonical.trim().is_empty()
+            && !is_valid_https_url(canonical)
+        {
+            errors.push(IrValidationError::new(
+                format!("pages[{idx}].canonical"),
+                format!("canonical URL '{canonical}' must be a valid https:// URL"),
+            ));
+        }
+
         validate_nodes(
             doc,
             &page.body,
             &format!("pages[{idx}].body"),
+            0,
             &mut errors,
         );
+    }
+
+    for (idx, allow) in doc.seo.robots_allow.iter().enumerate() {
+        if !is_valid_robots_path(allow) {
+            errors.push(IrValidationError::new(
+                format!("seo.robots_allow[{idx}]"),
+                format!("robots_allow entry '{allow}' must start with '/' and contain no whitespace or control characters"),
+            ));
+        }
+    }
+    for (idx, disallow) in doc.seo.robots_disallow.iter().enumerate() {
+        if !is_valid_robots_path(disallow) {
+            errors.push(IrValidationError::new(
+                format!("seo.robots_disallow[{idx}]"),
+                format!("robots_disallow entry '{disallow}' must start with '/' and contain no whitespace or control characters"),
+            ));
+        }
+    }
+    for (idx, route) in doc.seo.sitemap_routes.iter().enumerate() {
+        if !is_valid_static_route(route) {
+            errors.push(IrValidationError::new(
+                format!("seo.sitemap_routes[{idx}]"),
+                format!("sitemap route '{route}' must be a safe static route starting with '/'"),
+            ));
+        }
     }
 
     for (comp_name, comp_def) in &doc.components {
@@ -216,6 +383,7 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
             doc,
             &comp_def.template,
             &format!("components.{comp_name}.template"),
+            0,
             &mut errors,
         );
     }
@@ -227,17 +395,37 @@ fn validate_nodes(
     doc: &SiteDocument,
     nodes: &[Node],
     base_path: &str,
+    depth: usize,
     errors: &mut Vec<IrValidationError>,
 ) {
+    if depth >= MAX_IR_NODE_DEPTH {
+        errors.push(IrValidationError::new(
+            base_path,
+            format!("node nesting depth exceeds maximum limit ({MAX_IR_NODE_DEPTH})"),
+        ));
+        return;
+    }
     for (idx, node) in nodes.iter().enumerate() {
         let node_path = format!("{base_path}[{idx}]");
         match node {
             Node::Element { children, .. } => {
-                validate_nodes(doc, children, &format!("{node_path}.children"), errors);
+                validate_nodes(
+                    doc,
+                    children,
+                    &format!("{node_path}.children"),
+                    depth + 1,
+                    errors,
+                );
             }
             Node::Text { .. } => {}
             Node::SlotRef { fallback, .. } => {
-                validate_nodes(doc, fallback, &format!("{node_path}.fallback"), errors);
+                validate_nodes(
+                    doc,
+                    fallback,
+                    &format!("{node_path}.fallback"),
+                    depth + 1,
+                    errors,
+                );
             }
             Node::ComponentInstance {
                 component, slots, ..
@@ -253,6 +441,7 @@ fn validate_nodes(
                         doc,
                         slot_nodes,
                         &format!("{node_path}.slots.{slot_name}"),
+                        depth + 1,
                         errors,
                     );
                 }
@@ -262,11 +451,29 @@ fn validate_nodes(
                 else_nodes,
                 ..
             } => {
-                validate_nodes(doc, then_nodes, &format!("{node_path}.then_nodes"), errors);
-                validate_nodes(doc, else_nodes, &format!("{node_path}.else_nodes"), errors);
+                validate_nodes(
+                    doc,
+                    then_nodes,
+                    &format!("{node_path}.then_nodes"),
+                    depth + 1,
+                    errors,
+                );
+                validate_nodes(
+                    doc,
+                    else_nodes,
+                    &format!("{node_path}.else_nodes"),
+                    depth + 1,
+                    errors,
+                );
             }
             Node::Loop { body, .. } => {
-                validate_nodes(doc, body, &format!("{node_path}.body"), errors);
+                validate_nodes(
+                    doc,
+                    body,
+                    &format!("{node_path}.body"),
+                    depth + 1,
+                    errors,
+                );
             }
         }
     }

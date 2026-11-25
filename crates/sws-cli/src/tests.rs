@@ -19,8 +19,6 @@ use crate::commands::{
     CheckReport, cmd_build, cmd_check, cmd_export, cmd_init, default_registry, run_checks_on_value,
 };
 use crate::mcp::serve_mcp;
-#[cfg(feature = "pack-hospitality")]
-use crate::templates::starter_hospitality_venue;
 use crate::templates::{MIGRATION_0001_INIT_SQL, starter_site_document};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -268,6 +266,17 @@ fn export_emits_standalone_rust_worker_wrangler_and_d1_migration() {
     }
     assert!(worker_lib.contains("INSERT INTO form_submissions"));
     assert!(worker_lib.contains("INSERT INTO newsletter_subscribers"));
+    assert!(worker_lib.contains("form_encode(&pairs)"));
+    assert!(worker_lib.contains("ReadableStreamDefaultReader"));
+    assert!(!worker_lib.contains("req.bytes()"));
+    assert!(worker_lib.contains("\"/api/inquire\""));
+    assert!(worker_lib.contains("consent_timestamp"));
+    assert!(!worker_lib.contains("1970-01-01T00:00:00Z\""));
+
+    let dev_vars_example =
+        fs::read_to_string(out_dir.join(".dev.vars.example")).expect("read .dev.vars.example");
+    assert!(dev_vars_example.contains("# DEV_MODE=true"));
+    assert!(!dev_vars_example.lines().any(|l| l.trim() == "DEV_MODE=true"));
 
     let wrangler = fs::read_to_string(out_dir.join("wrangler.jsonc")).expect("read wrangler.jsonc");
     assert!(wrangler.contains("\"starter-site-demo\""), "{wrangler}");

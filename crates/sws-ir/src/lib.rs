@@ -17,7 +17,8 @@ pub use types::{
     PropSpec, RoutePattern, ScriptRef, SeoMeta, SiteDocument,
 };
 pub use validate::{
-    IrValidationError, is_valid_hex_color, is_valid_https_url, is_valid_slug, validate_ir,
+    IrValidationError, is_valid_dynamic_route, is_valid_hex_color, is_valid_https_url,
+    is_valid_slug, is_valid_static_route, validate_ir,
 };
 
 #[cfg(test)]
@@ -720,5 +721,133 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn url_and_route_security_validation() {
+        for ok in [
+            "https://example.test",
+            "https://sub.example.test:8443/path",
+            "https://[::1]:8443/ok",
+        ] {
+            assert!(is_valid_https_url(ok), "expected valid URL: {ok}");
+        }
+        for bad in [
+            "http://example.test",
+            "https://",
+            "https://?",
+            "https://#frag",
+            "https://user:pass@example.test",
+            "https://example.test\\evil",
+            "https://example.test\nSitemap: https://evil.test",
+            "https://example.test:0",
+            "https://example.test:99999",
+            "https://-bad.test",
+            "https://bad..test",
+            "https://[...]",
+            "https://[:::]",
+        ] {
+            assert!(!is_valid_https_url(bad), "expected invalid URL: {bad}");
+        }
+
+        for ok in ["/", "/about", "/about/", "/menu/dinner-2026", "/404.html"] {
+            assert!(is_valid_static_route(ok), "expected valid route: {ok}");
+        }
+        for bad in [
+            "",
+            "about",
+            "//evil",
+            "/../../etc/passwd",
+            "/a/../b",
+            "/./a",
+            "/a\\b",
+            "/a?x=1",
+            "/a#frag",
+            "/a\nb",
+            "/a b",
+        ] {
+            assert!(!is_valid_static_route(bad), "expected invalid route: {bad}");
+        }
+
+        assert!(is_valid_dynamic_route("/articles/{slug}"));
+        assert!(!is_valid_dynamic_route("/../{slug}"));
+        assert!(!is_valid_dynamic_route("/articles/{}"));
+
+        // SetSiteMeta rejects invalid base_url atomically without mutating name/locale
+        let mut doc = sample_doc();
+        let orig_name = doc.name.clone();
+        assert!(matches!(
+            apply_patch(
+                &mut doc,
+                &IrPatch::SetSiteMeta {
+                    name: Some("Mutated Name".to_string()),
+                    locale: None,
+                    base_url: Some("https://?evil".to_string()),
+                },
+            ),
+            Err(IrError::InvalidValue { field, .. }) if field == "base_url"
+        ));
+        assert_eq!(doc.name, orig_name);
+
+        // Trailing-slash route collision ("/about" vs "/about/") is rejected
+        let mut dup_doc = sample_doc();
+        let mut about1 = dup_doc.pages[0].clone();
+        about1.id = "about-a".to_string();
+        about1.route = RoutePattern::Static {
+            path: "/about".to_string(),
+        };
+        let mut about2 = dup_doc.pages[0].clone();
+        about2.id = "about-b".to_string();
+        about2.route = RoutePattern::Static {
+            path: "/about/".to_string(),
+        };
+        dup_doc.pages.push(about1);
+        dup_doc.pages.push(about2);
+        let dup_errs = validate_ir(&dup_doc);
+        assert!(
+            dup_errs
+                .iter()
+                .any(|e| e.message.contains("duplicate route")),
+            "{dup_errs:?}"
+        );
+
+        // Deeply nested IR trees hit MAX_IR_NODE_DEPTH cleanly without stack overflow
+        let mut deep_doc = sample_doc();
+        let mut leaf = Node::Text {
+            value: "leaf".to_string(),
+        };
+        for _ in 0..140 {
+            leaf = Node::Element {
+                id: None,
+                tag: "div".to_string(),
+                attrs: BTreeMap::new(),
+                classes: Vec::new(),
+                style_refs: Vec::new(),
+                children: vec![leaf],
+            };
+        }
+        deep_doc.pages[0].body = vec![leaf];
+        let deep_errs = validate_ir(&deep_doc);
+        assert!(
+            deep_errs.iter().any(|e| e.message.contains("nesting depth")),
+            "{deep_errs:?}"
+        );
+
+        // validate_ir catches traversal routes, bad canonical, and robots.txt injection
+        let mut bad_doc = sample_doc();
+        bad_doc.pages[0].route = RoutePattern::Static {
+            path: "/../../pwn".to_string(),
+        };
+        bad_doc.pages[0].canonical = Some("javascript:alert(1)".to_string());
+        bad_doc.seo.robots_allow = vec!["/\nDisallow: /".to_string()];
+        bad_doc.seo.robots_disallow = vec!["api/".to_string()];
+        bad_doc.seo.sitemap_routes = vec!["/../../secret".to_string()];
+        let errs = validate_ir(&bad_doc);
+        let paths: Vec<&str> = errs.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"pages[0].route.path"), "{paths:?}");
+        assert!(paths.contains(&"pages[0].canonical"), "{paths:?}");
+        assert!(paths.contains(&"seo.robots_allow[0]"), "{paths:?}");
+        assert!(paths.contains(&"seo.robots_disallow[0]"), "{paths:?}");
+        assert!(paths.contains(&"seo.sitemap_routes[0]"), "{paths:?}");
     }
 }

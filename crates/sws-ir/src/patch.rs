@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{IrStyleRule, Node, Page, SiteDocument};
-use crate::validate::is_valid_hex_color;
+use crate::validate::{is_valid_hex_color, is_valid_https_url};
 
 /// Errors returned when applying an [`IrPatch`] to a [`SiteDocument`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,31 +137,37 @@ pub fn apply_patch(doc: &mut SiteDocument, patch: &IrPatch) -> Result<(), IrErro
             locale,
             base_url,
         } => {
+            if let Some(name) = name
+                && name.trim().is_empty()
+            {
+                return Err(IrError::InvalidValue {
+                    field: "name".to_string(),
+                    message: "site name must not be empty".to_string(),
+                });
+            }
+            if let Some(locale) = locale
+                && locale.trim().is_empty()
+            {
+                return Err(IrError::InvalidValue {
+                    field: "locale".to_string(),
+                    message: "locale must not be empty".to_string(),
+                });
+            }
+            if let Some(base_url) = base_url
+                && !is_valid_https_url(base_url)
+            {
+                return Err(IrError::InvalidValue {
+                    field: "base_url".to_string(),
+                    message: "base_url must be a valid https:// URL".to_string(),
+                });
+            }
             if let Some(name) = name {
-                if name.trim().is_empty() {
-                    return Err(IrError::InvalidValue {
-                        field: "name".to_string(),
-                        message: "site name must not be empty".to_string(),
-                    });
-                }
                 doc.name = name.clone();
             }
             if let Some(locale) = locale {
-                if locale.trim().is_empty() {
-                    return Err(IrError::InvalidValue {
-                        field: "locale".to_string(),
-                        message: "locale must not be empty".to_string(),
-                    });
-                }
                 doc.locale = locale.clone();
             }
             if let Some(base_url) = base_url {
-                if !base_url.starts_with("https://") {
-                    return Err(IrError::InvalidValue {
-                        field: "base_url".to_string(),
-                        message: "base_url must start with https://".to_string(),
-                    });
-                }
                 doc.base_url = base_url.clone();
             }
             Ok(())
