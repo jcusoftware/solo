@@ -10,6 +10,7 @@ use crate::escape::esc_html;
 const MAX_COMPONENT_DEPTH: usize = 64;
 const MAX_NODE_DEPTH: usize = 128;
 const MAX_EXPANDED_NODES: usize = 50_000;
+const MAX_EXPANDED_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
 pub(crate) struct ExpandedBody {
     pub(crate) nodes: Vec<ExpandedNode>,
@@ -34,6 +35,7 @@ struct EvalContext<'a> {
     depth: usize,
     node_depth: usize,
     expanded_nodes: usize,
+    text_bytes: usize,
     limit_exceeded: bool,
 }
 
@@ -46,6 +48,7 @@ impl<'a> EvalContext<'a> {
             depth: 0,
             node_depth: 0,
             expanded_nodes: 0,
+            text_bytes: 0,
             limit_exceeded: false,
         }
     }
@@ -56,6 +59,15 @@ impl<'a> EvalContext<'a> {
             return false;
         }
         self.expanded_nodes += 1;
+        true
+    }
+
+    fn record_text_bytes(&mut self, bytes: usize) -> bool {
+        if self.limit_exceeded || self.text_bytes.saturating_add(bytes) > MAX_EXPANDED_TEXT_BYTES {
+            self.limit_exceeded = true;
+            return false;
+        }
+        self.text_bytes += bytes;
         true
     }
 
@@ -104,36 +116,90 @@ impl<'a> EvalContext<'a> {
         if negated { !val } else { val }
     }
 
-    fn interpolate(&self, input: &str) -> String {
+    fn interpolate(&mut self, input: &str) -> String {
+        if self.limit_exceeded {
+            return String::new();
+        }
         if !input.contains("{{") {
+            if !self.record_text_bytes(input.len()) {
+                return String::new();
+            }
             return input.to_string();
         }
-        let mut out = String::with_capacity(input.len());
+        let mut out = String::with_capacity(input.len().min(4096));
         let mut rest = input;
         while let Some(start) = rest.find("{{") {
-            out.push_str(&rest[..start]);
+            let prefix = &rest[..start];
+            if !self.record_text_bytes(prefix.len()) {
+                return String::new();
+            }
+            out.push_str(prefix);
             let after_open = &rest[start + 2..];
             if let Some(end) = after_open.find("}}") {
                 let expr = &after_open[..end];
-                if let Some(val) = self.resolve_expr(expr) {
-                    out.push_str(&value_to_string(val));
+                if let Some(rendered) = self.resolve_expr(expr).map(value_to_string) {
+                    if !self.record_text_bytes(rendered.len()) {
+                        return String::new();
+                    }
+                    out.push_str(&rendered);
                 }
                 rest = &after_open[end + 2..];
             } else {
+                if !self.record_text_bytes(2) {
+                    return String::new();
+                }
                 out.push_str("{{");
                 rest = after_open;
             }
+        }
+        if !self.record_text_bytes(rest.len()) {
+            return String::new();
         }
         out.push_str(rest);
         out
     }
 
-    fn interpolate_value(&self, val: &Value) -> Value {
+    fn interpolate_value(&mut self, val: &Value) -> Value {
         match val {
             Value::String(s) if s.contains("{{") => Value::String(self.interpolate(s)),
             _ => val.clone(),
         }
     }
+}
+
+fn count_expanded_tree(nodes: &[ExpandedNode]) -> (usize, usize) {
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    let mut stack: Vec<&ExpandedNode> = nodes.iter().collect();
+    while let Some(node) = stack.pop() {
+        count = count.saturating_add(1);
+        match node {
+            ExpandedNode::Text(t) => {
+                bytes = bytes.saturating_add(t.len());
+            }
+            ExpandedNode::Element {
+                tag,
+                attrs,
+                classes,
+                children,
+            } => {
+                bytes = bytes.saturating_add(tag.len());
+                for (k, v) in attrs {
+                    bytes = bytes.saturating_add(k.len()).saturating_add(v.len());
+                }
+                for c in classes {
+                    bytes = bytes.saturating_add(c.len());
+                }
+                for child in children {
+                    stack.push(child);
+                }
+            }
+        }
+        if count > MAX_EXPANDED_NODES || bytes > MAX_EXPANDED_TEXT_BYTES {
+            return (count, bytes);
+        }
+    }
+    (count, bytes)
 }
 
 fn value_to_string(val: &Value) -> String {
@@ -254,6 +320,9 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
                 .cloned()
                 .unwrap_or_default();
             for item in items {
+                if !ctx.record_node() {
+                    break;
+                }
                 let mut loop_scope = BTreeMap::new();
                 loop_scope.insert(item_var.clone(), item);
                 ctx.scopes.push(loop_scope);
@@ -276,11 +345,20 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
 
             let mut evaluated_slots = BTreeMap::new();
             for (slot_name, slot_nodes) in slots {
+                if ctx.limit_exceeded {
+                    return;
+                }
                 evaluated_slots.insert(slot_name.clone(), expand_nodes(ctx, slot_nodes));
+            }
+            if ctx.limit_exceeded {
+                return;
             }
 
             let mut prop_scope = BTreeMap::new();
             for (prop_name, prop_spec) in &def.props {
+                if ctx.limit_exceeded {
+                    return;
+                }
                 if let Some(val) = props.get(prop_name) {
                     prop_scope.insert(prop_name.clone(), ctx.interpolate_value(val));
                 } else if let Some(default_val) = &prop_spec.default {
@@ -288,9 +366,15 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
                 }
             }
             for (k, v) in props {
-                prop_scope
-                    .entry(k.clone())
-                    .or_insert_with(|| ctx.interpolate_value(v));
+                if ctx.limit_exceeded {
+                    return;
+                }
+                if !prop_scope.contains_key(k) {
+                    prop_scope.insert(k.clone(), ctx.interpolate_value(v));
+                }
+            }
+            if ctx.limit_exceeded {
+                return;
             }
 
             ctx.scopes.push(prop_scope);
@@ -302,14 +386,29 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             ctx.scopes.pop();
         }
         Node::SlotRef { name, fallback } => {
-            let slot_content = ctx
+            let slot_metrics = ctx
                 .slot_stack
                 .last()
                 .and_then(|map| map.get(name))
                 .filter(|nodes| !nodes.is_empty())
-                .cloned();
-            if let Some(nodes) = slot_content {
-                out.extend(nodes);
+                .map(|nodes| count_expanded_tree(nodes));
+            if let Some((cloned_nodes, cloned_bytes)) = slot_metrics {
+                if ctx.expanded_nodes.saturating_add(cloned_nodes) > MAX_EXPANDED_NODES
+                    || ctx.text_bytes.saturating_add(cloned_bytes) > MAX_EXPANDED_TEXT_BYTES
+                {
+                    ctx.limit_exceeded = true;
+                    return;
+                }
+                ctx.expanded_nodes += cloned_nodes;
+                ctx.text_bytes += cloned_bytes;
+                if let Some(nodes) = ctx
+                    .slot_stack
+                    .last()
+                    .and_then(|map| map.get(name))
+                    .cloned()
+                {
+                    out.extend(nodes);
+                }
             } else {
                 out.extend(expand_nodes(ctx, fallback));
             }
@@ -353,7 +452,7 @@ fn is_boolean_attr(name: &str) -> bool {
     )
 }
 
-fn is_safe_tag_name(tag: &str) -> bool {
+pub(crate) fn is_safe_tag_name(tag: &str) -> bool {
     !tag.is_empty()
         && tag
             .bytes()
@@ -374,6 +473,24 @@ pub(crate) fn is_forbidden_body_tag(tag_lower: &str) -> bool {
             | "link"
             | "frame"
             | "frameset"
+            | "animate"
+            | "animatemotion"
+            | "animatetransform"
+            | "set"
+            | "foreignobject"
+            | "handler"
+            | "listener"
+            | "maction"
+            | "head"
+            | "html"
+            | "body"
+            | "title"
+            | "xmp"
+            | "plaintext"
+            | "noembed"
+            | "noframes"
+            | "portal"
+            | "fencedframe"
     )
 }
 
@@ -389,12 +506,31 @@ pub(crate) fn is_forbidden_attr(name: &str) -> bool {
 pub(crate) fn is_url_attr(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "href" | "src" | "action" | "formaction" | "poster" | "cite" | "data" | "xlink:href"
+        "href"
+            | "src"
+            | "action"
+            | "formaction"
+            | "poster"
+            | "cite"
+            | "data"
+            | "xlink:href"
+            | "background"
+            | "longdesc"
+            | "usemap"
+            | "dynsrc"
+            | "lowsrc"
+    )
+}
+
+pub(crate) fn is_url_list_attr(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "srcset" | "imagesrcset" | "ping"
     )
 }
 
 pub(crate) fn is_safe_url_attr_value(attr: &str, val: &str) -> bool {
-    if val.bytes().any(|b| b < 0x20 || b == 0x7f) {
+    if val.chars().any(char::is_control) {
         return false;
     }
     let trimmed = val.trim();
@@ -408,17 +544,46 @@ pub(crate) fn is_safe_url_attr_value(attr: &str, val: &str) -> bool {
         return !trimmed.contains('\\');
     }
     let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("https://") || lower.starts_with("http://") {
-        return !trimmed.contains('\\');
+    if let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        return !authority.is_empty()
+            && !trimmed.contains('\\')
+            && !trimmed.chars().any(char::is_whitespace);
     }
     if attr.eq_ignore_ascii_case("href")
         && (lower.starts_with("mailto:") || lower.starts_with("tel:"))
     {
-        return !trimmed.bytes().any(|b| b.is_ascii_control());
+        return !trimmed.chars().any(char::is_control);
     }
     // Reject any other explicit URI scheme (e.g. javascript:, vbscript:, data:, blob:, file:).
     let before_delim = trimmed.split(['/', '?', '#']).next().unwrap_or("");
     !before_delim.contains(':') && !trimmed.contains('\\')
+}
+
+pub(crate) fn is_safe_url_list_attr_value(attr: &str, val: &str) -> bool {
+    if val.chars().any(char::is_control) {
+        return false;
+    }
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if attr.eq_ignore_ascii_case("ping") {
+        return trimmed
+            .split_whitespace()
+            .all(|tok| is_safe_url_attr_value("src", tok));
+    }
+    // srcset / imagesrcset: comma-separated `<url> [descriptor]` candidates
+    trimmed.split(',').all(|cand| {
+        let cand = cand.trim();
+        let Some(url_tok) = cand.split_whitespace().next() else {
+            return false;
+        };
+        is_safe_url_attr_value("src", url_tok)
+    })
 }
 
 pub(crate) fn is_safe_script_src(src: &str) -> bool {
@@ -474,6 +639,7 @@ fn write_expanded_node(node: &ExpandedNode, out: &mut String) {
                     || !is_safe_tag_name(k)
                     || is_forbidden_attr(k)
                     || (is_url_attr(k) && !is_safe_url_attr_value(k, v))
+                    || (is_url_list_attr(k) && !is_safe_url_list_attr_value(k, v))
                 {
                     continue;
                 }

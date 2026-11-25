@@ -9,7 +9,8 @@ use sws_plugin::{DiagnosticSeverity, PluginRegistry};
 
 use crate::expand::{
     ExpandedNode, expand_page_body, is_forbidden_attr, is_forbidden_body_tag, is_safe_script_src,
-    is_safe_url_attr_value, is_url_attr,
+    is_safe_tag_name, is_safe_url_attr_value, is_safe_url_list_attr_value, is_url_attr,
+    is_url_list_attr,
 };
 
 const BANNED_OVERLAY_PATTERNS: &[&str] = &[
@@ -42,7 +43,7 @@ pub struct CompilerDiagnostic {
 }
 
 impl CompilerDiagnostic {
-    fn error(
+    pub(crate) fn error(
         code: impl Into<String>,
         path: impl Into<String>,
         message: impl Into<String>,
@@ -139,7 +140,7 @@ fn collect_dom_stats(
         let hidden = in_aria_hidden || self_aria_hidden;
         let next_in_label = in_label || tag_lower == "label";
 
-        if is_forbidden_body_tag(&tag_lower) {
+        if !is_safe_tag_name(tag) || is_forbidden_body_tag(&tag_lower) {
             stats.unsafe_elements.push((path.clone(), tag_lower.clone()));
         }
 
@@ -147,13 +148,15 @@ fn collect_dom_stats(
             if let Some(pat) = contains_banned_overlay(attr_v) {
                 stats.overlay_hits.push((format!("{path}@{attr_k}"), pat));
             }
-            if is_forbidden_attr(attr_k) {
+            if !is_safe_tag_name(attr_k) || is_forbidden_attr(attr_k) {
                 stats.unsafe_attributes.push((
                     format!("{path}@{attr_k}"),
                     attr_k.clone(),
                     "unsafe_html_attribute",
                 ));
-            } else if is_url_attr(attr_k) && !is_safe_url_attr_value(attr_k, attr_v) {
+            } else if (is_url_attr(attr_k) && !is_safe_url_attr_value(attr_k, attr_v))
+                || (is_url_list_attr(attr_k) && !is_safe_url_list_attr_value(attr_k, attr_v))
+            {
                 stats.unsafe_attributes.push((
                     format!("{path}@{attr_k}"),
                     attr_k.clone(),

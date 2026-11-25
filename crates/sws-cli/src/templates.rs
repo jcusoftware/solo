@@ -1120,9 +1120,56 @@ pub fn is_valid_route(raw: &str) -> bool {{
     route.starts_with('/')
         && route.len() <= 200
         && !route.contains("//")
+        && !route.split('/').any(|seg| seg == "..")
         && route
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'))
+}}
+
+#[must_use]
+pub fn is_valid_phone(raw: &str) -> bool {{
+    let p = raw.trim();
+    if p.is_empty() || p.len() > 32 {{
+        return false;
+    }}
+    let mut digits = 0usize;
+    for b in p.bytes() {{
+        if b.is_ascii_digit() {{
+            digits += 1;
+        }} else if !matches!(b, b' ' | b'+' | b'-' | b'(' | b')' | b'.' | b'x' | b'X') {{
+            return false;
+        }}
+    }}
+    digits >= 7
+}}
+
+#[must_use]
+pub fn is_valid_date(raw: &str) -> bool {{
+    let b = raw.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {{
+        return false;
+    }}
+    let Ok(year) = raw[0..4].parse::<u32>() else {{
+        return false;
+    }};
+    let Ok(month) = raw[5..7].parse::<u32>() else {{
+        return false;
+    }};
+    let Ok(day) = raw[8..10].parse::<u32>() else {{
+        return false;
+    }};
+    if !(1900..=2100).contains(&year) || !(1..=12).contains(&month) || day == 0 {{
+        return false;
+    }}
+    let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
+    let max_day = match month {{
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    }};
+    day <= max_day
 }}
 
 #[must_use]
@@ -1274,7 +1321,8 @@ mod wasm {{
     use super::{{
         API_CACHE_CONTROL, HONEYPOT_FIELD, MAX_BODY_BYTES, MAX_TURNSTILE_TOKEN, Route,
         SECURITY_HEADERS, TURNSTILE_FIELD, form_encode, has_disallowed_control, health_body,
-        is_valid_email, is_valid_route, iso8601_utc, parse_content_type, parse_fields, route,
+        is_valid_date, is_valid_email, is_valid_phone, is_valid_route, iso8601_utc,
+        parse_content_type, parse_fields, route,
     }};
 
     const SITEVERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -1609,8 +1657,12 @@ mod wasm {{
 
         let name = fields.get("name").map(|s| s.trim()).unwrap_or("");
         let email = fields.get("email").map(|s| s.trim()).unwrap_or("");
+        let phone = fields.get("phone").map(|s| s.trim()).filter(|s| !s.is_empty());
         let message = fields.get("message").map(|s| s.trim()).unwrap_or("");
         let source_route = fields.get("source_route").map(|s| s.trim()).unwrap_or("/");
+        let kind = fields.get("kind").map(|s| s.trim()).filter(|s| !s.is_empty());
+        let event_date = fields.get("event_date").map(|s| s.trim()).filter(|s| !s.is_empty());
+        let guest_count_raw = fields.get("guest_count").map(|s| s.trim()).filter(|s| !s.is_empty());
         let token = fields.get(TURNSTILE_FIELD).map(|s| s.trim()).filter(|s| !s.is_empty());
 
         let mut errs = serde_json::Map::new();
@@ -1624,6 +1676,11 @@ mod wasm {{
         if !is_valid_email(email) {{
             errs.insert("email".into(), json!(if email.is_empty() {{ "required" }} else {{ "invalid" }}));
         }}
+        if let Some(p) = phone
+            && !is_valid_phone(p)
+        {{
+            errs.insert("phone".into(), json!("invalid"));
+        }}
         if message.is_empty() {{
             errs.insert("message".into(), json!("required"));
         }} else if message.chars().count() > 4000 {{
@@ -1633,6 +1690,27 @@ mod wasm {{
         }}
         if !is_valid_route(source_route) {{
             errs.insert("source_route".into(), json!("invalid"));
+        }}
+        let mut guest_count_num: Option<u32> = None;
+        if compat_inquire {{
+            if let Some(k) = kind
+                && !matches!(k, "private_event" | "contact")
+            {{
+                errs.insert("kind".into(), json!("invalid"));
+            }}
+            if let Some(d) = event_date
+                && !is_valid_date(d)
+            {{
+                errs.insert("event_date".into(), json!("invalid"));
+            }}
+            if let Some(gc) = guest_count_raw {{
+                match gc.parse::<u32>() {{
+                    Ok(n) if (1..=1000).contains(&n) => guest_count_num = Some(n),
+                    _ => {{
+                        errs.insert("guest_count".into(), json!("invalid"));
+                    }}
+                }}
+            }}
         }}
         if token.is_some_and(|t| t.len() > MAX_TURNSTILE_TOKEN) {{
             errs.insert(TURNSTILE_FIELD.into(), json!("too_long"));
@@ -1649,12 +1727,25 @@ mod wasm {{
             return Ok(resp);
         }}
 
-        let payload_json = json!({{
-            "name": name,
-            "email": email.to_ascii_lowercase(),
-            "message": message,
-        }})
-        .to_string();
+        let mut payload_obj = serde_json::Map::new();
+        payload_obj.insert("name".into(), json!(name));
+        payload_obj.insert("email".into(), json!(email.to_ascii_lowercase()));
+        if let Some(p) = phone {{
+            payload_obj.insert("phone".into(), json!(p));
+        }}
+        payload_obj.insert("message".into(), json!(message));
+        if compat_inquire {{
+            if let Some(k) = kind {{
+                payload_obj.insert("kind".into(), json!(k));
+            }}
+            if let Some(d) = event_date {{
+                payload_obj.insert("event_date".into(), json!(d));
+            }}
+            if let Some(n) = guest_count_num {{
+                payload_obj.insert("guest_count".into(), json!(n));
+            }}
+        }}
+        let payload_json = serde_json::Value::Object(payload_obj).to_string();
 
         let stmt = env
             .d1("DB")?
@@ -1785,6 +1876,11 @@ mod tests {{
         assert!(is_valid_route("/contact"));
         assert!(!is_valid_route("//evil.example"));
         assert!(!is_valid_route("/a?b=1"));
+        assert!(!is_valid_route("/../etc/passwd"));
+        assert!(is_valid_phone("+1 (703) 555-0100"));
+        assert!(!is_valid_phone("123"));
+        assert!(is_valid_date("2028-02-29"));
+        assert!(!is_valid_date("2027-02-29"));
         assert_eq!(
             form_encode(&[("secret", "live"), ("response", "tok&secret=test")]),
             "secret=live&response=tok%26secret%3Dtest"

@@ -62,11 +62,7 @@ pub fn is_valid_https_url(url: &str) -> bool {
         let Some((ipv6, tail)) = after_open.split_once(']') else {
             return false;
         };
-        if ipv6.is_empty()
-            || !ipv6
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
-        {
+        if ipv6.parse::<std::net::Ipv6Addr>().is_err() {
             return false;
         }
         let port = if tail.is_empty() {
@@ -170,6 +166,17 @@ pub fn is_valid_dynamic_route(pattern: &str) -> bool {
                 is_safe_static_segment(seg)
             }
         })
+}
+
+const MAX_IR_NODE_DEPTH: usize = 128;
+
+fn canonical_route_key(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn is_valid_robots_path(path: &str) -> bool {
@@ -287,7 +294,7 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
                             "static route '{path}' must start with '/' and contain only safe path segments"
                         ),
                     ));
-                } else if !seen_routes.insert(path.clone()) {
+                } else if !seen_routes.insert(canonical_route_key(path)) {
                     errors.push(IrValidationError::new(
                         format!("pages[{idx}].route.path"),
                         format!("duplicate route '{path}'"),
@@ -302,7 +309,7 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
                             "dynamic route pattern '{pattern}' must start with '/' and contain only safe segments"
                         ),
                     ));
-                } else if !seen_routes.insert(pattern.clone()) {
+                } else if !seen_routes.insert(canonical_route_key(pattern)) {
                     errors.push(IrValidationError::new(
                         format!("pages[{idx}].route.pattern"),
                         format!("duplicate route '{pattern}'"),
@@ -341,6 +348,7 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
             doc,
             &page.body,
             &format!("pages[{idx}].body"),
+            0,
             &mut errors,
         );
     }
@@ -375,6 +383,7 @@ pub fn validate_ir(doc: &SiteDocument) -> Vec<IrValidationError> {
             doc,
             &comp_def.template,
             &format!("components.{comp_name}.template"),
+            0,
             &mut errors,
         );
     }
@@ -386,17 +395,37 @@ fn validate_nodes(
     doc: &SiteDocument,
     nodes: &[Node],
     base_path: &str,
+    depth: usize,
     errors: &mut Vec<IrValidationError>,
 ) {
+    if depth >= MAX_IR_NODE_DEPTH {
+        errors.push(IrValidationError::new(
+            base_path,
+            format!("node nesting depth exceeds maximum limit ({MAX_IR_NODE_DEPTH})"),
+        ));
+        return;
+    }
     for (idx, node) in nodes.iter().enumerate() {
         let node_path = format!("{base_path}[{idx}]");
         match node {
             Node::Element { children, .. } => {
-                validate_nodes(doc, children, &format!("{node_path}.children"), errors);
+                validate_nodes(
+                    doc,
+                    children,
+                    &format!("{node_path}.children"),
+                    depth + 1,
+                    errors,
+                );
             }
             Node::Text { .. } => {}
             Node::SlotRef { fallback, .. } => {
-                validate_nodes(doc, fallback, &format!("{node_path}.fallback"), errors);
+                validate_nodes(
+                    doc,
+                    fallback,
+                    &format!("{node_path}.fallback"),
+                    depth + 1,
+                    errors,
+                );
             }
             Node::ComponentInstance {
                 component, slots, ..
@@ -412,6 +441,7 @@ fn validate_nodes(
                         doc,
                         slot_nodes,
                         &format!("{node_path}.slots.{slot_name}"),
+                        depth + 1,
                         errors,
                     );
                 }
@@ -421,11 +451,29 @@ fn validate_nodes(
                 else_nodes,
                 ..
             } => {
-                validate_nodes(doc, then_nodes, &format!("{node_path}.then_nodes"), errors);
-                validate_nodes(doc, else_nodes, &format!("{node_path}.else_nodes"), errors);
+                validate_nodes(
+                    doc,
+                    then_nodes,
+                    &format!("{node_path}.then_nodes"),
+                    depth + 1,
+                    errors,
+                );
+                validate_nodes(
+                    doc,
+                    else_nodes,
+                    &format!("{node_path}.else_nodes"),
+                    depth + 1,
+                    errors,
+                );
             }
             Node::Loop { body, .. } => {
-                validate_nodes(doc, body, &format!("{node_path}.body"), errors);
+                validate_nodes(
+                    doc,
+                    body,
+                    &format!("{node_path}.body"),
+                    depth + 1,
+                    errors,
+                );
             }
         }
     }

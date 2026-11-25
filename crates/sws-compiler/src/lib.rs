@@ -160,6 +160,15 @@ fn compile_site_internal(
         if page.scripts.iter().any(|s| s.src == "/js/forms.js") {
             needs_forms_js = true;
         }
+        if files.contains_key(&out_path) {
+            let msg = format!("duplicate compiled output path '{out_path}' for page '{}'", page.id);
+            diagnostics.push(CompilerDiagnostic::error(
+                "output_path_collision",
+                out_path,
+                msg.clone(),
+            ));
+            return Err(CompileError::new(msg, diagnostics));
+        }
         let html = render_page_html(doc, page);
         files.insert(out_path, html);
     }
@@ -188,24 +197,52 @@ fn compile_site_internal(
         }
     }
 
-    files.insert("styles.css".to_string(), styles_css);
-    files.insert("robots.txt".to_string(), render_robots_txt(doc));
-    files.insert("sitemap.xml".to_string(), render_sitemap_xml(doc));
-
+    let mut reserved_files: Vec<(&str, String)> = vec![
+        ("styles.css", styles_css),
+        ("robots.txt", render_robots_txt(doc)),
+        ("sitemap.xml", render_sitemap_xml(doc)),
+    ];
     if needs_forms_js {
         let js = options
             .forms_js_source
             .as_deref()
             .unwrap_or(DEFAULT_FORMS_JS)
             .to_string();
-        files.insert("js/forms.js".to_string(), js);
+        reserved_files.push(("js/forms.js", js));
+    }
+    if options.include_headers_file {
+        reserved_files.push(("_headers", sws_security::headers::render_headers_file()));
     }
 
-    if options.include_headers_file {
-        files.insert(
-            "_headers".to_string(),
-            sws_security::headers::render_headers_file(),
-        );
+    for (reserved_path, content) in reserved_files {
+        if files.contains_key(reserved_path) {
+            let msg = format!("page output collides with reserved file '{reserved_path}'");
+            diagnostics.push(CompilerDiagnostic::error(
+                "output_path_collision",
+                reserved_path,
+                msg.clone(),
+            ));
+            return Err(CompileError::new(msg, diagnostics));
+        }
+        files.insert(reserved_path.to_string(), content);
+    }
+
+    // Ensure no emitted file path is also a directory prefix of another emitted path
+    // (e.g. `_headers` vs `_headers/index.html` or `index.html` vs `index.html/index.html`).
+    let all_paths: Vec<String> = files.keys().cloned().collect();
+    for path in &all_paths {
+        let prefix = format!("{path}/");
+        if let Some(conflict) = all_paths.iter().find(|other| other.starts_with(&prefix)) {
+            let msg = format!(
+                "output path '{conflict}' collides with file path '{path}' (file/directory conflict)"
+            );
+            diagnostics.push(CompilerDiagnostic::error(
+                "output_path_collision",
+                conflict.clone(),
+                msg.clone(),
+            ));
+            return Err(CompileError::new(msg, diagnostics));
+        }
     }
 
     Ok(CompiledSite {
@@ -346,6 +383,7 @@ fn render_page_html(doc: &SiteDocument, page: &Page) -> String {
     }
     if let Some(canonical) = &page.canonical
         && !canonical.trim().is_empty()
+        && sws_ir::is_valid_https_url(canonical)
     {
         let _ = writeln!(
             out,
@@ -365,6 +403,9 @@ fn render_page_html(doc: &SiteDocument, page: &Page) -> String {
     }
 
     for s in merged_scripts {
+        if !expand::is_safe_script_src(&s.src) {
+            continue;
+        }
         let async_attr = if s.async_load { " async" } else { "" };
         let defer_attr = if s.defer { " defer" } else { "" };
         let _ = writeln!(
@@ -1025,5 +1066,192 @@ mod tests {
             err.diagnostics
         );
         assert_eq!(output_path_for_page(&doc.pages[1]), None);
+    }
+
+    #[test]
+    fn stops_slot_cloning_and_interpolation_billion_laughs_bombs() {
+        // 1. Slot-cloning exponential bomb: 25 nested `dup` components doubling a slot -> 2^25 nodes.
+        let mut slot_doc = base_doc();
+        slot_doc.components.insert(
+            "dup".to_string(),
+            ComponentDef {
+                name: "dup".to_string(),
+                props: BTreeMap::new(),
+                slots: vec!["default".to_string()],
+                template: vec![
+                    Node::SlotRef {
+                        name: "default".to_string(),
+                        fallback: Vec::new(),
+                    },
+                    Node::SlotRef {
+                        name: "default".to_string(),
+                        fallback: Vec::new(),
+                    },
+                ],
+            },
+        );
+        let mut nested = vec![text("leaf")];
+        for _ in 0..25 {
+            nested = vec![Node::ComponentInstance {
+                component: "dup".to_string(),
+                props: BTreeMap::new(),
+                slots: BTreeMap::from([("default".to_string(), nested)]),
+            }];
+        }
+        if let Some(Node::Element { children, .. }) = slot_doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.extend(nested);
+        }
+        let err = compile_site(&slot_doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|d| d.code == "expansion_limit_exceeded"),
+            "expected slot-cloning bomb to trigger expansion_limit_exceeded, got: {:?}",
+            err.diagnostics
+        );
+
+        // 2. String-interpolation Billion-Laughs bomb: 26-step prop doubling -> >500 MB string.
+        let mut str_doc = base_doc();
+        str_doc
+            .data
+            .insert("x".to_string(), json!("AAAAAAAAAAAAAAAA"));
+        for i in 0..26 {
+            let name = format!("s{i}");
+            let template = if i == 25 {
+                vec![text("{{x}}")]
+            } else {
+                vec![Node::ComponentInstance {
+                    component: format!("s{}", i + 1),
+                    props: BTreeMap::from([("x".to_string(), json!("{{x}}{{x}}"))]),
+                    slots: BTreeMap::new(),
+                }]
+            };
+            str_doc.components.insert(
+                name.clone(),
+                ComponentDef {
+                    name,
+                    props: BTreeMap::new(),
+                    slots: Vec::new(),
+                    template,
+                },
+            );
+        }
+        if let Some(Node::Element { children, .. }) = str_doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(Node::ComponentInstance {
+                component: "s0".to_string(),
+                props: BTreeMap::new(),
+                slots: BTreeMap::new(),
+            });
+        }
+        let err = compile_site(&str_doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|d| d.code == "expansion_limit_exceeded"),
+            "expected string-interpolation bomb to trigger expansion_limit_exceeded, got: {:?}",
+            err.diagnostics
+        );
+
+        // 3. Empty-body huge loop terminates at MAX_EXPANDED_NODES.
+        let mut loop_doc = base_doc();
+        loop_doc
+            .data
+            .insert("many".to_string(), Value::Array(vec![json!(1); 60_000]));
+        if let Some(Node::Element { children, .. }) = loop_doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(Node::Loop {
+                item_var: "it".to_string(),
+                collection_expr: "many".to_string(),
+                body: Vec::new(),
+            });
+        }
+        let err = compile_site(&loop_doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|d| d.code == "expansion_limit_exceeded"),
+            "expected huge empty loop to trigger expansion_limit_exceeded, got: {:?}",
+            err.diagnostics
+        );
+    }
+
+    #[test]
+    fn rejects_svg_smil_srcset_invalid_names_and_reserved_route_collisions() {
+        let mut doc = base_doc();
+        if let Some(Node::Element { children, .. }) = doc.pages[0]
+            .body
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
+        {
+            children.push(elem(
+                "animate",
+                BTreeMap::from([
+                    ("attributeName".to_string(), "href".to_string()),
+                    ("to".to_string(), "javascript:alert(1)".to_string()),
+                ]),
+                Vec::new(),
+            ));
+            children.push(elem(
+                "img",
+                BTreeMap::from([
+                    ("src".to_string(), "/ok.png".to_string()),
+                    ("alt".to_string(), "ok".to_string()),
+                    (
+                        "srcset".to_string(),
+                        "/ok.png 1x, javascript:alert(1) 2x".to_string(),
+                    ),
+                ]),
+                Vec::new(),
+            ));
+            children.push(elem("div><script>", BTreeMap::new(), Vec::new()));
+            children.push(elem(
+                "a",
+                BTreeMap::from([
+                    ("href".to_string(), "\u{0090}https://example.test".to_string()),
+                    ("bad attr".to_string(), "1".to_string()),
+                ]),
+                vec![text("Bad")],
+            ));
+        }
+        let err = compile_site(&doc, None, &CompileOptions::default()).unwrap_err();
+        let codes: Vec<&str> = err.diagnostics.iter().map(|d| d.code.as_str()).collect();
+        assert!(codes.contains(&"unsafe_html_element"), "{codes:?}");
+        assert!(codes.contains(&"unsafe_html_attribute"), "{codes:?}");
+        assert!(codes.contains(&"unsafe_url_attribute"), "{codes:?}");
+
+        let expanded = expand::expand_page_body(&doc, &doc.pages[0].body);
+        let rendered = expand::render_expanded_html(&expanded.nodes);
+        assert!(!rendered.contains("<animate"), "{rendered}");
+        assert!(!rendered.contains("srcset="), "{rendered}");
+        assert!(!rendered.contains("javascript:"), "{rendered}");
+
+        // Reserved output path collision: `/_headers` -> `_headers/index.html` vs `_headers`
+        let mut col_doc = base_doc();
+        col_doc.pages.push(valid_page(
+            "hdr",
+            "/_headers",
+            false,
+            vec![elem("h1", BTreeMap::new(), vec![text("Hdr")])],
+        ));
+        let col_err = compile_site(&col_doc, None, &CompileOptions::default()).unwrap_err();
+        assert!(
+            col_err
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "output_path_collision"),
+            "{:?}",
+            col_err.diagnostics
+        );
     }
 }
