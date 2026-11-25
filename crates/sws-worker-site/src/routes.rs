@@ -30,6 +30,109 @@ pub fn is_valid_form_id(id: &str) -> bool {
     first_ok && rest_ok
 }
 
+fn is_non_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    let is_cgnat = octets[0] == 100 && (octets[1] & 0b1100_0000) == 64;
+    let is_benchmark = octets[0] == 198 && (octets[1] & 0b1111_1110) == 18;
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || ip.is_documentation()
+        || is_cgnat
+        || is_benchmark
+        || octets[0] >= 240
+}
+
+fn is_non_public_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    let segs = ip.segments();
+    let is_ula = (segs[0] & 0xfe00) == 0xfc00;
+    let is_link_local = (segs[0] & 0xffc0) == 0xfe80;
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || is_ula || is_link_local {
+        return true;
+    }
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return is_non_public_ipv4(mapped);
+    }
+    if segs[0..6] == [0, 0, 0, 0, 0, 0] {
+        let compat = std::net::Ipv4Addr::from(((segs[6] as u32) << 16) | (segs[7] as u32));
+        return is_non_public_ipv4(compat);
+    }
+    false
+}
+
+fn is_valid_port(port_str: &str) -> bool {
+    !port_str.is_empty()
+        && port_str.bytes().all(|b| b.is_ascii_digit())
+        && matches!(port_str.parse::<u16>(), Ok(1..=u16::MAX))
+}
+
+/// Validates an external HTTPS webhook target, rejecting credentials, whitespace/control chars,
+/// localhost/internal suffixes, single-label hosts, and private/loopback/link-local IPs.
+pub fn is_safe_webhook_url(url: &str) -> bool {
+    if url.len() > 2048 || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') || authority.contains('\\') {
+        return false;
+    }
+
+    if let Some(after_open) = authority.strip_prefix('[') {
+        let Some((ip_str, suffix)) = after_open.split_once(']') else {
+            return false;
+        };
+        if !suffix.is_empty() && !suffix.strip_prefix(':').is_some_and(is_valid_port) {
+            return false;
+        }
+        let Ok(ip6) = ip_str.parse::<std::net::Ipv6Addr>() else {
+            return false;
+        };
+        return !is_non_public_ipv6(ip6);
+    }
+
+    let (host, port_opt) = match authority.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (authority, None),
+    };
+    if port_opt.is_some_and(|p| !is_valid_port(p)) {
+        return false;
+    }
+
+    let lower = host.to_ascii_lowercase();
+    if lower.is_empty() || lower.starts_with('.') || lower.ends_with('.') || lower.contains("..") {
+        return false;
+    }
+    if lower == "localhost"
+        || lower.ends_with(".localhost")
+        || lower.ends_with(".local")
+        || lower.ends_with(".internal")
+        || lower.ends_with(".home.arpa")
+    {
+        return false;
+    }
+    if let Ok(ip4) = lower.parse::<std::net::Ipv4Addr>() {
+        return !is_non_public_ipv4(ip4);
+    }
+    if !lower.contains('.') {
+        return false;
+    }
+    lower.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
 pub fn route(method: &str, path: &str) -> Route {
     let m = method.to_ascii_uppercase();
     match path {
@@ -141,5 +244,38 @@ mod tests {
         assert_eq!(body["status"], "ok");
         assert_eq!(body["service"], "sws-worker-site");
         assert_eq!(body["version"], "0.1.0");
+    }
+
+    #[test]
+    fn webhook_url_validation() {
+        assert!(is_safe_webhook_url("https://hooks.example.test/solo"));
+        assert!(is_safe_webhook_url("https://api.example.test:8443/v1/hook?a=1"));
+        assert!(is_safe_webhook_url("https://[2606:4700:4700::1111]/hook"));
+
+        for bad in [
+            "http://hooks.example.test/solo",
+            "https://user:pass@hooks.example.test/solo",
+            "https://hooks.example.test/a b",
+            "https://hooks.example.test/\n",
+            "https://localhost/hook",
+            "https://sub.localhost/hook",
+            "https://db.local/hook",
+            "https://metadata.internal/hook",
+            "https://singlelabel/hook",
+            "https://127.0.0.1/hook",
+            "https://10.0.0.5/hook",
+            "https://172.16.1.1/hook",
+            "https://192.168.1.1/hook",
+            "https://169.254.169.254/latest/meta-data",
+            "https://100.64.0.1/hook",
+            "https://[::1]/hook",
+            "https://[fc00::1]/hook",
+            "https://[fe80::1]/hook",
+            "https://[::ffff:127.0.0.1]/hook",
+            "https://hooks.example.test:0/hook",
+            "https://[not-ipv6]/hook",
+        ] {
+            assert!(!is_safe_webhook_url(bad), "expected rejection for {bad}");
+        }
     }
 }

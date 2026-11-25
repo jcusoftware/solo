@@ -1,6 +1,6 @@
 //! Hospitality venue manifest types, validation, and schema.org JSON-LD builder.
 //!
-//! Mirrors `packs/hospitality/schema/venue.schema.json` and `core/tools/render-tenant.mjs`.
+//! Mirrors `packs/hospitality/schema/venue.schema.json`.
 
 use std::collections::BTreeMap;
 

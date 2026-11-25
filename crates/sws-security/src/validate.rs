@@ -12,6 +12,16 @@ pub const TURNSTILE_FIELD: &str = "cf-turnstile-response";
 /// Cloudflare documents a 2048-character maximum for Turnstile tokens.
 pub const MAX_TURNSTILE_TOKEN: usize = 2048;
 
+/// Returns `true` if `secret` is one of Cloudflare's documented Turnstile dummy test keys.
+pub fn is_turnstile_test_secret(secret: &str) -> bool {
+    matches!(
+        secret.trim(),
+        "1x0000000000000000000000000000000AA"
+            | "2x0000000000000000000000000000000AA"
+            | "3x0000000000000000000000000000000AA"
+    )
+}
+
 pub type Fields = BTreeMap<String, String>;
 
 /// Field-level validation errors: (field, reason).
@@ -625,5 +635,14 @@ mod tests {
         assert_eq!(truncate_str("café", 4), "caf");
         assert_eq!(truncate_str("café", 5), "café");
         assert_eq!(truncate_str("é", 1), "");
+    }
+
+    #[test]
+    fn turnstile_test_secret_recognition() {
+        assert!(is_turnstile_test_secret("1x0000000000000000000000000000000AA"));
+        assert!(is_turnstile_test_secret("2x0000000000000000000000000000000AA"));
+        assert!(is_turnstile_test_secret("3x0000000000000000000000000000000AA"));
+        assert!(!is_turnstile_test_secret("0x4AAAAAARealLiveSecretKey"));
+        assert!(!is_turnstile_test_secret(""));
     }
 }

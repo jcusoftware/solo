@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Advisory Virginia ABC advertising lint (zero dependencies, tenant-agnostic).
-// Node port of core/src/abc.rs — keep the rules in sync.
+// Node port of packs/hospitality/crate/src/abc.rs — keep the rules in sync.
 //
-// Usage: node core/tools/abc-lint.mjs [--json] <file...>
+// Usage: node packs/hospitality/tools/abc-lint.mjs [--json] <file...>
 //   .json      every string value is linted (reported by JSON path), plus
 //              happy_hour.start and happy_hour.end are checked against the
 //              21:00–05:59 overnight window

@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS newsletter_subscribers (
                                  AND (substr(consent_timestamp, 1, 4) || substr(consent_timestamp, 6, 2) || substr(consent_timestamp, 9, 2) || substr(consent_timestamp, 12, 2) || substr(consent_timestamp, 15, 2) || substr(consent_timestamp, 18, 2)) NOT GLOB '*[^0-9]*'
                                  AND ((length(consent_timestamp) = 20 AND substr(consent_timestamp, 20, 1) = 'Z')
                                    OR (length(consent_timestamp) = 24 AND substr(consent_timestamp, 20, 1) = '.' AND substr(consent_timestamp, 24, 1) = 'Z' AND substr(consent_timestamp, 21, 3) NOT GLOB '*[^0-9]*'))),
-    source_route      TEXT    NOT NULL,
-    consent_text      TEXT,
+    source_route      TEXT    NOT NULL CHECK (length(source_route) BETWEEN 1 AND 200 AND substr(source_route, 1, 1) = '/'),
+    consent_text      TEXT    CHECK (consent_text IS NULL OR length(consent_text) <= 500),
     created_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
                               CHECK (length(created_at) = 20
                                  AND substr(created_at, 5, 1) = '-'

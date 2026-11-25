@@ -15,7 +15,8 @@
     "sites:check": "node sites/build.mjs --check",
     "sites:check:headers": "node core/tools/check-headers.mjs --headers-file sites/landing/public/_headers && node core/tools/check-headers.mjs --headers-file sites/docs/public/_headers",
     "lint:abc": "cargo run -q -p sws-cli --features pack-hospitality -- check packs/hospitality/demo/venue.json",
-    "lint:abc:fixture": "cargo run -q -p sws-cli --features pack-hospitality -- check core/tools/fixtures/abc-bad.json",
+    "lint:abc:fixture": "cargo run -q -p sws-cli --features pack-hospitality -- check packs/hospitality/tools/fixtures/abc-bad.json",
+    "lint:clippy": "cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p sws-cli --features pack-hospitality --all-targets -- -D warnings && cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings",
     "check:headers": "node core/tools/check-headers.mjs",
     "check:headers:live": "node core/tools/check-headers.mjs --url http://127.0.0.1:8787",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
@@ -24,10 +25,12 @@
     "setup:rust": "cargo install worker-build@^0.9 --locked",
     "test:rust": "cargo test --workspace",
     "test:unit": "node --test tests/unit/*.test.mjs",
+    "test:agents": "node --test agents/tests/*.test.mjs",
+    "test:devvit": "node --test integrations/devvit-release-bot/src/server/releases.test.ts",
     "deny": "cargo deny check",
     "test:a11y": "playwright test",
     "lhci": "lhci autorun",
-    "verify": "npm run render:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run test:unit && cargo test --workspace && cargo deny check"
+    "verify": "npm run render:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run test:unit && npm run test:agents && npm run test:devvit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

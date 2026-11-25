@@ -307,6 +307,43 @@ pub fn starter_site_document() -> SiteDocument {
                                         Vec::new(),
                                     ),
                                     el(
+                                        None,
+                                        "div",
+                                        [("aria-hidden", "true")],
+                                        &["hp"],
+                                        vec![
+                                            el(
+                                                None,
+                                                "label",
+                                                [("for", "contact-website")],
+                                                &[],
+                                                vec![text("Leave this field blank")],
+                                            ),
+                                            el(
+                                                Some("contact-website"),
+                                                "input",
+                                                [
+                                                    ("type", "text"),
+                                                    ("name", "website"),
+                                                    ("tabindex", "-1"),
+                                                    ("autocomplete", "off"),
+                                                ],
+                                                &[],
+                                                Vec::new(),
+                                            ),
+                                        ],
+                                    ),
+                                    el(
+                                        Some("contact-turnstile"),
+                                        "div",
+                                        [
+                                            ("data-sitekey", "1x00000000000000000000AA"),
+                                            ("data-action", "contact"),
+                                        ],
+                                        &["cf-turnstile"],
+                                        Vec::new(),
+                                    ),
+                                    el(
                                         Some("contact-submit"),
                                         "button",
                                         [("type", "submit")],
@@ -844,6 +881,18 @@ fn starter_styles() -> Vec<IrStyleRule> {
             ],
         ),
         style_rule(
+            "honeypot",
+            ".hp",
+            None,
+            &[
+                ("position", "absolute"),
+                ("left", "-9999px"),
+                ("width", "1px"),
+                ("height", "1px"),
+                ("overflow", "hidden"),
+            ],
+        ),
+        style_rule(
             "site-footer",
             ".site-footer",
             None,
@@ -1127,6 +1176,16 @@ pub fn is_valid_route(raw: &str) -> bool {{
 }}
 
 #[must_use]
+pub fn is_turnstile_test_secret(secret: &str) -> bool {{
+    matches!(
+        secret.trim(),
+        "1x0000000000000000000000000000000AA"
+            | "2x0000000000000000000000000000000AA"
+            | "3x0000000000000000000000000000000AA"
+    )
+}}
+
+#[must_use]
 pub fn is_valid_phone(raw: &str) -> bool {{
     let p = raw.trim();
     if p.is_empty() || p.len() > 32 {{
@@ -1321,8 +1380,8 @@ mod wasm {{
     use super::{{
         API_CACHE_CONTROL, HONEYPOT_FIELD, MAX_BODY_BYTES, MAX_TURNSTILE_TOKEN, Route,
         SECURITY_HEADERS, TURNSTILE_FIELD, form_encode, has_disallowed_control, health_body,
-        is_valid_date, is_valid_email, is_valid_phone, is_valid_route, iso8601_utc,
-        parse_content_type, parse_fields, route,
+        is_turnstile_test_secret, is_valid_date, is_valid_email, is_valid_phone, is_valid_route,
+        iso8601_utc, parse_content_type, parse_fields, route,
     }};
 
     const SITEVERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -1543,6 +1602,7 @@ mod wasm {{
                 &json!({{ "ok": false, "error": "turnstile_unconfigured" }}),
             )?));
         }};
+        let relax_dev_checks = dev_mode && is_turnstile_test_secret(&secret_key);
         let Some(token) = token.map(str::trim).filter(|s| !s.is_empty()) else {{
             return Ok(Some(json_response(
                 400,
@@ -1605,7 +1665,7 @@ mod wasm {{
             )?));
         }};
         if verdict["success"].as_bool() == Some(true) {{
-            if !dev_mode {{
+            if !relax_dev_checks {{
                 let action = verdict["action"].as_str().unwrap_or("");
                 if action != expected_action {{
                     console_warn!("turnstile action mismatch: expected {{expected_action}}, got {{action:?}}");
@@ -1888,6 +1948,8 @@ mod tests {{
         assert_eq!(iso8601_utc(0), "1970-01-01T00:00:00.000Z");
         assert!(parse_content_type(Some("application/json; charset=utf-8")).is_some());
         assert!(parse_content_type(Some("application/json; charset=utf-16")).is_none());
+        assert!(is_turnstile_test_secret("1x0000000000000000000000000000000AA"));
+        assert!(!is_turnstile_test_secret("0x4AAAAAALiveSecret"));
         assert_eq!(SECURITY_HEADERS.len(), 7);
     }}
 }}

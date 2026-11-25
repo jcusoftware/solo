@@ -182,6 +182,7 @@ pub async fn verify_turnstile(
             &error_body("turnstile_unconfigured"),
         )?));
     };
+    let relax_dev_checks = dev_mode && validate::is_turnstile_test_secret(&secret_key);
     let Some(token) = token else {
         return Ok(Some(json_response(
             400,
@@ -235,7 +236,7 @@ pub async fn verify_turnstile(
     };
     match verdict {
         Some(v) if v.success => {
-            if !dev_mode {
+            if !relax_dev_checks {
                 if v.action != expected_action {
                     console_warn!(
                         "turnstile action mismatch: expected {expected_action}, got {:?}",

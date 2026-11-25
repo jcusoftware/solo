@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sws_compiler::{
     CompileOptions, CompiledSite, DiagnosticLevel, check_site_diagnostics, compile_from_json,
+    compile_site_with_raw,
 };
 use sws_ir::SiteDocument;
 #[cfg(feature = "pack-hospitality")]
@@ -200,7 +201,7 @@ pub fn cmd_export(input: &Path, outdir: &Path) -> Result<(), String> {
     let registry = default_registry();
     let (doc, _kind) = parse_value_to_ir(&raw, &registry)?;
     let options = default_compile_options();
-    let compiled = compile_from_json(&input_json, &registry, &options)
+    let compiled = compile_site_with_raw(&doc, Some(&raw), Some(&registry), &options)
         .map_err(|e| format!("compilation failed for '{}': {e}", input.display()))?;
 
     report_compiler_diagnostics(&compiled)?;
@@ -264,14 +265,20 @@ pub fn parse_value_to_ir(
     registry: &PluginRegistry,
 ) -> Result<(SiteDocument, String), String> {
     if registry.list().iter().any(|p| p.can_transform_input(raw)) {
-        let doc = registry
+        let mut doc = registry
             .transform_input_with(None, raw)
             .map_err(|e| format!("plugin input transformation failed: {e}"))?;
+        registry
+            .apply_transforms(&mut doc)
+            .map_err(|e| format!("plugin IR transform failed: {e}"))?;
         return Ok((doc, "venue_manifest".to_string()));
     }
 
-    let doc: SiteDocument = serde_json::from_value(raw.clone())
+    let mut doc: SiteDocument = serde_json::from_value(raw.clone())
         .map_err(|e| format!("failed to parse SiteDocument IR: {e}"))?;
+    registry
+        .apply_transforms(&mut doc)
+        .map_err(|e| format!("plugin IR transform failed: {e}"))?;
     Ok((doc, "site_ir".to_string()))
 }
 

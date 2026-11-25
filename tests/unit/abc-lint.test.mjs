@@ -10,7 +10,7 @@ import {
   lintHappyHourEnd,
   lintJson,
   lintHtml,
-} from '../../core/tools/abc-lint.mjs';
+} from '../../packs/hospitality/tools/abc-lint.mjs';
 
 const ABC_RS_PATH = resolve(process.cwd(), 'packs/hospitality/crate/src/abc.rs');
 
@@ -25,11 +25,11 @@ function parseRustStringLiteral(raw) {
 
 function parseRustAbcConstants(src) {
   const citMatch = src.match(/pub const CITATIONS:\s*&str\s*=\s*"((?:[^"\\]|\\.)*)"\s*;/);
-  assert.ok(citMatch, 'CITATIONS constant not found in core/src/abc.rs');
+  assert.ok(citMatch, 'CITATIONS constant not found in packs/hospitality/crate/src/abc.rs');
   const citations = parseRustStringLiteral(citMatch[1]);
 
   const rulesBlockMatch = src.match(/pub const PHRASE_RULES:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[([\s\S]*?)\];/);
-  assert.ok(rulesBlockMatch, 'PHRASE_RULES constant not found in core/src/abc.rs');
+  assert.ok(rulesBlockMatch, 'PHRASE_RULES constant not found in packs/hospitality/crate/src/abc.rs');
   const tupleRe = /\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*,?\s*\)/g;
   const phraseRules = [...rulesBlockMatch[1].matchAll(tupleRe)].map((m) => [
     parseRustStringLiteral(m[1]),
@@ -38,8 +38,8 @@ function parseRustAbcConstants(src) {
 
   const lateStartMatch = src.match(/pub const HH_LATE_START_MIN:\s*u32\s*=\s*([^;]+);/);
   const overnightEndMatch = src.match(/pub const HH_OVERNIGHT_END_MIN:\s*u32\s*=\s*([^;]+);/);
-  assert.ok(lateStartMatch, 'HH_LATE_START_MIN not found in core/src/abc.rs');
-  assert.ok(overnightEndMatch, 'HH_OVERNIGHT_END_MIN not found in core/src/abc.rs');
+  assert.ok(lateStartMatch, 'HH_LATE_START_MIN not found in packs/hospitality/crate/src/abc.rs');
+  assert.ok(overnightEndMatch, 'HH_OVERNIGHT_END_MIN not found in packs/hospitality/crate/src/abc.rs');
 
   return {
     citations,

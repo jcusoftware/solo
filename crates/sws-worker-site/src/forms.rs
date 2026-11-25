@@ -280,6 +280,8 @@ pub fn load_form_schemas(json_override: Option<&str>) -> BTreeMap<String, FormSc
         }
         if schema.id.is_empty() {
             schema.id = key.clone();
+        } else if schema.id != key {
+            continue;
         }
         if schema.turnstile_action.is_empty() {
             schema.turnstile_action = key.clone();
@@ -569,5 +571,15 @@ mod tests {
         assert_eq!(sub.values["company"], "Acme Studio");
         assert_eq!(sub.values["work_email"], "team@acme.test");
         assert_eq!(sub.values["seats"], serde_json::json!(10));
+
+        // Mismatched schema.id must be ignored so submission form_id matches URL key.
+        let mismatched = r#"{
+            "feedback": {
+                "id": "other_form",
+                "fields": []
+            }
+        }"#;
+        let loaded_mismatch = load_form_schemas(Some(mismatched));
+        assert!(!loaded_mismatch.contains_key("feedback"));
     }
 }

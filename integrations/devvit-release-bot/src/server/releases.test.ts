@@ -13,15 +13,27 @@ import {
 
 function createMemoryStore(initial: Record<string, string> = {}): ReleaseStore & {
   records: Map<string, string>;
+  locks: Set<string>;
 } {
   const records = new Map(Object.entries(initial));
+  const locks = new Set<string>();
   return {
     records,
+    locks,
     async hasPosted(tag: string) {
       return records.has(tag);
     },
+    async claimPost(tag: string) {
+      if (locks.has(tag)) return false;
+      locks.add(tag);
+      return true;
+    },
     async markPosted(tag: string, postId: string) {
       records.set(tag, postId);
+      locks.delete(tag);
+    },
+    async releaseClaim(tag: string) {
+      locks.delete(tag);
     },
   };
 }
@@ -89,6 +101,43 @@ describe('selectLatestRelease', () => {
       ]),
       null,
     );
+    assert.equal(
+      selectLatestRelease(
+        [
+          {
+            tag_name: 'v0.1.0',
+            html_url: 'https://github.com/other/repo/releases/tag/v0.1.0',
+            draft: false,
+            prerelease: false,
+          },
+        ],
+        'Solo',
+        'jcusoftware/solo',
+      ),
+      null,
+    );
+  });
+
+  it('skips control-char releases instead of aborting later valid releases', () => {
+    const selected = selectLatestRelease(
+      [
+        {
+          tag_name: 'v0.2.0\nbad',
+          html_url: 'https://github.com/jcusoftware/solo/releases/tag/v0.2.0',
+          draft: false,
+          prerelease: false,
+        },
+        {
+          tag_name: 'v0.1.0',
+          html_url: 'https://github.com/jcusoftware/solo/releases/tag/v0.1.0',
+          draft: false,
+          prerelease: false,
+        },
+      ],
+      'Solo',
+      'jcusoftware/solo',
+    );
+    assert.equal(selected?.tag, 'v0.1.0');
   });
 });
 
@@ -163,6 +212,53 @@ describe('syncLatestRelease', () => {
         }),
       /status 403/,
     );
+  });
+
+  it('passes AbortSignal timeout to fetchImpl, prevents concurrent claim races, and releases claim on error', async () => {
+    const store = createMemoryStore();
+    let sawSignal = false;
+    const feed = [
+      {
+        tag_name: 'v0.2.0',
+        html_url: 'https://github.com/jcusoftware/solo/releases/tag/v0.2.0',
+        draft: false,
+        prerelease: false,
+      },
+    ];
+    const mockFetch = (async (_input: unknown, init?: RequestInit) => {
+      sawSignal = init?.signal instanceof AbortSignal;
+      return new Response(JSON.stringify(feed), { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    await assert.rejects(
+      () =>
+        syncLatestRelease({
+          repo: 'jcusoftware/solo',
+          fetchImpl: mockFetch,
+          store,
+          submitLinkPost: async () => {
+            throw new Error('reddit outage');
+          },
+        }),
+      /reddit outage/,
+    );
+    assert.equal(sawSignal, true);
+    assert.equal(store.locks.size, 0);
+
+    // Pre-locked tag simulates concurrent runner and skips duplicate submit.
+    store.locks.add('v0.2.0');
+    let submitted = 0;
+    const lockedRes = await syncLatestRelease({
+      repo: 'jcusoftware/solo',
+      fetchImpl: mockFetch,
+      store,
+      submitLinkPost: async () => {
+        submitted += 1;
+        return { id: 't3_dup' };
+      },
+    });
+    assert.equal(lockedRes.status, 'already-posted');
+    assert.equal(submitted, 0);
   });
 });
 

@@ -97,9 +97,20 @@ struct PageDomStats {
     has_skip_link: bool,
     label_for_ids: BTreeSet<String>,
     controls: Vec<ControlRecord>,
+    images_missing_alt: Vec<String>,
     overlay_hits: Vec<(String, &'static str)>,
     unsafe_elements: Vec<(String, String)>,
     unsafe_attributes: Vec<(String, String, &'static str)>,
+}
+
+fn is_large_or_ui_usage(usage: Option<&str>) -> bool {
+    let Some(raw) = usage else {
+        return false;
+    };
+    let lower = raw.to_ascii_lowercase();
+    ["large", "ui", "icon", "border", "focus", "graphic", "control", "component"]
+        .iter()
+        .any(|kw| lower.contains(kw))
 }
 
 fn heading_level(tag: &str) -> Option<u8> {
@@ -235,6 +246,14 @@ fn collect_dom_stats(
                     });
                 }
             }
+            "img" if !hidden => {
+                let is_decorative_role = attrs
+                    .get("role")
+                    .is_some_and(|r| matches!(r.trim().to_ascii_lowercase().as_str(), "presentation" | "none"));
+                if !is_decorative_role && !attrs.contains_key("alt") {
+                    stats.images_missing_alt.push(path.clone());
+                }
+            }
             _ => {}
         }
 
@@ -300,6 +319,17 @@ pub fn run_diagnostics(
     }
 
     for (idx, pair) in doc.tokens.contrast_pairs.iter().enumerate() {
+        if !pair.min_ratio.is_finite() || pair.min_ratio < 3.0 {
+            diags.push(CompilerDiagnostic::error(
+                "contrast_ratio_too_low",
+                format!("tokens.contrast_pairs[{idx}]"),
+                format!(
+                    "declared min_ratio {:.2}:1 for {}/{} must be at least 3.00:1",
+                    pair.min_ratio, pair.foreground, pair.background
+                ),
+            ));
+            continue;
+        }
         let Some(fg_hex) = doc.tokens.colors.get(&pair.foreground) else {
             continue;
         };
@@ -307,7 +337,12 @@ pub fn run_diagnostics(
             continue;
         };
         if let Some(ratio) = sws_css::contrast_ratio(fg_hex, bg_hex) {
-            let required = pair.min_ratio.max(4.5);
+            let floor = if is_large_or_ui_usage(pair.usage.as_deref()) {
+                3.0
+            } else {
+                4.5
+            };
+            let required = pair.min_ratio.max(floor);
             if ratio < required {
                 diags.push(CompilerDiagnostic::error(
                     "contrast_ratio_too_low",
@@ -515,6 +550,15 @@ pub fn run_diagnostics(
                     format!("<{}> control is missing an accessible label", ctrl.tag),
                 ));
             }
+        }
+
+        // Visible <img> elements must include alt (empty alt="" is allowed for decorative images).
+        for img_path in stats.images_missing_alt {
+            diags.push(CompilerDiagnostic::error(
+                "img_missing_alt",
+                img_path,
+                "visible <img> must include an alt attribute (use alt=\"\" for decorative images)",
+            ));
         }
     }
 

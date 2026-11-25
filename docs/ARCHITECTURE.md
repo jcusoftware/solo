@@ -104,7 +104,7 @@ core/                         Active Phase 0/1 Rust Worker & renderer workspace 
 
 ## 3. Core edge data model (D1)
 
-The published-site edge Worker (`sws-worker-site`, currently `core/migrations/0001_init.sql`) uses bound SQLite parameters in Cloudflare D1:
+The published-site edge Worker (`sws-worker-site`, using `crates/sws-worker-site/migrations/0001_init.sql`) uses bound SQLite parameters in Cloudflare D1:
 
 - **`form_submissions` (Phase 0/1 table: `inquiries`).** Stores structured form payloads (`kind` such as `contact` or pack-defined kinds like `private_event`), contact fields, `message`, `source_route`, `status` (`new` | `responded` | `closed` | `spam`), and `created_at`.
 - **`newsletter_subscribers`.** Stores `email` (unique, `NOCASE`), `status` (`subscribed` | `unsubscribed` | `bounced`), `consent_timestamp` (ISO-8601 UTC stamped by the Worker), `source_route`, `consent_text`, `created_at`, `updated_at`, and `unsubscribed_at`.
@@ -152,7 +152,7 @@ The Phase 1 hospitality showcase exposes 10 routes: `/`, `/menu`, `/happy-hour`,
 
 ## 5. Dual security headers
 
-Cloudflare `_headers` (`core/public/_headers`) applies to **static assets only**. Every edge Worker response from `sws-worker-site` (including 4xx and 5xx errors on `/api/*`) must emit the byte-identical header set from `with_security_headers` (`core/src/headers.rs::with_security_headers`).
+Cloudflare `_headers` (`core/public/_headers`) applies to **static assets only**. Every edge Worker response from `sws-worker-site` (including 4xx and 5xx errors on `/api/*`) must emit the byte-identical header set from `with_security_headers` (`crates/sws-security/src/headers.rs::with_security_headers`).
 
 The shared header set enforces:
 - `Strict-Transport-Security`: 2 years, `includeSubDomains`, `preload`
@@ -185,7 +185,7 @@ See the `cloudflare-rust-headers` skill.
 
 **Fallback target:** Astro (static output) for pages, and TypeScript + Hono on Workers for `/api/*`.
 - **What carries over unchanged:** the IR/pack schema contracts and JSON Schema, the D1 migrations, `_headers`, the Playwright, axe and Lighthouse tests, pack linters (Node), the header parity check, and CI.
-- **What gets rewritten:** `core/src/*` (and `sws-worker-site`) becomes `core/api/src/*.ts`, with the same routes, JSON bodies, validation rules and middleware (`app.use('*', securityHeaders)`).
+- **What gets rewritten:** `crates/sws-security` and `crates/sws-worker-site` become TypeScript/Hono modules under `core/api/src/*.ts`, with the same routes, JSON bodies, validation rules and middleware (`app.use('*', securityHeaders)`).
 - **Layout:**
   - `core/web/` holds Astro, reading tenant/site configuration.
   - `core/api/` holds Hono.

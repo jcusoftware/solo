@@ -1,13 +1,80 @@
 //! CSS injection guards for selectors, properties, values, and font stacks.
 
 fn has_common_css_injection(val: &str) -> bool {
-    if val.contains([';', '{', '}', '\n', '\r', '\\', '\0']) {
+    if val.contains([';', '{', '}', '\n', '\r', '\u{000C}', '\\', '\0']) {
+        return true;
+    }
+    if val.chars().any(|c| c.is_control() && c != '\t') {
         return true;
     }
     if val.contains("/*") || val.contains("*/") {
         return true;
     }
     val.to_ascii_lowercase().contains("</style")
+}
+
+fn is_safe_css_url_arg(raw_arg: &str) -> bool {
+    let mut inner = raw_arg.trim();
+    if (inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2)
+        || (inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2)
+    {
+        inner = inner[1..inner.len() - 1].trim();
+    }
+    if inner.is_empty() || inner.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    let lower = inner.to_ascii_lowercase();
+    if lower.starts_with("javascript:") || lower.starts_with("vbscript:") {
+        return false;
+    }
+    if let Some(rest) = lower.strip_prefix("data:") {
+        const SAFE_RASTER_DATA_MIMES: &[&str] = &[
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "image/avif",
+        ];
+        return SAFE_RASTER_DATA_MIMES.iter().any(|mime| {
+            rest.strip_prefix(mime)
+                .is_some_and(|after| after.starts_with(';') || after.starts_with(','))
+        });
+    }
+    true
+}
+
+fn are_safe_css_urls(val: &str) -> bool {
+    let lower = val.to_ascii_lowercase();
+    let mut offset = 0usize;
+    while let Some(rel) = lower[offset..].find("url(") {
+        let arg_start = offset + rel + 4;
+        let bytes = val.as_bytes();
+        let mut idx = arg_start;
+        let mut quote: Option<u8> = None;
+        let mut found_end = None;
+        while idx < bytes.len() {
+            let b = bytes[idx];
+            match quote {
+                Some(q) if b == q => quote = None,
+                Some(_) => {}
+                None if b == b'"' || b == b'\'' => quote = Some(b),
+                None if b == b')' => {
+                    found_end = Some(idx);
+                    break;
+                }
+                None => {}
+            }
+            idx += 1;
+        }
+        let Some(arg_end) = found_end else {
+            return false;
+        };
+        if !is_safe_css_url_arg(&val[arg_start..arg_end]) {
+            return false;
+        }
+        offset = arg_end + 1;
+    }
+    true
 }
 
 /// Returns `true` if single and double quotes in `val` are properly paired.
@@ -61,10 +128,7 @@ pub fn is_safe_css_value_with_url(val: &str, allow_safe_url: bool) -> bool {
         if !allow_safe_url {
             return false;
         }
-        if lower.contains("javascript:")
-            || lower.contains("vbscript:")
-            || lower.contains("data:text/html")
-        {
+        if !are_safe_css_urls(val) {
             return false;
         }
     }
@@ -207,12 +271,29 @@ mod tests {
             "url(https://assets.example/bg.webp)",
             true
         ));
+        assert!(is_safe_css_value_with_url(
+            "url('data:image/png,iVBORw0KGgo=')",
+            true
+        ));
+        assert!(!is_safe_css_value("red\u{000C}background:blue"));
         assert!(!is_safe_css_value_with_url(
             "url(javascript:alert(1))",
             true
         ));
         assert!(!is_safe_css_value_with_url(
             "url(data:text/html,<script>)",
+            true
+        ));
+        assert!(!is_safe_css_value_with_url(
+            "url(data:image/svg+xml,<svg/>)",
+            true
+        ));
+        assert!(!is_safe_css_value_with_url(
+            "url(\"data:application/xhtml+xml,<html/>\")",
+            true
+        ));
+        assert!(!is_safe_css_value_with_url(
+            "url(data:text/javascript,alert(1))",
             true
         ));
     }

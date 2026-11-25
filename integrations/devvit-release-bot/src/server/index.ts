@@ -14,23 +14,43 @@ import { syncLatestRelease, type ReleaseStore, type SyncResult } from './release
 const DEFAULT_REPO = 'jcusoftware/solo';
 const DEFAULT_PRODUCT_NAME = 'Solo';
 
-function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
+function sendJson(
+  res: ServerResponse,
+  statusCode: number,
+  payload: unknown,
+  extraHeaders: Record<string, string> = {},
+): void {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
+    ...extraHeaders,
   });
   res.end(body);
 }
 
-function createRedisStore(): ReleaseStore {
+function createRedisStore(repo: string): ReleaseStore {
+  const scope = repo.toLowerCase();
+  const postedKey = (tag: string): string => `solo:posted:${scope}:${tag}`;
+  const lockKey = (tag: string): string => `solo:lock:${scope}:${tag}`;
   return {
     async hasPosted(tag: string): Promise<boolean> {
-      const existing = await redis.get(`solo:posted:${tag}`);
+      const existing = await redis.get(postedKey(tag));
       return typeof existing === 'string' && existing.length > 0;
     },
+    async claimPost(tag: string): Promise<boolean> {
+      const result = await redis.set(lockKey(tag), '1', {
+        nx: true,
+        expiration: new Date(Date.now() + 60_000),
+      });
+      return result === 'OK';
+    },
     async markPosted(tag: string, postId: string): Promise<void> {
-      await redis.set(`solo:posted:${tag}`, postId);
+      await redis.set(postedKey(tag), postId);
+      await redis.del(lockKey(tag));
+    },
+    async releaseClaim(tag: string): Promise<void> {
+      await redis.del(lockKey(tag));
     },
   };
 }
@@ -49,7 +69,7 @@ async function runReleaseSync(): Promise<SyncResult> {
   return syncLatestRelease({
     repo,
     productName,
-    store: createRedisStore(),
+    store: createRedisStore(repo),
     submitLinkPost: async ({ title, url }) => {
       const post = await reddit.submitPost({
         subredditName,
@@ -92,7 +112,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const pathname = new URL(req.url ?? '/', 'http://webbit.local').pathname;
 
   if (req.method !== 'POST') {
-    sendJson(res, 405, { error: 'Method not allowed' });
+    sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'POST' });
     return;
   }
 
