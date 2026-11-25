@@ -1,9 +1,12 @@
 //! Unit and integration tests for `sws-cli` and the stdio MCP server.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use sws_ir::{SiteDocument, validate_ir};
@@ -586,4 +589,157 @@ fn mcp_rejects_oversized_stdin_line_and_recovers() {
     assert_eq!(lines[0]["error"]["code"], json!(-32600));
     assert_eq!(lines[1]["id"], json!(42));
     assert_eq!(lines[1]["result"], json!({}));
+}
+
+// ---------------------------------------------------------------------------
+// `solo preview` — local HTTP preview server for compiled output
+// ---------------------------------------------------------------------------
+
+use crate::preview;
+
+/// Build a compiled fixture with `cmd_build` from the generic starter IR.
+fn preview_fixture(label: &str) -> (TempDir, PathBuf) {
+    let dir = TempDir::new(label);
+    let out = dir.path().join("out");
+    let ir_path = dir.path().join("site.ir.json");
+    let doc = starter_site_document();
+    let json = serde_json::to_string_pretty(&doc).expect("serialize starter IR");
+    fs::write(&ir_path, json).expect("write site.ir.json");
+    cmd_build(&ir_path, &out, false).expect("build preview fixture");
+    (dir, out)
+}
+
+/// Minimal std-only HTTP GET client: returns (status, headers, body).
+fn http_get(addr: SocketAddr, target: &str) -> (u16, BTreeMap<String, String>, String) {
+    let mut stream = TcpStream::connect(addr).expect("connect to preview server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set read timeout");
+    stream
+        .write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes())
+        .expect("write request");
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).expect("read response");
+    let (head, body) = raw.split_once("\r\n\r\n").expect("response head/body split");
+    let mut lines = head.lines();
+    let status_line = lines.next().expect("status line");
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let headers: BTreeMap<String, String> = lines
+        .filter_map(|l| l.split_once(": "))
+        .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    (status, headers, body.to_string())
+}
+
+#[test]
+fn preview_serves_compiled_site_with_correct_mime_types() {
+    let (_dir, out) = preview_fixture("preview-serve");
+    let handle = preview::spawn(&out, 0).expect("spawn preview server");
+    let addr = handle.addr();
+
+    // `/` serves the compiled index.html as HTML.
+    let (status, headers, body) = http_get(addr, "/");
+    assert_eq!(status, 200);
+    assert!(
+        headers["content-type"].starts_with("text/html"),
+        "unexpected content-type: {}",
+        headers["content-type"]
+    );
+    assert!(body.contains("<!doctype html>"), "{body}");
+
+    for (target, mime) in [
+        ("/styles.css", "text/css"),
+        ("/js/forms.js", "text/javascript"),
+        ("/robots.txt", "text/plain"),
+        ("/sitemap.xml", "application/xml"),
+    ] {
+        let (status, headers, _) = http_get(addr, target);
+        assert_eq!(status, 200, "{target}");
+        assert!(
+            headers["content-type"].starts_with(mime),
+            "{target}: unexpected content-type {}",
+            headers["content-type"]
+        );
+    }
+
+    // Missing files and directories without an index (no listings) 404.
+    for target in ["/missing.html", "/js/"] {
+        let (status, _, _) = http_get(addr, target);
+        assert_eq!(status, 404, "{target}");
+    }
+
+    // `_headers` is served as a static text file and NOT applied as HTTP
+    // headers (it is a Cloudflare Static Assets directive, not portable HTTP).
+    let (status, headers, body) = http_get(addr, "/_headers");
+    assert_eq!(status, 200);
+    assert!(
+        headers["content-type"].starts_with("text/plain"),
+        "unexpected content-type: {}",
+        headers["content-type"]
+    );
+    assert!(
+        !headers.contains_key("strict-transport-security"),
+        "_headers must not be applied as HTTP headers"
+    );
+    assert!(body.contains("/*"), "_headers content served verbatim: {body}");
+
+    handle.stop().expect("stop preview server");
+}
+
+#[test]
+fn preview_rejects_traversal_and_sensitive_files() {
+    let (dir, out) = preview_fixture("preview-jail");
+    fs::write(out.join(".env"), "SECRET=1").expect("write .env");
+    fs::write(out.join("secret.pem"), "key material").expect("write pem");
+    // An escape hatch outside the served root via a sibling directory.
+    let sibling = dir.path().join("outside");
+    fs::create_dir_all(&sibling).expect("create sibling dir");
+    fs::write(sibling.join("secret.txt"), "outside").expect("write outside secret");
+
+    let handle = preview::spawn(&out, 0).expect("spawn preview server");
+    let addr = handle.addr();
+
+    for target in [
+        "/../secrets",
+        "/foo/../../etc/passwd",
+        "/../outside/secret.txt",
+        "/%2e%2e/outside/secret.txt",
+        "/.env",
+        "/secret.pem",
+    ] {
+        let (status, _, _) = http_get(addr, target);
+        assert_eq!(status, 403, "expected 403 for {target}");
+    }
+
+    // Unrelated missing paths still 404 (not 403) — existence is not leaked
+    // for in-root files, while escapes are refused outright.
+    let (status, _, _) = http_get(addr, "/not-here.txt");
+    assert_eq!(status, 404);
+
+    handle.stop().expect("stop preview server");
+}
+
+#[test]
+fn preview_rejects_non_get_methods_and_stops_cleanly() {
+    let (_dir, out) = preview_fixture("preview-stop");
+    let handle = preview::spawn(&out, 0).expect("spawn preview server");
+    let addr = handle.addr();
+
+    // POST is not allowed for a static preview server.
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    stream
+        .write_all(b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .expect("write request");
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).expect("read response");
+    assert!(raw.starts_with("HTTP/1.1 405"), "{raw}");
+
+    handle.stop().expect("preview server stops cleanly");
+    // After stop() the bound port refuses new connections.
+    let retry = TcpStream::connect_timeout(&addr, Duration::from_secs(1));
+    assert!(retry.is_err(), "port should be closed after stop");
 }

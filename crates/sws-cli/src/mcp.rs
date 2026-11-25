@@ -301,7 +301,7 @@ fn parse_json_arg(val: &Value, field_name: &str) -> Result<Value, String> {
     }
 }
 
-fn is_sensitive_component(name: &str) -> bool {
+pub(crate) fn is_sensitive_component(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "private"
         || lower == ".git"
