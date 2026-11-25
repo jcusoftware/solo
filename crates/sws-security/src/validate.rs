@@ -291,6 +291,7 @@ pub fn is_valid_route(route: &str) -> bool {
     route.starts_with('/')
         && route.len() <= 200
         && !route.contains("//")
+        && !route.split('/').any(|seg| seg == "..")
         && route
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'))
@@ -620,6 +621,14 @@ mod tests {
         assert!(is_valid_route("/about"));
         assert!(!is_valid_route("//evil.test"));
         assert!(!is_valid_route("/a?b"));
+        // `..` segments must be rejected for parity with the export template
+        // validator (crates/sws-cli/src/templates.rs).
+        assert!(!is_valid_route("/about/../x"));
+        assert!(!is_valid_route("/about/../"));
+        assert!(!is_valid_route("/about/.."));
+        assert!(!is_valid_route("/.."));
+        assert!(is_valid_route("/a.b"));
+        assert!(is_valid_route("/about/.x"));
     }
 
     #[test]

@@ -37,6 +37,19 @@ jobs:
       - name: cargo clippy (wasm32)
         run: cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings
 
+  export-bundle:
+    name: export bundle (compiled + executed)
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Run solo export and execute the emitted crate's test module
+        run: cargo test -p sws-cli --features pack-hospitality --locked --release -- --ignored export
+
   verify:
     name: verify (npm fast gate)
     needs: rust
