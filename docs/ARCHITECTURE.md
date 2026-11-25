@@ -114,7 +114,7 @@ The published-site edge Worker (`sws-worker-site`, using `crates/sws-worker-site
 - **`form_submissions` (Phase 0/1 table: `inquiries`).** Stores structured form payloads (`kind` such as `contact` or pack-defined kinds like `private_event`), contact fields, `message`, `source_route`, `status` (`new` | `responded` | `closed` | `spam`), and `created_at`.
 - **`newsletter_subscribers`.** Stores `email` (unique, `NOCASE`), `status` (`subscribed` | `unsubscribed` | `bounced`), `consent_timestamp` (ISO-8601 UTC stamped by the Worker), `source_route`, `consent_text`, `created_at`, `updated_at`, and `unsubscribed_at`.
   - Public web forms never flip `unsubscribed` or `bounced` rows back to `subscribed` (re-subscription requires explicit double opt-in).
-- **Pack-extended tables (e.g., `events` in `packs/hospitality`).** Optional schema tables such as scheduled `events` (`slug`, `title`, `description`, `starts_at`, `ends_at`, `is_ticketed`, `ticket_url`) are enabled when the corresponding pack module is active.
+- **Pack-extended tables (e.g., `events` in `packs/hospitality`).** Optional schema tables are enabled when the corresponding pack feature is active: `events` (`slug`, `title`, `description`, legacy `starts_at`/`ends_at`/`is_ticketed`, public-event columns `external_uid`, `location`, `start_utc`, `end_utc`, `is_free`, `updated_at`) in `migrations/0002_public_events.sql`, and the one-row `event_sync_state` snapshot marker (with the reserved `identity_fingerprint` column carried over from the old `0004_event_snapshot_identity.sql`) in `migrations/0003_event_sync.sql`. All queries bind parameters.
 
 ---
 
@@ -131,7 +131,7 @@ All hospitality-specific schemas, UI templates, third-party restaurant integrati
 | M3 | Private Events Inquiry | `/book-an-event` → `POST /api/inquire` (`kind=private_event`) | D1 `inquiries` / `form_submissions` | on | API ✅, page Phase 1 |
 | M4 | Contact | `/contact` → `POST /api/inquire` (`kind=contact`) | D1 `inquiries` / `form_submissions` | on | API ✅, page Phase 1 |
 | M5 | Newsletter + CAN-SPAM Consent | Footer form → `POST /api/newsletter` | D1 `newsletter_subscribers` | on | Phase 0 ✅ |
-| M6 | Events Calendar | `/events`, `Event` JSON-LD | D1 `events` | off in demo until Phase 1 | schema ✅ |
+| M6 | Events Calendar | `/events`, `Event` JSON-LD | `scheduling.events`, D1 `events` + `event_sync_state` | on in demo (`d1_or_cms`) | API + render ✅ (port #43) |
 | M7 | Visit | `/visit` (hours, holiday overrides, directions, venue accessibility) | `venue.json` | on | Phase 1 |
 | M8 | About / Story / Gallery | `/about` | `venue.json` + optimized images | off in demo until Phase 1 | Phase 1 |
 | M9 | SEO & Discovery | `sitemap.xml`, `robots.txt`, NAP drift audit | `venue.json` | on (required) | Phase 0 ✅ |
@@ -148,6 +148,10 @@ The Phase 1 hospitality showcase exposes 10 routes: `/`, `/menu`, `/happy-hour`,
 | `opentable` / `resy` | `{restaurant_id}` / `{venue_id}` | `null` | Used only when matching `seating_policy` |
 | `inkind` | `{enabled}` | `false` | House-account / inKind promo link, off by default |
 | `turnstile` | `{site_key, test_key}` | test key | Production Turnstile key per tenant |
+
+### Public events calendar (M6 — `scheduling.events`)
+
+Venues with `scheduling.events.enabled: true` in `venue.json` render a deterministic `/events` page (semantic list hydrated by `/js/events-client.js`, `noscript` link to the JSON API, per-event `.ics` downloads) and emit `events-config.json` plus `js/events-client.js` as build assets. The Worker routes `GET /api/events` and `GET /api/events/:id/ics` stay inert (404) unless the enabled marker asset is present, so zero-backend sites are unaffected. An optional Google Calendar import (`source: "google_calendar_sync"`) runs only on a Cron trigger and only with the `GOOGLE_SA_EMAIL`, `GOOGLE_SA_PRIVATE_KEY`, `GOOGLE_SYNC_SUBJECT`, and `GOOGLE_SYNC_CALENDAR_ID` secrets provisioned in the Worker environment; it atomically replaces the importer's own `gcal:` rows and is fully inert without configuration. Setup details: `docs/EVENTS_SETUP.md`. Native call booking / Zoom (`scheduling.bookings`) is a separate wave-B feature layered on the same `scheduling` section.
 
 ### Advisory Virginia ABC copy lint (`packs/hospitality`)
 

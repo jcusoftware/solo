@@ -9,12 +9,25 @@ pub enum Route {
     FormSubmit(String),
     InquireCompat,
     Newsletter,
+    /// `GET /api/events` — public events calendar listing (issue #43).
+    Events,
+    /// `GET /api/events/:id/ics` — single-event calendar download.
+    EventIcs(String),
     /// Known API path, wrong method. Carries the `Allow` header value.
     MethodNotAllowed(&'static str),
     /// Unknown `/api/*` path.
     NotFound,
     /// Anything outside `/api/` is delegated to the static-assets binding.
     Asset,
+}
+
+/// Validates a D1 event id for the ICS route: decimal digits only, no
+/// overflow, so the bound `id = ?2` lookup cannot be probed with crafted text.
+pub fn is_valid_event_id(id: &str) -> bool {
+    id.len() <= 19
+        && !id.is_empty()
+        && id.bytes().all(|b| b.is_ascii_digit())
+        && id.parse::<i64>().is_ok()
 }
 
 /// Validates a form identifier against `[a-z0-9][a-z0-9_-]{0,63}`.
@@ -149,6 +162,23 @@ pub fn route(method: &str, path: &str) -> Route {
             "POST" => Route::Newsletter,
             _ => Route::MethodNotAllowed("POST"),
         },
+        "/api/events" => match m.as_str() {
+            "GET" => Route::Events,
+            _ => Route::MethodNotAllowed("GET"),
+        },
+        p if let Some(id) = p
+            .strip_prefix("/api/events/")
+            .and_then(|p| p.strip_suffix("/ics")) =>
+        {
+            if is_valid_event_id(id) {
+                match m.as_str() {
+                    "GET" => Route::EventIcs(id.to_string()),
+                    _ => Route::MethodNotAllowed("GET"),
+                }
+            } else {
+                Route::NotFound
+            }
+        }
         p if p.starts_with("/api/forms/") => {
             let id = &p["/api/forms/".len()..];
             if is_valid_form_id(id) {
@@ -232,10 +262,50 @@ mod tests {
             Route::MethodNotAllowed("POST")
         );
 
+        assert_eq!(route("GET", "/api/events"), Route::Events);
+        assert_eq!(route("get", "/api/events"), Route::Events);
+        assert_eq!(
+            route("POST", "/api/events"),
+            Route::MethodNotAllowed("GET")
+        );
+
+        assert_eq!(
+            route("GET", "/api/events/900000001/ics"),
+            Route::EventIcs("900000001".to_string())
+        );
+        assert_eq!(
+            route("POST", "/api/events/900000001/ics"),
+            Route::MethodNotAllowed("GET")
+        );
+        assert_eq!(route("GET", "/api/events//ics"), Route::NotFound);
+        assert_eq!(route("GET", "/api/events/1x/ics"), Route::NotFound);
+        assert_eq!(route("GET", "/api/events/-1/ics"), Route::NotFound);
+        assert_eq!(
+            route("GET", "/api/events/99999999999999999999/ics"),
+            Route::NotFound
+        );
+        assert_eq!(route("GET", "/api/events/900000001"), Route::NotFound);
+        assert_eq!(route("GET", "/api/events/900000001/Ics"), Route::NotFound);
+
         assert_eq!(route("GET", "/api/nope"), Route::NotFound);
         assert_eq!(route("GET", "/api"), Route::NotFound);
         assert_eq!(route("GET", "/"), Route::Asset);
         assert_eq!(route("GET", "/apiary"), Route::Asset);
+    }
+
+    #[test]
+    fn event_id_validation() {
+        assert!(is_valid_event_id("1"));
+        assert!(is_valid_event_id("900000001"));
+        assert!(is_valid_event_id("9223372036854775807")); // i64::MAX
+
+        assert!(!is_valid_event_id(""));
+        assert!(!is_valid_event_id("01x"));
+        assert!(!is_valid_event_id("+1"));
+        assert!(!is_valid_event_id("-1"));
+        assert!(!is_valid_event_id(" 1"));
+        assert!(!is_valid_event_id("9223372036854775808")); // i64::MAX + 1
+        assert!(!is_valid_event_id(&"9".repeat(20)));
     }
 
     #[test]

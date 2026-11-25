@@ -23,6 +23,8 @@ use crate::commands::{
 };
 use crate::mcp::serve_mcp;
 use crate::templates::{MIGRATION_0001_INIT_SQL, starter_site_document};
+#[cfg(feature = "pack-hospitality")]
+use crate::templates::starter_hospitality_venue;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -171,6 +173,67 @@ fn build_compiles_hospitality_demo_manifest() {
     assert!(html.contains("<a href=\"mailto:hello@shirlington-hearth.example\">"), "{html}");
     assert!(html.contains("<a href=\"tel:+17035550142\">"), "{html}");
     assert!(html.contains("instead.</p></noscript>"), "{html}");
+}
+
+#[cfg(feature = "pack-hospitality")]
+#[test]
+fn build_emits_events_assets_only_when_enabled() {
+    use sws_pack_hospitality::events::EVENTS_CLIENT_JS;
+    use sws_pack_hospitality::venue::{EventsConfig, EventsSource, SchedulingConfig};
+
+    let dir = TempDir::new("events-assets");
+    let venue_path = dir.path().join("venue.json");
+
+    // Without scheduling.events nothing events-related is emitted.
+    let out_dir = dir.path().join("out-disabled");
+    fs::write(
+        &venue_path,
+        serde_json::to_string(&starter_hospitality_venue()).expect("serialize starter"),
+    )
+    .expect("write venue");
+    cmd_build(&venue_path, &out_dir, false).expect("build starter venue");
+    assert!(!out_dir.join("events/index.html").exists());
+    assert!(!out_dir.join("events-config.json").exists());
+    assert!(!out_dir.join("js/events-client.js").exists());
+
+    // Enabling scheduling.events emits the page, marker config, and client script.
+    let out_dir = dir.path().join("out-enabled");
+    let mut venue = starter_hospitality_venue();
+    venue.scheduling = Some(SchedulingConfig {
+        events: Some(EventsConfig {
+            enabled: true,
+            source: EventsSource::D1OrCms,
+            google_calendar_id: None,
+            timezone: "America/New_York".to_string(),
+        }),
+    });
+    let slug = venue.slug.clone();
+    fs::write(
+        &venue_path,
+        serde_json::to_string(&venue).expect("serialize venue"),
+    )
+    .expect("write venue");
+    cmd_build(&venue_path, &out_dir, false).expect("build events venue");
+    cmd_build(&venue_path, &out_dir, true).expect("build --check events venue");
+
+    let html = fs::read_to_string(out_dir.join("events/index.html")).expect("read events.html");
+    assert!(html.contains("<h1>Upcoming free events</h1>"), "{html}");
+    assert!(html.contains(r#"<p id="event-status" class="form-status" role="status"></p>"#), "{html}");
+    assert!(html.contains(r#"data-timezone="America/New_York""#), "{html}");
+    assert!(html.contains("<a href=\"/api/events\">View the event data</a>"), "{html}");
+    assert!(html.contains("<script src=\"/js/events-client.js\" defer></script>"), "{html}");
+    let index = fs::read_to_string(out_dir.join("index.html")).expect("read index.html");
+    assert!(index.contains("<a href=\"/events\">Events</a>"), "{index}");
+    let sitemap = fs::read_to_string(out_dir.join("sitemap.xml")).expect("read sitemap.xml");
+    assert!(sitemap.contains("<loc>"), "{sitemap}");
+
+    let config = fs::read_to_string(out_dir.join("events-config.json")).expect("read config");
+    assert_eq!(
+        config,
+        format!("{{\"enabled\":true,\"source\":\"d1_or_cms\",\"tenant\":\"{slug}\"}}\n")
+    );
+    let client = fs::read_to_string(out_dir.join("js/events-client.js")).expect("read client js");
+    assert_eq!(client, EVENTS_CLIENT_JS);
 }
 
 #[cfg(feature = "pack-hospitality")]

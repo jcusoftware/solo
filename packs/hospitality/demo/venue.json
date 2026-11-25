@@ -91,7 +91,7 @@
     "M3": { "enabled": true, "name": "Private Events inquiry" },
     "M4": { "enabled": true, "name": "Contact" },
     "M5": { "enabled": true, "name": "Newsletter + CAN-SPAM consent" },
-    "M6": { "enabled": false, "name": "Events calendar" },
+    "M6": { "enabled": true, "name": "Events calendar" },
     "M7": { "enabled": true, "name": "Visit" },
     "M8": { "enabled": false, "name": "About / story / gallery" },
     "M9": { "enabled": true, "name": "SEO & discovery" },
@@ -109,6 +109,14 @@
     "enabled": true,
     "consent_text": "Yes, email me Shirlington Hearth news, events and offers. I can unsubscribe at any time using the link in every email.",
     "privacy_note": "We never sell your email. Every message includes our postal address and a one-click unsubscribe link."
+  },
+  "scheduling": {
+    "events": {
+      "enabled": true,
+      "source": "d1_or_cms",
+      "google_calendar_id": null,
+      "timezone": "America/New_York"
+    }
   },
   "happy_hour": {
     "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],

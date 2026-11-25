@@ -25,6 +25,11 @@ pub struct CompileOptions {
     pub html_css_budget_bytes: usize,
     pub forms_js_source: Option<String>,
     pub include_headers_file: bool,
+    /// Extra deterministic static files to emit verbatim (e.g. a pack's client
+    /// script or runtime config marker). Paths follow the same collision rules
+    /// as reserved files; inserted after reserved files.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_files: BTreeMap<String, String>,
 }
 
 impl Default for CompileOptions {
@@ -33,6 +38,7 @@ impl Default for CompileOptions {
             html_css_budget_bytes: 50 * 1024,
             forms_js_source: None,
             include_headers_file: true,
+            extra_files: BTreeMap::new(),
         }
     }
 }
@@ -261,17 +267,33 @@ fn compile_site_internal(
         reserved_files.push(("_headers", sws_security::headers::render_headers_file()));
     }
 
-    for (reserved_path, content) in reserved_files {
-        if files.contains_key(reserved_path) {
+    for (reserved_path, content) in &reserved_files {
+        if files.contains_key(*reserved_path) {
             let msg = format!("page output collides with reserved file '{reserved_path}'");
             diagnostics.push(CompilerDiagnostic::error(
                 "output_path_collision",
-                reserved_path,
+                (*reserved_path).to_string(),
                 msg.clone(),
             ));
             return Err(CompileError::new(msg, diagnostics));
         }
-        files.insert(reserved_path.to_string(), content);
+        files.insert((*reserved_path).to_string(), content.clone());
+    }
+
+    // Pack/build-provided extra files (e.g. `events-config.json`,
+    // `js/events-client.js`) follow the same collision rules as reserved
+    // files so page output can never be shadowed silently.
+    for (path, content) in &options.extra_files {
+        if files.contains_key(path) || reserved_files.iter().any(|(p, _)| *p == path.as_str()) {
+            let msg = format!("extra file collides with generated output '{path}'");
+            diagnostics.push(CompilerDiagnostic::error(
+                "output_path_collision",
+                path.clone(),
+                msg.clone(),
+            ));
+            return Err(CompileError::new(msg, diagnostics));
+        }
+        files.insert(path.clone(), content.clone());
     }
 
     // Ensure no emitted file path is also a directory prefix of another emitted path
