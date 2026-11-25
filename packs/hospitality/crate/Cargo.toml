@@ -1,0 +1,17 @@
+[package]
+name = "sws-pack-hospitality"
+description = "Open-source hospitality vertical pack for Solo Website System (SWS): venue manifest, semantic Menu JSON-LD, inquiry validation, and advisory VA ABC advertising lint."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sws-security = { path = "../../../crates/sws-security" }
+sws-ir = { path = "../../../crates/sws-ir" }
+sws-plugin = { path = "../../../crates/sws-plugin" }
+sws-css = { path = "../../../crates/sws-css" }

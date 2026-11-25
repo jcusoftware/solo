@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting Started — SWS Documentation</title>
+  <meta name="description" content="Prerequisites, downloading prebuilt solo CLI binaries, running the local Cloudflare Worker &amp; D1 workspace, and verifying quality gates.">
+  <link rel="canonical" href="https://docs.jcusoftware.com/getting-started/">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Getting Started — SWS Documentation",
+  "description": "Prerequisites, downloading prebuilt solo CLI binaries, running the local Cloudflare Worker & D1 workspace, and verifying quality gates.",
+  "url": "https://docs.jcusoftware.com/getting-started/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Solo Website System Documentation",
+    "url": "https://docs.jcusoftware.com/"
+  }
+}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">SOLO</span>
+        <span>Solo Docs</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="https://solo.jcusoftware.com/">Home</a>
+        <a href="https://solo.jcusoftware.com/#download">Download</a>
+        <a href="/showcase/">Showcase</a>
+        <a href="https://github.com/jcusoftware/solo/releases">Releases</a>
+        <a href="https://github.com/jcusoftware/solo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <div class="container docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation sections">
+      <p class="docs-sidebar-title">Documentation</p>
+      <nav aria-label="Documentation">
+        <ul class="docs-nav-list">
+          <li><a href="/">Overview</a></li>
+          <li><a href="/getting-started/" aria-current="page">Getting Started</a></li>
+          <li><a href="/user-guide/">User Guide</a></li>
+          <li><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Live Showcase</a></li>
+          <li><a href="/accessibility-and-security/">Accessibility &amp; Security</a></li>
+          <li><a href="/deployment/">Deployment</a></li>
+          <li><a href="/faq/">FAQ &amp; Troubleshooting</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="main" class="docs-content" tabindex="-1">
+      <h1>Getting Started</h1>
+      <p class="docs-lead">Get Solo Website System running locally in minutes using free-tier tools and zero paid cloud dependencies.</p>
+
+      <h2>Prerequisites</h2>
+      <div class="table-wrap" tabindex="0">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Tool</th>
+              <th scope="col">Requirement</th>
+              <th scope="col">Install / Setup</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Node.js LTS</td>
+              <td><code>&gt;= 20</code></td>
+              <td><code>nvm use --lts</code></td>
+            </tr>
+            <tr>
+              <td>Rust stable + Wasm target</td>
+              <td><code>wasm32-unknown-unknown</code></td>
+              <td><code>rustup target add wasm32-unknown-unknown</code></td>
+            </tr>
+            <tr>
+              <td><code>worker-build</code></td>
+              <td><code>^0.9</code></td>
+              <td><code>cargo install worker-build@^0.9 --locked</code></td>
+            </tr>
+            <tr>
+              <td><code>cargo-deny</code></td>
+              <td>Latest stable</td>
+              <td><code>cargo install cargo-deny --locked</code></td>
+            </tr>
+            <tr>
+              <td>Playwright Chromium</td>
+              <td>For E2E &amp; axe gates</td>
+              <td><code>npx playwright install chromium</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <p class="callout-title">Ensure <code>~/.cargo/bin</code> is on your <code>PATH</code></p>
+        <p><code>wrangler dev</code> invokes <code>worker-build</code> to compile the Rust Worker to WebAssembly. Add <code>export PATH="$HOME/.cargo/bin:$PATH"</code> to your shell profile if <code>worker-build</code> is not found.</p>
+      </div>
+
+      <h2>Option 1: Download a Prebuilt <code>solo</code> Binary</h2>
+      <p>Tagged <code>v*</code> releases publish cross-compiled binaries for five targets (Linux (x86_64), Linux (ARM64), macOS (Apple Silicon), macOS (Intel), Windows (x86_64)) along with a <code>SHA256SUMS.txt</code> manifest. Visit the <a href="https://solo.jcusoftware.com/#download">Download section</a> or <a href="https://github.com/jcusoftware/solo/releases">GitHub Releases</a>.</p>
+      <pre tabindex="0"><code># Verify integrity before running a downloaded archive
+sha256sum -c --ignore-missing SHA256SUMS.txt
+tar -xzf solo-&lt;version&gt;-&lt;target&gt;.tar.gz
+./solo --help</code></pre>
+
+      <h2>Option 2: Run the Workspace from Source</h2>
+      <pre tabindex="0"><code>git clone https://github.com/jcusoftware/solo.git
+cd solo
+npm ci
+cp .dev.vars.example .dev.vars
+npm run db:migrate:local
+npm run render
+npm run dev</code></pre>
+      <p>Once <code>wrangler dev</code> finishes building the Rust/Wasm Worker, open <code>http://127.0.0.1:8787</code> in your browser.</p>
+
+      <h2>Smoke-Test the Local Edge API</h2>
+      <p>The example <code>.dev.vars.example</code> uses Cloudflare&apos;s documented always-pass Turnstile test key for local development and stubs outbound Resend email delivery.</p>
+      <pre tabindex="0"><code># 1. Health check
+curl -s http://127.0.0.1:8787/api/health
+# {"service":"sws-worker-site","status":"ok","version":"0.1.0-dev"}
+
+# 2. Newsletter signup (requires explicit consent: true)
+curl -s -H 'content-type: application/json' \
+  -d '{"email":"guest@example.com","consent":true,"source_route":"/","cf-turnstile-response":"XXXX.DUMMY.TOKEN.XXXX"}' \
+  http://127.0.0.1:8787/api/newsletter
+
+# 3. Inspect local D1 rows
+npx wrangler d1 execute DB --local \
+  --command "SELECT email, status, consent_timestamp, source_route FROM newsletter_subscribers"</code></pre>
+
+      <h2>Run All Fast Quality Gates</h2>
+      <pre tabindex="0"><code>npm run verify
+cargo check --target wasm32-unknown-unknown -p sws-worker-site</code></pre>
+      <p>With <code>npm run dev</code> running in another terminal, you can also run live header parity, Playwright axe-core WCAG 2.2 AA checks, and Lighthouse CI:</p>
+      <pre tabindex="0"><code>npm run check:headers:live
+BASE_URL=http://127.0.0.1:8787 npm run test:a11y
+npm run lhci</code></pre>
+      <nav class="doc-pager" aria-label="Pagination">
+        <a href="/"><span class="doc-pager-label">Previous</span><span>Overview</span></a>
+        <a href="/user-guide/"><span class="doc-pager-label">Next</span><span>User Guide</span></a>
+      </nav>
+    </main>
+  </div>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <p><strong>Solo Documentation</strong></p>
+        <p>Open-source core licensed under <code>MIT OR Apache-2.0</code>. Deployed on Cloudflare Workers Static Assets.</p>
+      </div>
+      <nav aria-label="Footer">
+        <ul class="footer-links">
+          <li><a href="https://solo.jcusoftware.com/">Landing Page</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Showcase</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+          <li><a href="https://github.com/jcusoftware/solo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

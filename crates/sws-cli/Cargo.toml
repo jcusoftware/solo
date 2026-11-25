@@ -1,0 +1,28 @@
+[package]
+name = "sws-cli"
+description = "Unified CLI and stdio MCP server (`solo`) for Solo (Solo Website System)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "solo"
+path = "src/main.rs"
+
+[features]
+default = []
+pack-hospitality = ["dep:sws-pack-hospitality"]
+
+[dependencies]
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sws-ir = { path = "../sws-ir" }
+sws-css = { path = "../sws-css" }
+sws-plugin = { path = "../sws-plugin" }
+sws-compiler = { path = "../sws-compiler" }
+sws-security = { path = "../sws-security" }
+sws-pack-hospitality = { path = "../../packs/hospitality/crate", optional = true }

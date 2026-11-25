@@ -1,0 +1,52 @@
+// Cloudflare Workers + Static Assets template for a published SWS site (`sws-worker-site`).
+// Copy to your site root as `wrangler.jsonc` and replace placeholder IDs and domains.
+// Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sws-site-example",
+	// worker-build (run inside crates/sws-worker-site) emits build/index.js + index_bg.wasm.
+	"main": "crates/sws-worker-site/build/index.js",
+	"compatibility_date": "2026-11-01",
+	"workers_dev": true,
+	"build": {
+		// Requires: cargo install worker-build@^0.9 --locked
+		"command": "cd crates/sws-worker-site && worker-build --release",
+		"watch_dir": "crates/sws-worker-site/src"
+	},
+	"assets": {
+		// Compiled static site output from `solo build` (includes `_headers`).
+		"directory": "./dist",
+		"binding": "ASSETS",
+		// Only /api/* reaches the Worker first; all static routes are served from Assets.
+		"run_worker_first": [
+			"/api/*"
+		],
+		"not_found_handling": "404-page",
+		"html_handling": "auto-trailing-slash"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "sws-site-db",
+			"migrations_dir": "crates/sws-worker-site/migrations",
+			"database_id": "<YOUR_D1_DATABASE_ID>"
+		}
+	],
+	"vars": {
+		"BUILD_VERSION": "0.1.0",
+		// Cloudflare Turnstile always-pass TEST site key (dev only).
+		// Replace with your production Turnstile site key before deploying.
+		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+		"RESEND_FROM": "Site Inquiries <noreply@site.example>",
+		"INQUIRY_TO": "hello@site.example"
+	},
+	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
+	// or in `.dev.vars` for local `wrangler dev`:
+	//   TURNSTILE_SECRET_KEY  required; API returns 503 if missing unless DEV_MODE="true"
+	//   RESEND_API_KEY        optional; if missing, email dispatch is stubbed
+	// Optional local-only var (in `.dev.vars`):
+	//   DEV_MODE="true"       skips Turnstile verification when no secret is set
+	"observability": {
+		"enabled": true
+	}
+}

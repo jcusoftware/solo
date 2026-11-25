@@ -1,0 +1,31 @@
+[workspace]
+members = [
+    "crates/sws-ir",
+    "crates/sws-css",
+    "crates/sws-security",
+    "crates/sws-plugin",
+    "crates/sws-compiler",
+    "crates/sws-cli",
+    "crates/sws-wasm",
+    "crates/sws-worker-site",
+    "packs/hospitality/crate",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jcusoftware/solo"
+homepage = "https://solo.jcusoftware.com"
+publish = false
+
+[profile.release]
+# Tuned for small Wasm bundles on Cloudflare Workers.
+opt-level = "z"
+lto = true
+codegen-units = 1
+# "debuginfo" (not true): wasm-bindgen needs the target_features custom section;
+# wasm-opt (run by worker-build) strips the rest.
+strip = "debuginfo"
+panic = "abort"

@@ -1,0 +1,38 @@
+{
+  "name": "solo-website-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "description": "Solo Website System (SWS): Cloudflare-native, Rust-powered open-source visual website builder.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "render": "cargo run -q -p sws-cli --features pack-hospitality -- build packs/hospitality/demo/venue.json core/public",
+    "render:check": "cargo run -q -p sws-cli --features pack-hospitality -- build packs/hospitality/demo/venue.json core/public --check",
+    "sites:build": "node sites/build.mjs",
+    "sites:check": "node sites/build.mjs --check",
+    "sites:check:headers": "node core/tools/check-headers.mjs --headers-file sites/landing/public/_headers && node core/tools/check-headers.mjs --headers-file sites/docs/public/_headers",
+    "lint:abc": "cargo run -q -p sws-cli --features pack-hospitality -- check packs/hospitality/demo/venue.json",
+    "lint:abc:fixture": "cargo run -q -p sws-cli --features pack-hospitality -- check core/tools/fixtures/abc-bad.json",
+    "check:headers": "node core/tools/check-headers.mjs",
+    "check:headers:live": "node core/tools/check-headers.mjs --url http://127.0.0.1:8787",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "dev": "wrangler dev",
+    "build": "cd crates/sws-worker-site && worker-build --release",
+    "setup:rust": "cargo install worker-build@^0.9 --locked",
+    "test:rust": "cargo test --workspace",
+    "test:unit": "node --test tests/unit/*.test.mjs",
+    "deny": "cargo deny check",
+    "test:a11y": "playwright test",
+    "lhci": "lhci autorun",
+    "verify": "npm run render:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run test:unit && cargo test --workspace && cargo deny check"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@lhci/cli": "^0.16.1",
+    "@playwright/test": "^1.65.1",
+    "wrangler": "^4.167.0"
+  }
+}

@@ -1,0 +1,133 @@
+# cargo-deny policy for the SWS workspace. Run: `cargo deny check`.
+# Core is intended to ship as MIT OR Apache-2.0, so only permissive,
+# OSI-approved licenses are allowed for dependencies.
+
+[graph]
+# Check the dependency graph that actually ships (Workers/Wasm) plus host tests.
+targets = ["wasm32-unknown-unknown", "x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+# Defaults: vulnerabilities and unsound advisories are errors; yanked crates warn.
+ignore = []
+
+[licenses]
+# Allow-list ONLY. Anything not listed is rejected, which blocks copyleft and
+# source-available licenses (GPL-*, AGPL-*, LGPL-*, MPL-*, SSPL-1.0, BUSL-1.1,
+# Elastic-2.0, Commons-Clause, etc.) implicitly.
+# Do NOT broaden this list for one crate; add a narrowly-scoped exception below.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+]
+confidence-threshold = 0.93
+# Some allowed licenses may not currently appear in the graph; that is fine.
+unused-allowed-license = "allow"
+
+# ---------------------------------------------------------------------------
+# Narrow per-crate license exceptions.
+# Unicode-3.0 (Unicode License v3) is OSI-approved and permissive (MIT-like:
+# permission to use/copy/modify/distribute with notice). It is the successor
+# of the already-allowed Unicode-DFS-2016. It reaches us only via:
+#   worker -> url -> idna -> idna_adapter -> ICU4X (icu_*, zerovec, yoke, ...)
+#   proc-macro2/syn -> unicode-ident (build-time only; MIT OR Apache-2.0 AND Unicode-3.0)
+# Scoped per crate on purpose; do NOT add Unicode-3.0 to the global allow list.
+# Re-review this list whenever Cargo.lock changes these crates.
+# ---------------------------------------------------------------------------
+[[licenses.exceptions]]
+crate = "icu_collections"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "icu_locale_core"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "icu_normalizer"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "icu_normalizer_data"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "icu_properties"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "icu_properties_data"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "icu_provider"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "litemap"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "potential_utf"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "tinystr"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "unicode-ident"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "writeable"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "yoke"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "yoke-derive"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "zerofrom"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "zerofrom-derive"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "zerotrie"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "zerovec"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "zerovec-derive"
+allow = ["Unicode-3.0"]
+
+
+[licenses.private]
+# Our own unpublished workspace crates are checked like any other crate.
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace are not wildcards.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

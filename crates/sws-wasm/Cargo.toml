@@ -1,0 +1,21 @@
+[package]
+name = "sws-wasm"
+description = "Browser Wasm bridge (wasm-bindgen) for in-browser compilation, validation, and WCAG contrast checking in Solo Website System (SWS)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+sws-ir = { path = "../sws-ir" }
+sws-css = { path = "../sws-css" }
+sws-compiler = { path = "../sws-compiler" }
+sws-plugin = { path = "../sws-plugin" }

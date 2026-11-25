@@ -1,0 +1,91 @@
+// Cloudflare Workers template for the SWS Studio Control Plane (v0.2.0).
+// Copy as `wrangler.jsonc` in your Studio deployment directory and replace placeholder IDs.
+// Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sws-studio-control-plane",
+	// worker-build emits build/index.js + index_bg.wasm for the Studio Control Plane Worker.
+	"main": "crates/sws-worker-studio/build/index.js",
+	"compatibility_date": "2026-11-01",
+	"workers_dev": true,
+	"build": {
+		// Requires: cargo install worker-build@^0.9 --locked
+		"command": "cd crates/sws-worker-studio && worker-build --release",
+		"watch_dir": "crates/sws-worker-studio/src"
+	},
+	"d1_databases": [
+		{
+			"binding": "STUDIO_DB",
+			"database_name": "sws-studio-db",
+			"migrations_dir": "crates/sws-worker-studio/migrations",
+			"database_id": "<YOUR_STUDIO_D1_DATABASE_ID>"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA_BUCKET",
+			"bucket_name": "sws-studio-media"
+		},
+		{
+			"binding": "BUNDLES_BUCKET",
+			"bucket_name": "sws-studio-bundles"
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "PUBLISH_QUEUE",
+				"queue": "sws-studio-publish"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "sws-studio-publish",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+				"dead_letter_queue": "sws-studio-publish-dlq"
+			}
+		]
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "PROJECT_ROOM",
+				"class_name": "ProjectRoom"
+			},
+			{
+				"name": "RATE_LIMITER",
+				"class_name": "RateLimiter"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"ProjectRoom",
+				"RateLimiter"
+			]
+		}
+	],
+	"vars": {
+		"STUDIO_VERSION": "0.2.0-dev",
+		"STUDIO_ORIGIN": "https://studio.sws.example",
+		"PUBLISHED_ORIGIN_TEMPLATE": "https://{slug}.sws.example",
+		// Cloudflare Turnstile always-pass TEST site key (dev only). Replace in production.
+		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+		"RESEND_FROM": "SWS Studio <noreply@sws.example>"
+	},
+	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
+	// or in `.dev.vars` for local `wrangler dev`:
+	//   SESSION_SIGNING_KEY         required; signing key for Studio auth sessions
+	//   TURNSTILE_SECRET_KEY        required; API returns 503 if missing unless DEV_MODE="true"
+	//   CLOUDFLARE_DEPLOY_API_TOKEN required for remote publish jobs from PUBLISH_QUEUE
+	//   RESEND_API_KEY              optional; transactional email notifications
+	// Optional local-only var (in `.dev.vars`):
+	//   DEV_MODE="true"
+	"observability": {
+		"enabled": true
+	}
+}

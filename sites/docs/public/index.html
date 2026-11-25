@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Solo Website System (SWS) Documentation</title>
+  <meta name="description" content="Overview of Solo Website System (SWS): a Rust-powered, Cloudflare-native website builder with WCAG 2.2 AA accessibility and pluggable vertical packs.">
+  <link rel="canonical" href="https://docs.jcusoftware.com/">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Solo Website System (SWS) Documentation",
+  "description": "Overview of Solo Website System (SWS): a Rust-powered, Cloudflare-native website builder with WCAG 2.2 AA accessibility and pluggable vertical packs.",
+  "url": "https://docs.jcusoftware.com/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Solo Website System Documentation",
+    "url": "https://docs.jcusoftware.com/"
+  }
+}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">SOLO</span>
+        <span>Solo Docs</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="https://solo.jcusoftware.com/">Home</a>
+        <a href="https://solo.jcusoftware.com/#download">Download</a>
+        <a href="/showcase/">Showcase</a>
+        <a href="https://github.com/jcusoftware/solo/releases">Releases</a>
+        <a href="https://github.com/jcusoftware/solo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <div class="container docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation sections">
+      <p class="docs-sidebar-title">Documentation</p>
+      <nav aria-label="Documentation">
+        <ul class="docs-nav-list">
+          <li><a href="/" aria-current="page">Overview</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/user-guide/">User Guide</a></li>
+          <li><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Live Showcase</a></li>
+          <li><a href="/accessibility-and-security/">Accessibility &amp; Security</a></li>
+          <li><a href="/deployment/">Deployment</a></li>
+          <li><a href="/faq/">FAQ &amp; Troubleshooting</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="main" class="docs-content" tabindex="-1">
+      <h1>Solo Website System Documentation</h1>
+      <p class="docs-lead">Solo Website System (SWS) is an open-source, Rust-powered website builder and deterministic compiler built for <strong>Cloudflare Workers with Static Assets</strong>, <strong>D1</strong>, and <strong>Turnstile</strong>.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="/getting-started/">Get Started</a>
+        <a class="btn btn-secondary" href="https://solo.jcusoftware.com/#download">Download solo CLI</a>
+        <a class="btn btn-secondary" href="/showcase/">Explore the Showcase</a>
+      </div>
+
+      <h2>Core Philosophy</h2>
+      <p>SWS is designed to be a <strong>Rust app that makes Rust apps</strong>. Instead of running a heavy server-side CMS on every visitor request, SWS compiles a strongly typed site intermediate representation (<code>sws-ir</code>) into deterministic static HTML, CSS, and JSON-LD paired with a small Rust/Wasm edge Worker that only runs on <code>/api/*</code> routes.</p>
+      <ul>
+        <li><strong>Accessible by construction:</strong> Native WCAG 2.2 Level AA semantics enforced during compilation and verified with <code>axe-core</code> and Lighthouse CI — never third-party accessibility overlay widgets.</li>
+        <li><strong>Dual security-header parity:</strong> Static assets (<code>_headers</code>) and Worker API responses (<code>with_security_headers</code>) emit byte-identical security headers.</li>
+        <li><strong>$0 free-tier edge hosting:</strong> Built from day one to run cleanly on Cloudflare Workers free tier, D1 SQLite, and Turnstile without paid SaaS lock-in.</li>
+        <li><strong>Clean vertical separation:</strong> Industry-agnostic core crates are dual-licensed under <code>MIT OR Apache-2.0</code>, while domain packs plug in through <code>sws-plugin</code>.</li>
+      </ul>
+
+      <h2>Three-Plane Architecture</h2>
+      <pre tabindex="0"><code>PLANE 1: AUTHORING &amp; COMPILER (Local CLI / MCP + Browser Wasm)
+  sws-ir       -&gt; Declarative pages, sections, tokens, routes, forms
+  sws-css      -&gt; Pure-Rust design-token &amp; layout CSS emitter (no MPL/GPL)
+  sws-compiler -&gt; Deterministic HTML, JSON-LD, sitemap &amp; WCAG checks
+  sws-plugin   -&gt; Vertical pack ABI (e.g., packs/hospitality)
+  sws-cli      -&gt; Unified CLI &amp; stdio MCP server
+
+PLANE 2: CONTROL PLANE (v0.2.0 — Optional Studio Backend)
+  sws-worker-studio -&gt; Cloudflare Workers + D1 + R2 + Queues + SQLite Durable Objects
+
+PLANE 3: PUBLISHED EDGE SITE (Cloudflare Free-Tier Edge)
+  Workers Static Assets -&gt; index.html, styles.css, robots.txt, sitemap.xml, _headers
+  run_worker_first: ["/api/*"]
+    -&gt; sws-worker-site (Rust -&gt; wasm32)
+       ├── GET  /api/health
+       ├── POST /api/inquire    (Turnstile -&gt; D1 -&gt; optional Resend)
+       └── POST /api/newsletter (Turnstile -&gt; D1 with CAN-SPAM consent)</code></pre>
+
+      <h2>Documentation Map</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3><a href="/getting-started/">Getting Started</a></h3>
+          <p>Install prerequisites, download or build SWS, run local D1 migrations, and preview your first site.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/user-guide/">User Guide</a></h3>
+          <p>Author site data, work with deterministic rendering, progressive-enhancement forms, and quality gates.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></h3>
+          <p>Command reference for <code>solo</code> (<code>init</code>, <code>build</code>, <code>check</code>, <code>export</code>, <code>mcp</code>) and local workspace tools.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/packs/">Vertical Packs</a></h3>
+          <p>Understand the pack plugin model and explore <code>packs/hospitality</code>.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/showcase/">Live Showcase</a></h3>
+          <p>Inspect the fictional <code>shirlington-hearth-demo</code> reference build and its accessibility and header guarantees.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/accessibility-and-security/">Accessibility &amp; Security</a></h3>
+          <p>WCAG 2.2 AA requirements, dual security headers, Turnstile, D1 safety, and Rust/Wasm constraints.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/deployment/">Deployment</a></h3>
+          <p>Deploy published sites and static docs/landing Workers to Cloudflare with tag-only releases and custom domains.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/faq/">FAQ &amp; Troubleshooting</a></h3>
+          <p>Answers to common questions and fixes for local tooling, headers, Turnstile, and CI checks.</p>
+        </div>
+        <div class="card">
+          <h3><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></h3>
+          <p>Planned release milestones (<code>v0.1.0</code>–<code>v0.3.0</code>), dual <code>MIT OR Apache-2.0</code> core licensing, and dependency policy.</p>
+        </div>
+      </div>
+      <nav class="doc-pager" aria-label="Pagination">
+        <span></span>
+        <a href="/getting-started/"><span class="doc-pager-label">Next</span><span>Getting Started</span></a>
+      </nav>
+    </main>
+  </div>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <p><strong>Solo Documentation</strong></p>
+        <p>Open-source core licensed under <code>MIT OR Apache-2.0</code>. Deployed on Cloudflare Workers Static Assets.</p>
+      </div>
+      <nav aria-label="Footer">
+        <ul class="footer-links">
+          <li><a href="https://solo.jcusoftware.com/">Landing Page</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Showcase</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+          <li><a href="https://github.com/jcusoftware/solo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

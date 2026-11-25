@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://docs.jcusoftware.com/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/getting-started/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/user-guide/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/cli-and-mcp/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/packs/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/showcase/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/accessibility-and-security/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/deployment/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/faq/</loc>
+  </url>
+  <url>
+    <loc>https://docs.jcusoftware.com/roadmap-and-licensing/</loc>
+  </url>
+</urlset>

@@ -1,0 +1,52 @@
+// Cloudflare Workers + Static Assets config for sws-worker-site (workers-rs).
+// Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sws-worker-site",
+	// worker-build (run inside crates/sws-worker-site) emits crates/sws-worker-site/build/index.js + index_bg.wasm.
+	"main": "crates/sws-worker-site/build/index.js",
+	"compatibility_date": "2026-11-01",
+	"workers_dev": true,
+	"build": {
+		// Requires: cargo install worker-build@^0.9 --locked (CI installs it).
+		"command": "cd crates/sws-worker-site && worker-build --release",
+		"watch_dir": "crates/sws-worker-site/src"
+	},
+	"assets": {
+		// Rendered by core/tools/render-tenant.mjs; _headers applies the security headers.
+		"directory": "./core/public",
+		"binding": "ASSETS",
+		// Only /api/* reaches the Worker first; everything else is served as a static asset.
+		"run_worker_first": [
+			"/api/*"
+		],
+		"not_found_handling": "404-page",
+		"html_handling": "auto-trailing-slash"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "sws-demo",
+			"migrations_dir": "crates/sws-worker-site/migrations",
+			// Local placeholder ID; replace with your `wrangler d1 create` output before deploying.
+			"database_id": "00000000-0000-0000-0000-000000000000"
+		}
+	],
+	"vars": {
+		"BUILD_VERSION": "0.1.0-dev",
+		// Cloudflare Turnstile always-pass TEST site key. Replace per tenant in production.
+		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+		"RESEND_FROM": "Shirlington Hearth Demo <noreply@shirlington-hearth.example>",
+		"INQUIRY_TO": "events@shirlington-hearth.example",
+		// Pack-specific hospitality inquiry form schema (decoupled from core sws-worker-site defaults).
+		"FORM_SCHEMAS_JSON": "{\"inquire\":{\"id\":\"inquire\",\"turnstile_action\":\"inquire\",\"fields\":[{\"name\":\"kind\",\"required\":true,\"kind\":{\"enum\":[\"private_event\",\"contact\"]}},{\"name\":\"name\",\"required\":true,\"kind\":{\"text\":{\"max_chars\":100,\"multiline\":false}}},{\"name\":\"email\",\"required\":true,\"kind\":\"email\"},{\"name\":\"phone\",\"required\":false,\"kind\":{\"phone\":{\"max_chars\":32}}},{\"name\":\"event_date\",\"required\":false,\"kind\":\"date\"},{\"name\":\"guest_count\",\"required\":false,\"kind\":{\"integer\":{\"min\":1,\"max\":1000}}},{\"name\":\"message\",\"required\":true,\"kind\":{\"text\":{\"max_chars\":4000,\"multiline\":true}}},{\"name\":\"source_route\",\"required\":true,\"kind\":{\"route\":{\"allowed\":[\"/book-an-event\",\"/contact\"]}}}]}}"
+	},
+	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
+	// or in .dev.vars for local `wrangler dev` (copy .dev.vars.example):
+	//   TURNSTILE_SECRET_KEY  required; if missing the API answers 503 unless DEV_MODE="true"
+	//   RESEND_API_KEY        optional; if missing, email dispatch is stubbed ("resend stub: skipped")
+	// Optional local-only var (in .dev.vars): DEV_MODE="true" skips Turnstile when no secret is set.
+	"observability": {
+		"enabled": true
+	}
+}

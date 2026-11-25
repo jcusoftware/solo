@@ -1,0 +1,186 @@
+{
+  "$schema": "../schema/venue.schema.json",
+  "schema_version": 1,
+  "slug": "shirlington-hearth-demo",
+  "name": "Shirlington Hearth",
+  "legal_disclaimer": "Fictional demonstration venue",
+  "fictional": true,
+  "tagline": "Neighborhood café by day, wine bar by night.",
+  "description": "Shirlington Hearth is a fictional neighborhood café and wine bar used to demonstrate the studio's accessible, fast venue websites. Espresso and pastries in the morning, small plates and Virginia wines in the evening.",
+  "category_label": "Café & wine bar",
+  "business_types": ["CafeOrCoffeeShop", "BarOrPub"],
+  "cuisine": ["Coffee", "Pastries", "Small plates", "Wine"],
+  "price_range": "$$",
+  "locale": "en-US",
+  "timezone": "America/New_York",
+  "nap": {
+    "name": "Shirlington Hearth",
+    "address": {
+      "street": "2800 Hearthstone Lane",
+      "locality": "Arlington",
+      "region": "VA",
+      "postal_code": "22206",
+      "country": "US"
+    },
+    "phone": "+1-703-555-0142",
+    "email": "hello@shirlington-hearth.example",
+    "website": "https://shirlington-hearth.example"
+  },
+  "geo": {
+    "latitude": 38.8414,
+    "longitude": -77.0866,
+    "approximate": true
+  },
+  "hours": {
+    "monday": { "opens": "07:00", "closes": "21:00" },
+    "tuesday": { "opens": "07:00", "closes": "21:00" },
+    "wednesday": { "opens": "07:00", "closes": "21:00" },
+    "thursday": { "opens": "07:00", "closes": "22:00" },
+    "friday": { "opens": "07:00", "closes": "23:00" },
+    "saturday": { "opens": "08:00", "closes": "23:00" },
+    "sunday": { "opens": "08:00", "closes": "20:00" }
+  },
+  "holiday_overrides": [
+    { "date": "2026-11-26", "label": "Thanksgiving Day", "closed": true },
+    { "date": "2026-12-24", "label": "Christmas Eve", "opens": "07:00", "closes": "15:00" },
+    { "date": "2026-12-25", "label": "Christmas Day", "closed": true },
+    { "date": "2026-12-31", "label": "New Year's Eve", "opens": "08:00", "closes": "23:00" },
+    { "date": "2027-01-01", "label": "New Year's Day", "closed": true }
+  ],
+  "booking_url": null,
+  "venue_accessibility": [
+    "Step-free entrance from Hearthstone Lane.",
+    "Accessible restroom on the main floor.",
+    "Large-print menus available on request."
+  ],
+  "brand": {
+    "palette": {
+      "background": "#E9E2D2",
+      "text": "#241207",
+      "surface": "#F6F1E7",
+      "accent": "#7A1F2B",
+      "accent_secondary": "#2F5233",
+      "muted_text": "#5C3A1E",
+      "on_accent": "#F6F1E7",
+      "footer_background": "#241207",
+      "footer_text": "#E9E2D2"
+    },
+    "contrast": {
+      "wcag_target": "AA text 4.5:1 for every foreground/background pair actually rendered",
+      "pairs": [
+        { "foreground": "text", "background": "background", "ratio": 13.97, "usage": "body text" },
+        { "foreground": "text", "background": "surface", "ratio": 16.02, "usage": "body text on cards" },
+        { "foreground": "accent", "background": "background", "ratio": 7.91, "usage": "links, prices, headings accent" },
+        { "foreground": "accent", "background": "surface", "ratio": 9.06, "usage": "prices and links on cards" },
+        { "foreground": "accent_secondary", "background": "background", "ratio": 6.85, "usage": "dietary tags, happy-hour label" },
+        { "foreground": "accent_secondary", "background": "surface", "ratio": 7.85, "usage": "dietary tags on cards" },
+        { "foreground": "muted_text", "background": "background", "ratio": 7.83, "usage": "secondary text" },
+        { "foreground": "muted_text", "background": "surface", "ratio": 8.97, "usage": "item descriptions on cards" },
+        { "foreground": "on_accent", "background": "accent", "ratio": 9.06, "usage": "button text" },
+        { "foreground": "footer_text", "background": "footer_background", "ratio": 13.97, "usage": "footer text and links" }
+      ]
+    },
+    "fonts": {
+      "body": "system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+      "heading": "Georgia, \"Times New Roman\", Times, serif"
+    }
+  },
+  "modules": {
+    "M1": { "enabled": true, "name": "Core Shell & NAP" },
+    "M2": { "enabled": true, "name": "Semantic Menus" },
+    "M3": { "enabled": true, "name": "Private Events inquiry" },
+    "M4": { "enabled": true, "name": "Contact" },
+    "M5": { "enabled": true, "name": "Newsletter + CAN-SPAM consent" },
+    "M6": { "enabled": false, "name": "Events calendar" },
+    "M7": { "enabled": true, "name": "Visit" },
+    "M8": { "enabled": false, "name": "About / story / gallery" },
+    "M9": { "enabled": true, "name": "SEO & discovery" },
+    "M10": { "enabled": true, "name": "Security, accessibility & observability gate" }
+  },
+  "integrations": {
+    "toast": { "enabled": false, "restaurant_guid": null },
+    "seating_policy": "walk_in_only",
+    "opentable": { "restaurant_id": null },
+    "resy": { "venue_id": null },
+    "inkind": { "enabled": false },
+    "turnstile": { "site_key": "1x00000000000000000000AA", "test_key": true }
+  },
+  "newsletter": {
+    "enabled": true,
+    "consent_text": "Yes, email me Shirlington Hearth news, events and offers. I can unsubscribe at any time using the link in every email.",
+    "privacy_note": "We never sell your email. Every message includes our postal address and a one-click unsubscribe link."
+  },
+  "happy_hour": {
+    "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+    "start": "15:00",
+    "end": "18:30",
+    "offers": [
+      "$2 off house wines by the glass",
+      "$1 off draft cider",
+      "Half-price marinated olives and spiced nuts"
+    ],
+    "notes": "Food and drink specials are subject to change. Please enjoy responsibly."
+  },
+  "menu": {
+    "name": "Café & Wine Menu",
+    "currency": "USD",
+    "sections": [
+      {
+        "id": "coffee",
+        "name": "Coffee & Espresso",
+        "items": [
+          { "name": "Espresso", "description": "Double shot of our house medium-dark blend.", "price": "3.50", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Cortado", "description": "Equal parts espresso and steamed milk.", "price": "4.25", "dietary": ["vegetarian", "gluten-free"] },
+          { "name": "Hearth Latte", "description": "Espresso, steamed milk and a touch of brown-butter syrup.", "price": "5.50", "dietary": ["vegetarian", "gluten-free"] },
+          { "name": "Pour-Over of the Day", "description": "Single-origin coffee brewed to order.", "price": "4.75", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Oat Milk Cappuccino", "description": "Espresso with velvety steamed oat milk.", "price": "5.25", "dietary": ["vegan"] }
+        ]
+      },
+      {
+        "id": "tea",
+        "name": "Tea & Non-Alcoholic",
+        "items": [
+          { "name": "Loose-Leaf Tea", "description": "Black, green or chamomile, served by the pot.", "price": "4.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Spiced Apple Cider", "description": "Warm, mulled with cinnamon and clove. Alcohol-free.", "price": "4.50", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Sparkling Lemonade", "description": "House-made with rosemary syrup.", "price": "4.50", "dietary": ["vegan", "gluten-free"] }
+        ]
+      },
+      {
+        "id": "pastries",
+        "name": "Pastries & Small Plates",
+        "items": [
+          { "name": "Butter Croissant", "description": "Laminated in-house every morning.", "price": "4.00", "dietary": ["vegetarian"] },
+          { "name": "Cardamom Morning Bun", "description": "Orange zest, cardamom sugar.", "price": "4.75", "dietary": ["vegetarian"] },
+          { "name": "Marinated Olives", "description": "Citrus peel, fennel seed, chili.", "price": "6.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Spiced Nuts", "description": "Roasted almonds and pecans with smoked paprika.", "price": "6.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Hearth Flatbread", "description": "Roasted squash, ricotta, sage, hot honey.", "price": "13.00", "dietary": ["vegetarian"] },
+          { "name": "Cheese Board", "description": "Three regional cheeses, fig jam, seeded crackers.", "price": "18.00", "dietary": ["vegetarian"] }
+        ]
+      },
+      {
+        "id": "wine-glass",
+        "name": "Wines by the Glass",
+        "items": [
+          { "name": "House Red", "description": "Medium-bodied red blend, soft tannins.", "price": "10.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "House White", "description": "Crisp, unoaked white with citrus notes.", "price": "10.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Virginia Cabernet Franc", "description": "Red cherry, bell pepper, gentle spice.", "price": "13.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Virginia Viognier", "description": "Apricot and honeysuckle, round finish.", "price": "13.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Sparkling Rosé", "description": "Dry, strawberry and brioche.", "price": "12.00", "dietary": ["vegan", "gluten-free"] }
+        ]
+      },
+      {
+        "id": "cider-beer",
+        "name": "Cider & Beer",
+        "items": [
+          { "name": "Draft Dry Cider", "description": "Regional apples, bright and off-dry.", "price": "8.00", "dietary": ["vegan", "gluten-free"] },
+          { "name": "Seasonal Draft Ale", "description": "Ask your server about this week's pour.", "price": "8.00", "dietary": ["vegan"] }
+        ]
+      }
+    ]
+  },
+  "seo": {
+    "title": "Shirlington Hearth — Café & Wine Bar (Fictional Demo)",
+    "description": "Fictional demonstration venue: a café and wine bar in Arlington, VA. Menu, hours, happy hour and newsletter.",
+    "routes": ["/"]
+  }
+}

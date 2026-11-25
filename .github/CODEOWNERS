@@ -1,0 +1,20 @@
+# Default owner for everything in the repository.
+* @jurbanek756
+
+# License & dependency hygiene (MIT OR Apache-2.0 allowlist)
+/deny.toml @jurbanek756
+/Cargo.lock @jurbanek756
+/package-lock.json @jurbanek756
+
+# Dual security-header parity & core security
+/crates/sws-security/ @jurbanek756
+/core/public/_headers @jurbanek756
+/sites/ @jurbanek756
+
+# CI, release & deployment workflows
+/.github/ @jurbanek756
+/wrangler.jsonc @jurbanek756
+/deploy/ @jurbanek756
+
+# Reference hospitality pack (advisory VA ABC compliance)
+/packs/hospitality/ @jurbanek756

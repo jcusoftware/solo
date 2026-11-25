@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>User Guide — SWS Documentation</title>
+  <meta name="description" content="Day-to-day workflow for authoring declarative site data, compiling deterministic static assets, managing progressive-enhancement forms, and running CI verification.">
+  <link rel="canonical" href="https://docs.jcusoftware.com/user-guide/">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "User Guide — SWS Documentation",
+  "description": "Day-to-day workflow for authoring declarative site data, compiling deterministic static assets, managing progressive-enhancement forms, and running CI verification.",
+  "url": "https://docs.jcusoftware.com/user-guide/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Solo Website System Documentation",
+    "url": "https://docs.jcusoftware.com/"
+  }
+}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">SOLO</span>
+        <span>Solo Docs</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="https://solo.jcusoftware.com/">Home</a>
+        <a href="https://solo.jcusoftware.com/#download">Download</a>
+        <a href="/showcase/">Showcase</a>
+        <a href="https://github.com/jcusoftware/solo/releases">Releases</a>
+        <a href="https://github.com/jcusoftware/solo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <div class="container docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation sections">
+      <p class="docs-sidebar-title">Documentation</p>
+      <nav aria-label="Documentation">
+        <ul class="docs-nav-list">
+          <li><a href="/">Overview</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/user-guide/" aria-current="page">User Guide</a></li>
+          <li><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Live Showcase</a></li>
+          <li><a href="/accessibility-and-security/">Accessibility &amp; Security</a></li>
+          <li><a href="/deployment/">Deployment</a></li>
+          <li><a href="/faq/">FAQ &amp; Troubleshooting</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="main" class="docs-content" tabindex="-1">
+      <h1>User Guide</h1>
+      <p class="docs-lead">Learn the end-to-end authoring, compilation, form-handling, and verification workflow for building sites with SWS.</p>
+
+      <h2>Declarative Site Authoring</h2>
+      <p>SWS separates structured content and design tokens from generated output. Never hand-edit generated files in <code>core/public/</code> or <code>sites/*/public/</code>; instead, update the structured source data and re-run the deterministic compiler.</p>
+      <ul>
+        <li><strong>Structured inputs:</strong> Core sites compile from declarative JSON IR (<code>sws-ir</code>), and vertical packs supply validated domain schemas (for example, <code>venue.json</code> in <code>packs/hospitality</code>).</li>
+        <li><strong>Deterministic output:</strong> Running the renderer with identical inputs always produces byte-identical HTML, CSS, <code>robots.txt</code>, <code>sitemap.xml</code>, and <code>404.html</code>.</li>
+        <li><strong>Drift detection in CI:</strong> Use <code>npm run render:check</code> (and <code>npm run sites:check</code> for the landing/docs sites) to assert that committed static output matches its source inputs without rewriting files.</li>
+      </ul>
+
+      <h2>Design Tokens &amp; Contrast Safety</h2>
+      <p>SWS generates lean, self-hosted stylesheets with zero external font or CSS CDN dependencies. Every foreground/background pair is checked against WCAG 2.2 Level AA thresholds (at least <code>4.5:1</code> for body copy and <code>3:1</code> for large text and interactive UI borders).</p>
+      <p>To keep static sites under strict Content Security Policy (<code>style-src 'self'</code>), avoid inline <code>style</code> attributes and inline <code>&lt;script&gt;</code> blocks.</p>
+
+      <h2>Progressive-Enhancement Forms</h2>
+      <p>Forms in SWS published sites work even when JavaScript is disabled:</p>
+      <ol>
+        <li><strong>Baseline HTML:</strong> Every form submits standard <code>application/x-www-form-urlencoded</code> POST requests to <code>/api/inquire</code> or <code>/api/newsletter</code>.</li>
+        <li><strong>Accessible semantics:</strong> Inputs pair explicit <code>&lt;label for="..."&gt;</code> elements, <code>aria-describedby</code> error hints, and an <code>aria-live</code> status region for feedback.</li>
+        <li><strong>Progressive JS island:</strong> A lightweight script enhances submissions with <code>fetch</code> and inline status updates without replacing native browser form semantics.</li>
+        <li><strong>Server-side enforcement:</strong> The Rust edge Worker enforces a 16 KB streaming request body cap, honeypot screening, Cloudflare Turnstile verification, and bound-parameter D1 inserts.</li>
+      </ol>
+
+      <h3>CAN-SPAM Newsletter Consent</h3>
+      <p>Newsletter forms render an explicit, unchecked consent checkbox by default. The Worker stamps <code>consent_timestamp</code> (ISO-8601 UTC) and <code>source_route</code> in D1, and refuses to silently re-subscribe addresses marked <code>unsubscribed</code> or <code>bounced</code>.</p>
+
+      <h2>Workspace Scripts Reference</h2>
+      <div class="table-wrap" tabindex="0">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Command</th>
+              <th scope="col">Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>npm run render</code></td>
+              <td>Render the showcase fixture into <code>core/public/</code></td>
+            </tr>
+            <tr>
+              <td><code>npm run render:check</code></td>
+              <td>Verify <code>core/public/</code> matches source inputs without writing</td>
+            </tr>
+            <tr>
+              <td><code>npm run sites:build</code></td>
+              <td>Build both static sites (<code>sites/landing/public</code> and <code>sites/docs/public</code>)</td>
+            </tr>
+            <tr>
+              <td><code>npm run sites:check</code></td>
+              <td>Verify static site output is up to date</td>
+            </tr>
+            <tr>
+              <td><code>npm run check:headers</code></td>
+              <td>Assert static parity between <code>_headers</code> and Rust <code>SECURITY_HEADERS</code></td>
+            </tr>
+            <tr>
+              <td><code>npm run test:unit</code></td>
+              <td>Run Node unit tests (<code>tests/unit/*.test.mjs</code>)</td>
+            </tr>
+            <tr>
+              <td><code>npm run verify</code></td>
+              <td>Run all fast checks (render, sites, lint, header parity, Rust tests, <code>cargo deny</code>)</td>
+            </tr>
+            <tr>
+              <td><code>npm run test:a11y</code></td>
+              <td>Run Playwright WCAG 2.2 AA (axe-core) and header E2E specs</td>
+            </tr>
+            <tr>
+              <td><code>npm run lhci</code></td>
+              <td>Run Lighthouse CI (requires accessibility score <code>1.0</code>)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <nav class="doc-pager" aria-label="Pagination">
+        <a href="/getting-started/"><span class="doc-pager-label">Previous</span><span>Getting Started</span></a>
+        <a href="/cli-and-mcp/"><span class="doc-pager-label">Next</span><span>CLI &amp; MCP Reference</span></a>
+      </nav>
+    </main>
+  </div>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <p><strong>Solo Documentation</strong></p>
+        <p>Open-source core licensed under <code>MIT OR Apache-2.0</code>. Deployed on Cloudflare Workers Static Assets.</p>
+      </div>
+      <nav aria-label="Footer">
+        <ul class="footer-links">
+          <li><a href="https://solo.jcusoftware.com/">Landing Page</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Showcase</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+          <li><a href="https://github.com/jcusoftware/solo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

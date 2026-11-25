@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FAQ &amp; Troubleshooting — SWS Documentation</title>
+  <meta name="description" content="Frequently asked questions and troubleshooting solutions for Rust/Wasm builds, Wrangler, cargo-deny, Turnstile, security headers, and releases.">
+  <link rel="canonical" href="https://docs.jcusoftware.com/faq/">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "FAQ & Troubleshooting — SWS Documentation",
+  "description": "Frequently asked questions and troubleshooting solutions for Rust/Wasm builds, Wrangler, cargo-deny, Turnstile, security headers, and releases.",
+  "url": "https://docs.jcusoftware.com/faq/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Solo Website System Documentation",
+    "url": "https://docs.jcusoftware.com/"
+  }
+}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">SOLO</span>
+        <span>Solo Docs</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="https://solo.jcusoftware.com/">Home</a>
+        <a href="https://solo.jcusoftware.com/#download">Download</a>
+        <a href="/showcase/">Showcase</a>
+        <a href="https://github.com/jcusoftware/solo/releases">Releases</a>
+        <a href="https://github.com/jcusoftware/solo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <div class="container docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation sections">
+      <p class="docs-sidebar-title">Documentation</p>
+      <nav aria-label="Documentation">
+        <ul class="docs-nav-list">
+          <li><a href="/">Overview</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/user-guide/">User Guide</a></li>
+          <li><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Live Showcase</a></li>
+          <li><a href="/accessibility-and-security/">Accessibility &amp; Security</a></li>
+          <li><a href="/deployment/">Deployment</a></li>
+          <li><a href="/faq/" aria-current="page">FAQ &amp; Troubleshooting</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="main" class="docs-content" tabindex="-1">
+      <h1>FAQ &amp; Troubleshooting</h1>
+      <p class="docs-lead">Common questions about Solo Website System and quick fixes for local development, CI, and deployment issues.</p>
+
+      <h2>Frequently Asked Questions</h2>
+
+      <h3>Why build a website builder in Rust for Cloudflare Workers?</h3>
+      <p>Compiling site IR in Rust produces deterministic, sub-millisecond static builds, allows the same compiler crates (<code>sws-ir</code>, <code>sws-css</code>, <code>sws-compiler</code>) to run natively in the CLI and inside browsers via WebAssembly, and compiles edge form handlers to tiny, memory-safe <code>wasm32</code> Cloudflare Workers.</p>
+
+      <h3>How much does hosting an SWS site cost?</h3>
+      <p>Small and medium sites run for <strong>$0/month</strong> on Cloudflare&apos;s free tier (Workers Static Assets, 100k Worker requests/day, 5 GB D1 SQLite, Turnstile, and DNS). Paid Cloudflare Workers plans are only needed if your traffic or storage exceeds free-tier limits.</p>
+
+      <h3>Can I use SWS without buying a custom domain yet?</h3>
+      <p>Yes. Every Wrangler configuration enables <code>workers_dev: true</code> so sites deploy immediately to <code>*.workers.dev</code>. The SWS landing and docs configs bind <code>solo.jcusoftware.com</code> and <code>docs.jcusoftware.com</code> by default; for forks or preview environments without a custom domain, comment out the <code>routes</code> blocks in both <code>wrangler.jsonc</code> files and set <code>SWS_LANDING_URL</code> and <code>SWS_DOCS_URL</code> GitHub repository variables to your <code>*.workers.dev</code> URLs.</p>
+
+      <h3>Why are accessibility overlay widgets banned?</h3>
+      <p>Third-party overlay scripts do not repair broken native HTML semantics, often introduce keyboard or screen-reader conflicts, and expand your CSP attack surface. SWS enforces WCAG 2.2 Level AA natively in HTML/CSS and verifies it automatically with <code>axe-core</code> and Lighthouse.</p>
+
+      <h3>Why aren&apos;t prebuilt CLI binaries attached to an early release tag?</h3>
+      <p>The tag release workflow checks whether <code>crates/sws-cli/Cargo.toml</code> exists on that tag. Tags cut before <code>sws-cli</code> lands on <code>main</code> publish as verified source releases without broken download links; once <code>sws-cli</code> is present on a tagged commit, all five cross-compiled platform archives and <code>SHA256SUMS.txt</code> attach automatically.</p>
+
+      <h2>Troubleshooting</h2>
+
+      <h3><code>worker-build</code> not found during <code>npm run dev</code> or <code>npm run build</code></h3>
+      <p>Install <code>worker-build</code> and make sure Cargo&apos;s bin directory is in your shell <code>PATH</code>:</p>
+      <pre tabindex="0"><code>cargo install worker-build@^0.9 --locked
+export PATH="$HOME/.cargo/bin:$PATH"
+which worker-build</code></pre>
+
+      <h3><code>POST /api/newsletter</code> or <code>/api/inquire</code> returns HTTP 503 locally</h3>
+      <p>The Worker refuses to process public form submissions when <code>TURNSTILE_SECRET_KEY</code> is missing unless <code>DEV_MODE="true"</code> is set. Copy the example local vars file before running <code>npm run dev</code>:</p>
+      <pre tabindex="0"><code>cp .dev.vars.example .dev.vars</code></pre>
+
+      <h3><code>cargo deny check</code> fails on a new Rust dependency</h3>
+      <p>SWS enforces a strict permissive OSI license allowlist (<code>MIT</code>, <code>Apache-2.0</code>, <code>BSD-2-Clause</code>, <code>BSD-3-Clause</code>, <code>ISC</code>, <code>Unicode-DFS-2016</code>, <code>CC0-1.0</code>). Copyleft and source-available crates (including MPL-2.0 crates such as <code>lightningcss</code> or <code>cssparser</code>) are rejected intentionally. Replace the dependency with a permissively licensed alternative.</p>
+
+      <h3><code>npm run check:headers</code> or <code>cargo test</code> fails with a header mismatch</h3>
+      <p>Any security-header update must be applied to <code>crates/sws-security/src/headers.rs</code> and <code>core/public/_headers</code> in the same commit, and static sites must be regenerated so <code>sites/*/public/_headers</code> stay synchronized:</p>
+      <pre tabindex="0"><code>npm run sites:build
+npm run check:headers
+npm run sites:check:headers
+cargo test --workspace</code></pre>
+
+      <h3><code>npm run render:check</code> or <code>npm run sites:check</code> reports drift in CI</h3>
+      <p>Source data or templates changed without regenerating the committed static output. Regenerate locally and commit the updated files:</p>
+      <pre tabindex="0"><code>npm run render
+npm run sites:build
+npm run verify</code></pre>
+
+      <h3>Playwright fails because Chromium is missing</h3>
+      <pre tabindex="0"><code>npx playwright install --with-deps chromium</code></pre>
+
+      <h3>Still stuck?</h3>
+      <p>Open a bug report or question on <a href="https://github.com/jcusoftware/solo/issues">GitHub Issues</a> with your OS, Rust/Node versions, and the exact command output.</p>
+      <nav class="doc-pager" aria-label="Pagination">
+        <a href="/deployment/"><span class="doc-pager-label">Previous</span><span>Deployment</span></a>
+        <a href="/roadmap-and-licensing/"><span class="doc-pager-label">Next</span><span>Roadmap &amp; Licensing</span></a>
+      </nav>
+    </main>
+  </div>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <p><strong>Solo Documentation</strong></p>
+        <p>Open-source core licensed under <code>MIT OR Apache-2.0</code>. Deployed on Cloudflare Workers Static Assets.</p>
+      </div>
+      <nav aria-label="Footer">
+        <ul class="footer-links">
+          <li><a href="https://solo.jcusoftware.com/">Landing Page</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Showcase</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+          <li><a href="https://github.com/jcusoftware/solo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

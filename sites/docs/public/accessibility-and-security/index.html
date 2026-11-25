@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Accessibility &amp; Security — SWS Documentation</title>
+  <meta name="description" content="WCAG 2.2 Level AA native semantic standards, dual security-header parity, Turnstile and D1 safeguards, and Rust/Wasm engineering constraints.">
+  <link rel="canonical" href="https://docs.jcusoftware.com/accessibility-and-security/">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Accessibility & Security — SWS Documentation",
+  "description": "WCAG 2.2 Level AA native semantic standards, dual security-header parity, Turnstile and D1 safeguards, and Rust/Wasm engineering constraints.",
+  "url": "https://docs.jcusoftware.com/accessibility-and-security/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Solo Website System Documentation",
+    "url": "https://docs.jcusoftware.com/"
+  }
+}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">SOLO</span>
+        <span>Solo Docs</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="https://solo.jcusoftware.com/">Home</a>
+        <a href="https://solo.jcusoftware.com/#download">Download</a>
+        <a href="/showcase/">Showcase</a>
+        <a href="https://github.com/jcusoftware/solo/releases">Releases</a>
+        <a href="https://github.com/jcusoftware/solo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <div class="container docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation sections">
+      <p class="docs-sidebar-title">Documentation</p>
+      <nav aria-label="Documentation">
+        <ul class="docs-nav-list">
+          <li><a href="/">Overview</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/user-guide/">User Guide</a></li>
+          <li><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Live Showcase</a></li>
+          <li><a href="/accessibility-and-security/" aria-current="page">Accessibility &amp; Security</a></li>
+          <li><a href="/deployment/">Deployment</a></li>
+          <li><a href="/faq/">FAQ &amp; Troubleshooting</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="main" class="docs-content" tabindex="-1">
+      <h1>Accessibility &amp; Security</h1>
+      <p class="docs-lead">Accessibility and edge security are first-class compiler and CI gates in Solo Website System — not optional plugins bolted on after launch.</p>
+
+      <h2>WCAG 2.2 Level AA (Native Semantics Only)</h2>
+      <ul>
+        <li><strong>Heading structure:</strong> Exactly one <code>&lt;h1&gt;</code> per page, starting the outline, with sequential heading levels and no skipped levels.</li>
+        <li><strong>Landmarks &amp; navigation:</strong> Every page includes <code>&lt;html lang="..."&gt;</code>, <code>&lt;header&gt;</code>, <code>&lt;nav&gt;</code>, <code>&lt;main id="main" tabindex="-1"&gt;</code>, <code>&lt;footer&gt;</code>, and a keyboard-visible skip link.</li>
+        <li><strong>Color contrast:</strong> Minimum <code>4.5:1</code> for normal text and <code>3:1</code> for large text and UI components.</li>
+        <li><strong>Focus &amp; targets:</strong> Unobscured <code>:focus-visible</code> outlines and interactive targets at least <code>24×24</code> CSS pixels.</li>
+        <li><strong>Forms:</strong> Explicit <code>&lt;label&gt;</code> associations, <code>aria-describedby</code> validation messages, <code>aria-live</code> status announcements, and full no-JS fallback.</li>
+        <li><strong>Zero overlay widgets:</strong> Third-party accessibility overlays are explicitly banned and detected by automated Playwright checks.</li>
+      </ul>
+
+      <h2>Dual Security-Header Contract</h2>
+      <p>Cloudflare&apos;s <code>_headers</code> file applies <strong>only to static assets</strong>. Every dynamic <code>/api/*</code> response handled by the Rust edge Worker must apply the exact same header set via <code>with_security_headers</code>.</p>
+      <div class="table-wrap" tabindex="0">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Header</th>
+              <th scope="col">Enforced Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Strict-Transport-Security</code></td>
+              <td><code>max-age=63072000; includeSubDomains; preload</code></td>
+            </tr>
+            <tr>
+              <td><code>X-Content-Type-Options</code></td>
+              <td><code>nosniff</code></td>
+            </tr>
+            <tr>
+              <td><code>X-Frame-Options</code></td>
+              <td><code>DENY</code></td>
+            </tr>
+            <tr>
+              <td><code>Referrer-Policy</code></td>
+              <td><code>strict-origin-when-cross-origin</code></td>
+            </tr>
+            <tr>
+              <td><code>Permissions-Policy</code></td>
+              <td>Disables accelerometer, camera, geolocation, gyroscope, magnetometer, microphone, payment, usb, browsing-topics</td>
+            </tr>
+            <tr>
+              <td><code>Cross-Origin-Opener-Policy</code></td>
+              <td><code>same-origin</code></td>
+            </tr>
+            <tr>
+              <td><code>Content-Security-Policy</code></td>
+              <td><code>default-src 'self'</code>, Turnstile allowlisted on <code>https://challenges.cloudflare.com</code>, <code>style-src 'self'</code>, <code>object-src 'none'</code>, <code>frame-ancestors 'none'</code>, <code>upgrade-insecure-requests</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Four independent checks enforce header parity: Rust unit tests (<code>cargo test</code>), static Node parity (<code>npm run check:headers</code>), live parity (<code>npm run check:headers:live</code>), and Playwright E2E (<code>tests/headers.spec.mjs</code>).</p>
+
+      <h2>Edge Worker &amp; Data Safety</h2>
+      <ul>
+        <li><strong>Request body limits:</strong> Streaming body reads capped at 16 KB to protect Worker memory and stay far under the 128 MB isolate limit.</li>
+        <li><strong>Bound D1 SQL parameters:</strong> Every Cloudflare D1 query uses bound parameters; user input is never interpolated into SQL strings.</li>
+        <li><strong>No panics on untrusted input:</strong> Worker handlers avoid <code>unwrap()</code> on request payloads and return structured JSON error responses.</li>
+        <li><strong>Cloudflare Turnstile:</strong> Required on public form endpoints. Production secrets live strictly in Cloudflare Worker secrets (<code>wrangler secret put</code>) and never in Git.</li>
+        <li><strong>Wasm-safe Rust dependencies:</strong> No native OpenSSL, C-assembly <code>ring</code>, OS threads, <code>tokio</code>, or blocking filesystem I/O in Wasm crates.</li>
+      </ul>
+
+      <h2>Reporting Security Issues</h2>
+      <p>Please report potential security vulnerabilities privately according to <code>SECURITY.md</code> in the repository rather than opening a public GitHub issue.</p>
+      <nav class="doc-pager" aria-label="Pagination">
+        <a href="/showcase/"><span class="doc-pager-label">Previous</span><span>Live Showcase</span></a>
+        <a href="/deployment/"><span class="doc-pager-label">Next</span><span>Deployment</span></a>
+      </nav>
+    </main>
+  </div>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <p><strong>Solo Documentation</strong></p>
+        <p>Open-source core licensed under <code>MIT OR Apache-2.0</code>. Deployed on Cloudflare Workers Static Assets.</p>
+      </div>
+      <nav aria-label="Footer">
+        <ul class="footer-links">
+          <li><a href="https://solo.jcusoftware.com/">Landing Page</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Showcase</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+          <li><a href="https://github.com/jcusoftware/solo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

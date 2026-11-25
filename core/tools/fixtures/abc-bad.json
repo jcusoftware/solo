@@ -1,0 +1,31 @@
+{
+  "name": "Example Fixture Tavern",
+  "legal_disclaimer": "Generic test fixture for abc-lint; intentionally non-compliant.",
+  "happy_hour": {
+    "days": ["friday", "saturday"],
+    "start": "19:00",
+    "end": "22:00",
+    "offers": [
+      "Bottomless mimosas with brunch",
+      "2-for-1 house cocktails",
+      "2–for–1 draft beers",
+      "Two for One pints after work",
+      "Unlimited drinks for a flat fee",
+      "Unlimited\ndrinks on the patio",
+      "2  for  1 late pours"
+    ]
+  },
+  "late_night": {
+    "happy_hour": {
+      "days": ["friday"],
+      "start": "22:00",
+      "end": "03:00",
+      "offers": ["Two—for—One nightcaps"]
+    }
+  },
+  "menu": {
+    "sections": [
+      { "name": "Specials", "items": [{ "name": "Late-night special", "description": "2 for 1 drafts after 9pm" }] }
+    ]
+  }
+}

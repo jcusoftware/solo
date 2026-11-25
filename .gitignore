@@ -1,0 +1,31 @@
+# Rust / workers-rs
+target/
+core/build/
+crates/*/build/
+build/
+
+# Node / tooling
+node_modules/
+.wrangler/
+test-results/
+playwright-report/
+.lighthouseci/
+wrangler-dev.log
+
+# Secrets & private zone (never commit)
+.dev.vars
+*.env
+.env
+.env.*
+!.env.example
+private/
+
+# Private studio ops (maintained in a separate private studio repo)
+agents/
+.opencode/
+opencode.json
+docs/WORKFLOW_PROMPTS.md
+tenants/
+
+# Local packaging artifacts
+*.pkg.tar.*

@@ -1,0 +1,23 @@
+// Cloudflare Workers Static Assets config for the SWS Landing & Download site.
+// Custom domain (requires jcusoftware.com zone in Cloudflare DNS): solo.jcusoftware.com
+// Docs: https://developers.cloudflare.com/workers/static-assets/
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "sws-landing",
+	"compatibility_date": "2026-11-01",
+	"workers_dev": true,
+	"assets": {
+		// Generated deterministically by `npm run sites:build` (includes `_headers`).
+		"directory": "./public",
+		"not_found_handling": "404-page",
+		"html_handling": "auto-trailing-slash"
+	},
+	// Declarative Cloudflare Custom Domain route on the jcusoftware.com zone.
+	// Remove or comment out `routes` if deploying a fork/preview strictly to *.workers.dev.
+	"routes": [
+		{ "pattern": "solo.jcusoftware.com", "custom_domain": true }
+	],
+	"observability": {
+		"enabled": true
+	}
+}

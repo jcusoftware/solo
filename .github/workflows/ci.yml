@@ -1,0 +1,103 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust (deny, test, wasm clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo deny (licenses, advisories, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      - name: cargo test (host; includes _headers <-> headers.rs parity + ABC lint tests)
+        run: |
+          cargo test --workspace --locked
+          cargo test -p sws-cli --features pack-hospitality --locked
+      - name: cargo clippy (wasm32)
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings
+
+  web:
+    name: web (render, ABC lint, header parity, a11y, lighthouse)
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Rendered HTML is up to date with venue.json
+        run: npm run render:check
+      - name: Static landing & docs sites are up to date
+        run: npm run sites:check
+      - name: Virginia ABC advertising lint
+        run: npm run lint:abc
+      - name: ABC linter catches the known-bad fixture
+        run: "! npm run lint:abc:fixture"
+      - name: Static header parity (_headers vs headers.rs)
+        run: npm run check:headers && npm run sites:check:headers
+      - name: Node unit tests
+        run: npm run test:unit
+      - name: Install worker-build
+        run: cargo install worker-build@^0.9 --locked
+      - name: Build Worker
+        run: npm run build
+      - name: Local D1 migrations
+        run: npx wrangler d1 migrations apply DB --local
+      - name: Start wrangler dev
+        run: |
+          cp .dev.vars.example .dev.vars
+          nohup npx wrangler dev --port 8787 --ip 127.0.0.1 --var DEV_MODE:true > wrangler-dev.log 2>&1 &
+          for i in $(seq 1 90); do
+            curl -fsS http://127.0.0.1:8787/api/health && exit 0
+            sleep 2
+          done
+          cat wrangler-dev.log
+          exit 1
+      - name: Live header parity (/ and /api/health)
+        run: npm run check:headers:live
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Accessibility + header gates (axe, WCAG 2.2 AA)
+        run: npm run test:a11y
+        env:
+          BASE_URL: http://127.0.0.1:8787
+      - name: Lighthouse CI
+        run: npm run lhci
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-reports
+          path: |
+            playwright-report/
+            test-results/
+            .lighthouseci/
+            wrangler-dev.log
+          if-no-files-found: ignore

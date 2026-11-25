@@ -1,0 +1,15 @@
+[package]
+name = "sws-css"
+description = "Permissive MIT/Apache-2.0 typed CSS AST, design-token emitter, injection guards, and WCAG 2.x contrast verification for Solo Website System (SWS)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

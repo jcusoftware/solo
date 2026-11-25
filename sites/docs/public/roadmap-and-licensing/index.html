@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roadmap &amp; Licensing — SWS Documentation</title>
+  <meta name="description" content="Solo Website System release milestones (v0.1.0, v0.2.0, v0.3.0), dual MIT OR Apache-2.0 core licensing, and dependency policy.">
+  <link rel="canonical" href="https://docs.jcusoftware.com/roadmap-and-licensing/">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Roadmap & Licensing — SWS Documentation",
+  "description": "Solo Website System release milestones (v0.1.0, v0.2.0, v0.3.0), dual MIT OR Apache-2.0 core licensing, and dependency policy.",
+  "url": "https://docs.jcusoftware.com/roadmap-and-licensing/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Solo Website System Documentation",
+    "url": "https://docs.jcusoftware.com/"
+  }
+}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">SOLO</span>
+        <span>Solo Docs</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="https://solo.jcusoftware.com/">Home</a>
+        <a href="https://solo.jcusoftware.com/#download">Download</a>
+        <a href="/showcase/">Showcase</a>
+        <a href="https://github.com/jcusoftware/solo/releases">Releases</a>
+        <a href="https://github.com/jcusoftware/solo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <div class="container docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation sections">
+      <p class="docs-sidebar-title">Documentation</p>
+      <nav aria-label="Documentation">
+        <ul class="docs-nav-list">
+          <li><a href="/">Overview</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/user-guide/">User Guide</a></li>
+          <li><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Live Showcase</a></li>
+          <li><a href="/accessibility-and-security/">Accessibility &amp; Security</a></li>
+          <li><a href="/deployment/">Deployment</a></li>
+          <li><a href="/faq/">FAQ &amp; Troubleshooting</a></li>
+          <li><a href="/roadmap-and-licensing/" aria-current="page">Roadmap &amp; Licensing</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="main" class="docs-content" tabindex="-1">
+      <h1>Roadmap &amp; Licensing</h1>
+      <p class="docs-lead">Planned milestones for Solo Website System and the permissive open-source licensing model that governs the core engine.</p>
+
+      <h2>Release Roadmap</h2>
+
+      <h3><code>v0.1.0</code> — Core Rust Engine, CLI/MCP &amp; Vertical Pack Foundation</h3>
+      <ul>
+        <li><code>sws-ir</code>: Strongly typed, industry-agnostic Site IR (pages, sections, blocks, design tokens, routes, JSON-LD).</li>
+        <li><code>sws-css</code>: Pure-Rust, permissively licensed CSS AST, validator, contrast checker, and emitter.</li>
+        <li><code>sws-compiler</code>: Deterministic HTML/CSS compiler with built-in WCAG 2.2 Level AA structural enforcement.</li>
+        <li><code>sws-plugin</code>: Stable plugin ABI for vertical IR transforms, renderers, and post-compile lint passes.</li>
+        <li><code>sws-cli</code> &amp; <code>sws-wasm</code>: Unified CLI, local stdio MCP server, and browser Wasm compiler bridge.</li>
+        <li><code>packs/hospitality</code>: First vertical pack cleanly isolated from open-source core crates.</li>
+      </ul>
+
+      <h3><code>v0.2.0</code> — Cloudflare Control Plane &amp; Real-Time Sync</h3>
+      <ul>
+        <li><code>sws-worker-studio</code>: Multi-tenant Cloudflare Workers control plane with dual security-header parity and Turnstile protection.</li>
+        <li><strong>D1 + R2 + Queues:</strong> Relational project/session metadata, immutable build &amp; media storage, and async publish pipelines.</li>
+        <li><strong>SQLite Durable Objects:</strong> <code>ProjectRoom</code> for collaborative real-time editing and <code>RateLimiter</code> for edge rate limiting.</li>
+      </ul>
+
+      <h3><code>v0.3.0</code> — Pure-Rust Visual Builder &amp; Standalone Rust App Export</h3>
+      <ul>
+        <li><strong>Pure-Rust Studio Frontend:</strong> Browser-based Rust/Wasm visual builder shell, live canvas, and workspace console compiling directly against <code>sws-ir</code>, <code>sws-css</code>, and <code>sws-compiler</code>.</li>
+        <li><strong>Standalone Rust App Export (<code>solo export</code>):</strong> Emits self-contained Rust Cloudflare Worker applications (<code>Cargo.toml</code>, typed handlers, D1 migrations, static assets, and <code>wrangler.jsonc</code>).</li>
+      </ul>
+
+      <h2>Licensing</h2>
+      <ul>
+        <li><strong>Open-source core, sites &amp; reference pack (<code>MIT OR Apache-2.0</code>):</strong> Core Rust crates (<code>crates/*</code>, <code>core/</code>), builder applications (<code>apps/*</code>), core packages (<code>packages/*</code>), static sites (<code>sites/*</code>), and the reference hospitality pack (<code>packs/hospitality</code>) are dual-licensed under the MIT License and Apache License 2.0.</li>
+        <li><strong>Dependency hygiene:</strong> <code>cargo deny check</code> enforces a strict permissive OSI license allowlist (<code>MIT</code>, <code>Apache-2.0</code>, <code>BSD-2-Clause</code>, <code>BSD-3-Clause</code>, <code>ISC</code>, <code>Unicode-DFS-2016</code>, <code>CC0-1.0</code>, plus narrowly scoped <code>Unicode-3.0</code> entries for ICU/unicode crates). GPL, AGPL, LGPL, MPL, and source-available licenses are rejected.</li>
+        <li><strong>External vertical packs:</strong> Third-party or external industry packs are decoupled behind <code>sws-plugin</code> and may be distributed on independent release tracks under their own licenses.</li>
+      </ul>
+
+      <h2>Contributing</h2>
+      <p>Contributions to the open-source core are welcome! Review <code>CONTRIBUTING.md</code> and <code>CODE_OF_CONDUCT.md</code> on <a href="https://github.com/jcusoftware/solo">GitHub</a> before opening a pull request.</p>
+      <nav class="doc-pager" aria-label="Pagination">
+        <a href="/faq/"><span class="doc-pager-label">Previous</span><span>FAQ &amp; Troubleshooting</span></a>
+        <span></span>
+      </nav>
+    </main>
+  </div>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <p><strong>Solo Documentation</strong></p>
+        <p>Open-source core licensed under <code>MIT OR Apache-2.0</code>. Deployed on Cloudflare Workers Static Assets.</p>
+      </div>
+      <nav aria-label="Footer">
+        <ul class="footer-links">
+          <li><a href="https://solo.jcusoftware.com/">Landing Page</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Showcase</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+          <li><a href="https://github.com/jcusoftware/solo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

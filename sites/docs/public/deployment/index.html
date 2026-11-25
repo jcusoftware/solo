@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deployment — SWS Documentation</title>
+  <meta name="description" content="Deploy SWS sites and the sws-landing and sws-docs static Workers to Cloudflare free tier with tag-only releases and custom domains.">
+  <link rel="canonical" href="https://docs.jcusoftware.com/deployment/">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Deployment — SWS Documentation",
+  "description": "Deploy SWS sites and the sws-landing and sws-docs static Workers to Cloudflare free tier with tag-only releases and custom domains.",
+  "url": "https://docs.jcusoftware.com/deployment/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Solo Website System Documentation",
+    "url": "https://docs.jcusoftware.com/"
+  }
+}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">SOLO</span>
+        <span>Solo Docs</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="https://solo.jcusoftware.com/">Home</a>
+        <a href="https://solo.jcusoftware.com/#download">Download</a>
+        <a href="/showcase/">Showcase</a>
+        <a href="https://github.com/jcusoftware/solo/releases">Releases</a>
+        <a href="https://github.com/jcusoftware/solo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <div class="container docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation sections">
+      <p class="docs-sidebar-title">Documentation</p>
+      <nav aria-label="Documentation">
+        <ul class="docs-nav-list">
+          <li><a href="/">Overview</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/user-guide/">User Guide</a></li>
+          <li><a href="/cli-and-mcp/">CLI &amp; MCP Reference</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Live Showcase</a></li>
+          <li><a href="/accessibility-and-security/">Accessibility &amp; Security</a></li>
+          <li><a href="/deployment/" aria-current="page">Deployment</a></li>
+          <li><a href="/faq/">FAQ &amp; Troubleshooting</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="main" class="docs-content" tabindex="-1">
+      <h1>Deployment</h1>
+      <p class="docs-lead">SWS targets Cloudflare&apos;s free tier for both published dynamic-form sites and pure static Workers such as the landing and documentation sites.</p>
+
+      <h2>Cloudflare Free-Tier Footprint</h2>
+      <ul>
+        <li><strong>Cloudflare Workers &amp; Static Assets:</strong> Free tier covers static asset delivery and up to 100,000 Worker requests/day.</li>
+        <li><strong>Cloudflare D1:</strong> Free tier provides 5 GB SQLite storage for form submissions and newsletter subscribers.</li>
+        <li><strong>Cloudflare Turnstile &amp; DNS:</strong> Free bot protection, DNS hosting, and DMARC management.</li>
+        <li><strong>Resend (optional):</strong> Free tier for transactional form email notifications; when <code>RESEND_API_KEY</code> is unset, email dispatch logs cleanly as a stub.</li>
+      </ul>
+
+      <h2>Deploying a Published SWS Site (Worker + D1)</h2>
+      <ol>
+        <li>Create your D1 database and copy the returned <code>database_id</code> into <code>wrangler.jsonc</code>:
+          <pre tabindex="0"><code>npx wrangler d1 create my-site-db</code></pre>
+        </li>
+        <li>Configure production secrets (never commit secrets or <code>.dev.vars</code>):
+          <pre tabindex="0"><code>npx wrangler secret put TURNSTILE_SECRET_KEY
+# Optional email forwarding:
+npx wrangler secret put RESEND_API_KEY</code></pre>
+        </li>
+        <li>Replace the test <code>TURNSTILE_SITE_KEY</code> in <code>wrangler.jsonc</code> with your production Turnstile site key.</li>
+        <li>Apply remote D1 migrations and deploy:
+          <pre tabindex="0"><code>npx wrangler d1 migrations apply DB --remote
+npx wrangler deploy</code></pre>
+        </li>
+      </ol>
+
+      <h2>Deploying the Landing &amp; Docs Static Sites</h2>
+      <p>This repository ships two zero-Worker-code Cloudflare Static Assets sites:</p>
+      <div class="table-wrap" tabindex="0">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Site</th>
+              <th scope="col">Worker Name</th>
+              <th scope="col">Wrangler Config</th>
+              <th scope="col">Custom Domain</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Landing &amp; Downloads</td>
+              <td><code>sws-landing</code></td>
+              <td><code>sites/landing/wrangler.jsonc</code></td>
+              <td><code>solo.jcusoftware.com</code></td>
+            </tr>
+            <tr>
+              <td>Documentation</td>
+              <td><code>sws-docs</code></td>
+              <td><code>sites/docs/wrangler.jsonc</code></td>
+              <td><code>docs.jcusoftware.com</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Tag-Only Automated Releases</h3>
+      <p>Merges to <code>main</code> run CI verification only and never publish releases or deploy to Cloudflare. Releases run exclusively when you push an annotated Git tag:</p>
+      <pre tabindex="0"><code>git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0</code></pre>
+      <p>On every <code>v*</code> tag, <code>.github/workflows/release.yml</code> verifies Rust tests, <code>cargo deny</code>, Wasm clippy, static sites, and header parity, builds CLI binaries (when <code>crates/sws-cli</code> is present), creates the GitHub Release, and — when <code>CLOUDFLARE_API_TOKEN</code> is configured — builds and deploys both <code>sws-landing</code> and <code>sws-docs</code> with links pointing directly to the tagged release.</p>
+
+      <h3>GitHub Repository Secrets &amp; Variables</h3>
+      <div class="table-wrap" tabindex="0">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Kind</th>
+              <th scope="col">Default / Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>CLOUDFLARE_API_TOKEN</code></td>
+              <td>Secret</td>
+              <td>Enables Cloudflare deploys on <code>v*</code> tags (skipped safely if unset)</td>
+            </tr>
+            <tr>
+              <td><code>CLOUDFLARE_ACCOUNT_ID</code></td>
+              <td>Secret</td>
+              <td>Target Cloudflare account ID for Wrangler deploys</td>
+            </tr>
+            <tr>
+              <td><code>SWS_LANDING_URL</code></td>
+              <td>Variable (optional)</td>
+              <td>Defaults to <code>https://solo.jcusoftware.com</code>; override for forks or <code>*.workers.dev</code> preview deployments</td>
+            </tr>
+            <tr>
+              <td><code>SWS_DOCS_URL</code></td>
+              <td>Variable (optional)</td>
+              <td>Defaults to <code>https://docs.jcusoftware.com</code>; override for forks or <code>*.workers.dev</code> preview deployments</td>
+            </tr>
+            <tr>
+              <td><code>SWS_SHOWCASE_URL</code></td>
+              <td>Variable (optional)</td>
+              <td>When set, adds direct "Open Live Showcase" links across both sites</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Custom Domains &amp; Cloudflare DNS</h3>
+      <p>Both <code>sites/landing/wrangler.jsonc</code> and <code>sites/docs/wrangler.jsonc</code> declare Cloudflare Custom Domain <code>routes</code> (<code>solo.jcusoftware.com</code> and <code>docs.jcusoftware.com</code>) alongside <code>workers_dev: true</code>:</p>
+      <ol>
+        <li>Ensure <code>jcusoftware.com</code> is an active zone in your target Cloudflare account so Wrangler can bind <code>solo.jcusoftware.com</code> (<code>sws-landing</code>) and <code>docs.jcusoftware.com</code> (<code>sws-docs</code>) and provision DNS + TLS automatically on deploy.</li>
+        <li>Grant your <code>CLOUDFLARE_API_TOKEN</code> Workers Scripts Edit plus Zone DNS / Workers Routes permissions on <code>jcusoftware.com</code>.</li>
+        <li>For forks or preview deployments without a custom domain yet, remove or comment out the <code>routes</code> blocks in both <code>wrangler.jsonc</code> files and set <code>SWS_LANDING_URL</code> / <code>SWS_DOCS_URL</code> to your <code>*.workers.dev</code> URLs.</li>
+      </ol>
+      <p>Current build URLs: landing <code>https://solo.jcusoftware.com</code>, docs <code>https://docs.jcusoftware.com</code>.</p>
+      <nav class="doc-pager" aria-label="Pagination">
+        <a href="/accessibility-and-security/"><span class="doc-pager-label">Previous</span><span>Accessibility &amp; Security</span></a>
+        <a href="/faq/"><span class="doc-pager-label">Next</span><span>FAQ &amp; Troubleshooting</span></a>
+      </nav>
+    </main>
+  </div>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <p><strong>Solo Documentation</strong></p>
+        <p>Open-source core licensed under <code>MIT OR Apache-2.0</code>. Deployed on Cloudflare Workers Static Assets.</p>
+      </div>
+      <nav aria-label="Footer">
+        <ul class="footer-links">
+          <li><a href="https://solo.jcusoftware.com/">Landing Page</a></li>
+          <li><a href="/getting-started/">Getting Started</a></li>
+          <li><a href="/packs/">Packs</a></li>
+          <li><a href="/showcase/">Showcase</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+          <li><a href="/roadmap-and-licensing/">Roadmap &amp; Licensing</a></li>
+          <li><a href="https://github.com/jcusoftware/solo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
