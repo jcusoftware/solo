@@ -116,7 +116,10 @@ pub fn compile_from_json(
         && val.get("pages").and_then(Value::as_array).is_some()
         && val.get("slug").is_some();
     if is_ir_doc {
-        let doc: SiteDocument = serde_json::from_value(val.clone()).map_err(|e| {
+        // Deserialize straight from the input string instead of deep-cloning
+        // the parsed `Value` (issue #13); the `Value` stays alive unchanged as
+        // the plugin-lint `raw_input`.
+        let doc: SiteDocument = serde_json::from_str(input_json).map_err(|e| {
             CompileError::new(format!("invalid SiteDocument JSON: {e}"), Vec::new())
         })?;
         return compile_site_internal(&doc, Some(&val), Some(registry), options);
@@ -138,7 +141,19 @@ fn compile_site_internal(
     registry: Option<&PluginRegistry>,
     options: &CompileOptions,
 ) -> Result<CompiledSite, CompileError> {
-    let mut diagnostics = check_site_diagnostics(doc, raw_input, registry, options);
+    // Expand each page body exactly once; the single `ExpandedBody` per page
+    // feeds both the diagnostics pass and the HTML renderer (issue #13).
+    let expanded_bodies: Vec<expand::ExpandedBody> = doc
+        .pages
+        .iter()
+        .map(|page| expand::expand_page_body(doc, &page.body))
+        .collect();
+    let mut diagnostics = diagnostics::run_diagnostics_with_expanded(
+        doc,
+        raw_input,
+        registry,
+        &expanded_bodies,
+    );
     if let Some(first_err) = diagnostics
         .iter()
         .find(|d| d.level == DiagnosticLevel::Error)
@@ -167,7 +182,7 @@ fn compile_site_internal(
     let mut lowercased_paths: BTreeMap<String, String> = BTreeMap::new();
     let mut needs_forms_js = doc.scripts.iter().any(|s| s.src == "/js/forms.js");
 
-    for page in &doc.pages {
+    for (p_idx, page) in doc.pages.iter().enumerate() {
         let Some(out_path) = output_path_for_page(page) else {
             continue;
         };
@@ -196,7 +211,7 @@ fn compile_site_internal(
             return Err(CompileError::new(msg, diagnostics));
         }
         lowercased_paths.insert(lowercased, out_path.clone());
-        let html = render_page_html(doc, page);
+        let html = render_page_html(doc, page, &expanded_bodies[p_idx]);
         files.insert(out_path, html);
     }
 
@@ -343,7 +358,7 @@ fn output_path_for_page(page: &Page) -> Option<String> {
     }
 }
 
-fn render_page_html(doc: &SiteDocument, page: &Page) -> String {
+fn render_page_html(doc: &SiteDocument, page: &Page, expanded: &expand::ExpandedBody) -> String {
     let lang = doc
         .locale
         .split('-')
@@ -445,7 +460,8 @@ fn render_page_html(doc: &SiteDocument, page: &Page) -> String {
     let _ = writeln!(out, "</head>");
     let _ = writeln!(out, "<body>");
 
-    let expanded = expand::expand_page_body(doc, &page.body);
+    // The page body was expanded once in `compile_site_internal` and shared
+    // with the diagnostics pass; render it without re-expanding (issue #13).
     out.push_str(&expand::render_expanded_html(&expanded.nodes));
     if !out.ends_with('\n') {
         out.push('\n');

@@ -8,9 +8,9 @@ use sws_ir::{RoutePattern, SiteDocument, validate_ir};
 use sws_plugin::{DiagnosticSeverity, PluginRegistry};
 
 use crate::expand::{
-    ExpandedNode, EvalWarning, expand_page_body, is_forbidden_attr, is_forbidden_body_tag,
-    is_safe_script_src, is_safe_tag_name, is_safe_url_attr_value, is_safe_url_list_attr_value,
-    is_url_attr, is_url_list_attr,
+    ExpandedBody, ExpandedNode, EvalWarning, expand_page_body, is_forbidden_attr,
+    is_forbidden_body_tag, is_safe_script_src, is_safe_tag_name, is_safe_url_attr_value,
+    is_safe_url_list_attr_value, is_url_attr, is_url_list_attr,
 };
 
 const BANNED_OVERLAY_PATTERNS: &[&str] = &[
@@ -269,6 +269,24 @@ pub fn run_diagnostics(
     raw_input: Option<&Value>,
     registry: Option<&PluginRegistry>,
 ) -> Vec<CompilerDiagnostic> {
+    // Expand every page body exactly once up front; the shared expansions feed
+    // both the checks here and the HTML renderer during compilation (issue #13).
+    let expanded_bodies: Vec<ExpandedBody> = doc
+        .pages
+        .iter()
+        .map(|page| expand_page_body(doc, &page.body))
+        .collect();
+    run_diagnostics_with_expanded(doc, raw_input, registry, &expanded_bodies)
+}
+
+/// Like [`run_diagnostics`], but reuses per-page expansions produced by the
+/// caller so each page body is expanded only once per compile.
+pub(crate) fn run_diagnostics_with_expanded(
+    doc: &SiteDocument,
+    raw_input: Option<&Value>,
+    registry: Option<&PluginRegistry>,
+    expanded_bodies: &[ExpandedBody],
+) -> Vec<CompilerDiagnostic> {
     let mut diags = Vec::new();
 
     // 1. Structural IR validation
@@ -431,7 +449,7 @@ pub fn run_diagnostics(
             }
         }
 
-        let expanded = expand_page_body(doc, &page.body);
+        let expanded = &expanded_bodies[p_idx];
         if expanded.limit_exceeded {
             diags.push(CompilerDiagnostic::error(
                 "expansion_limit_exceeded",
