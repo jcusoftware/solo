@@ -12,8 +12,8 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
 ====================================================================================================
  PLANE 1: BUILD / AUTHORING PLANE (Browser Wasm + Local CLI / MCP)
 ====================================================================================================
-  Visual Builder (apps/builder) + Visual Canvas (apps/canvas)
-       │  real-time editing & live preview via Browser Wasm (sws-wasm)
+  Planned (v0.3.0): thin TypeScript Builder shell + script-free sandboxed canvas
+       │  edits go through an opaque Rust/Wasm session (sws-wasm); no canonical IR in JS
        ▼
   Core Rust Engine (crates/, MIT OR Apache-2.0)
     ├── sws-ir        : Declarative page, component, token & form intermediate representation
@@ -25,15 +25,17 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
   `solo` CLI & MCP Server (sws-cli)
 
 ====================================================================================================
- PLANE 2: CONTROL PLANE (v0.2.0 Studio Backend — Cloudflare Workers)
+ PLANE 2: CONTROL PLANE (planned v0.2.0 Studio — optional, Cloudflare Workers)
 ====================================================================================================
-  `sws-worker-studio` (Rust → wasm32)
-    ├── SQLite Durable Objects
-    │     ├── ProjectRoom   : Authoritative collaborative project state & optimistic IR sync
-    │     └── RateLimiter   : Per-tenant / per-IP token-bucket rate limiting
-    ├── D1 (SQLite)         : Tenants, projects, publish history, pack entitlements
-    ├── R2 Object Storage   : Media assets, immutable build snapshots & published site bundles
-    └── Cloudflare Queues   : Async publish pipelines, image optimization & webhook dispatch
+  `sws-worker-studio` (Rust → wasm32; planned, not yet present)
+    ├── SQLite Durable Objects (hibernating, one command session per site)
+    │     └── per-site snapshot + monotonic command log + expiring soft presence
+    │         (command log, not CRDT; see §10)
+    ├── D1 (SQLite)         : Workspace/site/user, token, asset & deployment metadata
+    ├── Asset storage       : size-capped D1 blobs by default (cardless); R2 is opt-in
+    └── Cloudflare Queues   : Async publish jobs (sub-1 KB pointer to an immutable revision)
+                              — only if the #59 spike proves Free-plan CPU headroom;
+                              otherwise the CLI compiles and uploads (#68)
 
 ====================================================================================================
  PLANE 3: EDGE PUBLISHED-SITE PLANE (Cloudflare Free-Tier Edge)
@@ -80,13 +82,14 @@ crates/                       Open-source Rust workspace (MIT OR Apache-2.0)
   sws-wasm/                   wasm-bindgen target for browser visual canvas
   sws-cli/                    `solo` CLI + MCP server
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          planned v0.2.0 — studio control-plane Worker (Durable Objects, D1, R2, Queues)
+  sws-worker-studio/          planned v0.2.0 — optional studio control-plane Worker (Durable Objects, D1; Queues and R2 opt-in/conditional)
 
-apps/                         planned v0.3.0 — visual authoring web apps (MIT OR Apache-2.0)
-  builder/                    Studio shell (inspector, theme tokens, publish controls)
-  canvas/                     Live interactive canvas backed by `sws-wasm`
+apps/                         planned v0.3.0 — thin TypeScript Builder shell and canvas (MIT OR Apache-2.0); directory names are an open assumption
+  builder/                    Editor shell (inspector, tree, diagnostics, save/publish/export dialogs)
+  canvas/                     Sandboxed, script-free canvas fed by `sws-wasm` deltas
 
-packages/                     planned v0.3.0 — published JS/TS packages (`@solo-website-system/*`, MIT OR Apache-2.0)
+packages/                     published JS/TS packages (`@solo-website-system/*`, MIT OR Apache-2.0)
+  @solo-website-system/ir-types/  planned v0.2.0-alpha.1 (#56) — generated `.d.ts` + Draft 2020-12 JSON Schema, no JS runtime
 
 packs/                        Industry verticals & domain plugins
   hospitality/                Open-source reference hospitality pack (`pack-hospitality`, MIT OR Apache-2.0)
@@ -101,7 +104,7 @@ core/                         Tenant-agnostic rendered demo output & CLI tools (
 D1 migrations live at `crates/sws-worker-site/migrations/` (`0001_init.sql`, `0002_public_events.sql`, `0003_event_sync.sql`, `0004_scheduling_bookings.sql`).
 ```
 
-Entries above marked *v0.2.0*/*v0.3.0* are planned targets, not present directories: `sws-worker-studio/` is planned for v0.2.0, and `apps/` (builder, canvas) and `packages/` (`@solo-website-system/*`) are planned for v0.3.0. Today's repository contains `crates/`, `packs/`, `integrations/`, `core/` (output + tools only), `sites/`, `docs/` and `tests/`.
+Entries above marked *planned* are targets, not present directories: `packages/@solo-website-system/ir-types` arrives in v0.2.0-alpha.1 (#56), `sws-worker-studio/` in the v0.2.0 line (v0.2.0-beta.1, #61), and `apps/` (builder, canvas) in v0.3.0. Today's repository contains `crates/`, `packs/`, `integrations/`, `core/` (output + tools only), `sites/`, `docs/` and `tests/`.
 
 ### Multi-track release model
 
@@ -109,6 +112,8 @@ Entries above marked *v0.2.0*/*v0.3.0* are planned targets, not present director
 | --- | --- | --- | --- |
 | Core releases (`v*` tags) | GitHub Releases (`solo` CLI binaries when present) + optional Cloudflare static-site deploys (`sws-landing` at `solo.jcusoftware.com` and `sws-docs` at `docs.jcusoftware.com` when `CLOUDFLARE_API_TOKEN` is configured) | Tag-only GitHub Actions (`.github/workflows/release.yml`, triggered strictly on pushed `v*` tags; merges to `main` run CI only and never trigger releases or deploys) | `MIT OR Apache-2.0` |
 | Vertical packs (`pack-hospitality-v*` tags) | `pack-hospitality` (open-source vertical pack bundle & schemas) | Independent tag-only GitHub Actions track (`.github/workflows/release.yml` on `pack-hospitality-v*` tags) | `MIT OR Apache-2.0` |
+
+Release tags are created only from the verified final squash commit on `main` (see §10 and CONTRIBUTING §7). Versioned npm packages (planned, #82) ship alongside signed-tag CLI artifacts and checksums; the hospitality pack tag workflow stays separate.
 
 ---
 
@@ -259,3 +264,68 @@ See the `cloudflare-rust-headers` skill.
 - **Semantic Menus & Virginia ABC (`packs/hospitality`):**
   - Menus render as semantic HTML plus `Menu`/`MenuSection`/`MenuItem` JSON-LD (never PDF-only).
   - Advisory VA ABC linter (Node + Rust) flags prohibited drink promo language and happy-hour start or end times inside the 21:00–05:59 overnight window per 3 VAC 5-20 and 3 VAC 5-50-160; human sign-off is required before client publication (not legal advice).
+
+---
+
+## 10. Studio and Builder design alignment (v0.2 onward)
+
+This section records the decisions stated by the Studio and Builder release issues (#54 to #88). The design document those issues cite is not in this repository. Where an issue does not decide something, it is labelled **assumption** or **open question** below and in `ROADMAP.md` ("Open assumptions and questions"). Nothing here weakens §5 (dual security headers), §6 (Gate 1) or §7 (two-zone firewall).
+
+### Rust core, thin TypeScript shell
+
+- Canonical IR, the command reducer, undo/redo, validation, contrast diagnostics and compilation stay in Rust (`sws-ir`, `sws-compiler`, `sws-css`). One versioned command batch with an atomic Rust apply path is shared by the CLI, MCP, browser and Studio (#55), keyed by stable node IDs (#54).
+- The browser parses IR once into an opaque Rust-owned Wasm session and never mirrors canonical IR or validation in JavaScript (#70). The TypeScript layer is limited to generated types and schemas (#56), the `StudioEngine` wrapper (#70), client transport (#75) and the editor shell (#77, Preact and Signals). The earlier "pure-Rust Studio frontend" wording is retired.
+- The canvas is script-free: compiler-produced markup in an opaque sandboxed iframe with a validated `MessageChannel` bridge, and no user scripts or third-party widgets (#72).
+- Pack frontends stay out of Rust and hospitality rules stay out of the generic UI (#74).
+
+### Command log instead of CRDT
+
+Each site's Durable Object session keeps a snapshot, a monotonic command log and expiring soft presence, and checkpoints every 50 commands or on save/publish (#62). Stale batches are rebased only for explicitly tested independent field updates. Stale structural commands and incompatible undo are rejected with actionable conflicts. Collaborative undo is a new inverse command, and operation IDs are idempotent. The former `ProjectRoom` CRDT/patch wording is retired. Whether the class keeps that name is open.
+
+### Cardless default, opt-in R2
+
+- Default asset storage is size-capped D1 blobs when R2 is unbound. R2 is an explicit opt-in that streams uploads with concurrency-safe quota reservations and counts actual bytes (#63). Local filesystem storage stays out of Wasm.
+- Authentication is self-hosted GitHub OAuth with one bootstrapped owner and explicit invitations. Cloudflare Access, a card or an auth SaaS is never a default dependency (#60, #65). Edit-only credentials cannot publish or activate production.
+- Provisional cardless envelope (#63, to be tested with #69): up to 20 pages, 1 MiB per uploaded asset, 50 MiB of stored assets per site.
+- Application caps and alerts reduce billing risk but are not provider-side hard stops.
+
+### Cloud quota values are assumptions
+
+All Cloudflare Workers, D1, Durable Object, Queue and R2 limits, quotas and prices are **assumptions until verified** against current Cloudflare documentation and evidence from a fresh Workers Free account (#59, #63, #69). This document intentionally states no authoritative platform numbers; the sub-1 KB queue pointer (#64), the 50-command checkpoint (#62) and the 20-page/1 MiB/50 MiB envelope are project targets, not platform facts.
+
+### Publish path
+
+- Publishing compiles against an immutable revision, off HTTP handlers, through an asynchronous job pipeline (#64). Studio uploads compiled static assets to the standalone edge Worker through Cloudflare Direct Upload Assets, preserving `run_worker_first: ["/api/*"]` and the existing D1/Turnstile bindings (#66). Visitors are served with Studio unavailable.
+- Server-side compilation is the default only if #59 shows repeatable Free-plan headroom (queue wall time is not CPU time). Otherwise the documented cardless path is CLI compile, local shared Rust verification, then upload of a revision-pinned artifact manifest with a publish-scoped credential (#59, #64, #68). CLI-built artifacts are labelled as such and never presented as independently server-built.
+- Draft previews are served from a separate, non-indexed origin (#67). Rollback is a new audited action on a retained verified deployment and never rewinds editable IR (#66).
+- Static and Worker security-header parity (§5) must hold for published and exported sites (#69, #82).
+
+### Saves, sync and export
+
+- File saves are explicit. `Saved to file` appears only after a successful write, `Synced to Studio` only after the revision is acknowledged, and queued edits are neither (#75, #77). Automatic browser draft recovery is deferred until tested.
+- Local IR open and edit work without a Studio account (#75). `solo export` output runs with no Studio dependency (#79). GitOps uses a verified downloadable export (#80). GitHub PR creation, `repository_dispatch` and automated production deployment are out of scope for v0.3.
+- Third-party runtime pack loading is deferred (#73). Statically linked Rust packs, including `packs/hospitality`, cover launch (#74, #78).
+
+### Phase exits
+
+| Milestone | Phase exit |
+| --- | --- |
+| `v0.2.0-alpha.1` IR Command & Schema Foundation | Local native/Wasm editing slice passes before Studio: stable IDs, explicit legacy upgrade, undo/redo, lossless save/reopen, byte-identical production output, schema drift check, reproducible Wasm tooling |
+| `v0.2.0-beta.1` Studio Control Plane Core | Hibernating multi-client sessions, conservative conflicts, revocation, bounded cardless and opt-in R2 storage, async publish pipeline with an evidence-justified default compile path |
+| `v0.2.0` Publish Bridge, Auth & CLI Sync | Small-site publish on a fresh no-payment-method account with the CLI and a reference sync client; R2 tested separately; failure recovery, audited rollback, header parity, independent visitor traffic |
+| `v0.3.0-alpha.1` Opaque Wasm Session & Isolated Canvas | Script-free sandboxed canvas, p95 input-to-preview under 16 ms in a controlled token scrub, verified focus, scroll, instrumentation and origin isolation |
+| `v0.3.0-beta.1` Builder, Inspector & Pack Hooks | Accessible editing of fictional demo menus, hours and tokens with the existing Rust pack, explicit file saves, distinct sync status, live diagnostics, lossless CLI/MCP round-trips |
+| `v0.3.0` Standalone Export & Release Hardening | Verified downloadable standalone export, independent Builder/canvas/export checks, Wasm and licensing budgets, signed tag-only releases from verified squash commits |
+| `v0.4.0` Import Static Sites | Two-page static fixture imports, edits, saves, reopens and exports deterministically with an inert preview |
+
+The separate `v0.2 — Hospitality pack feature ports` GitHub milestone (#43, #44, #45) is not part of this table.
+
+### Names and baseline
+
+- `workers-rs` baseline: `worker` 0.9 (`Cargo.toml`, `Cargo.lock`) with `worker-build` 0.9. It is not downgraded.
+- The GitHub milestone names above are canonical. `sws-worker-studio` is the planned Studio Worker crate name; `sws-worker-site` remains the visitor Worker.
+- Related audits and runbooks (maintained separately): `docs/IR_COMPATIBILITY_AUDIT.md` (#54), `docs/WASM_TOOLCHAIN.md` (#57), `docs/STUDIO_AUTH.md` (#60).
+
+### Merge and release discipline
+
+All pull requests into `main` are squash-merged with a conventional PR title. A PR uses a closing reference (`Closes #N`) only for issues it fully completes and `Refs #N` otherwise, and it includes its verification results. Release tags are signed and created from the verified final squash commit on `main`, never from feature-branch commits. See CONTRIBUTING §6 and §7.

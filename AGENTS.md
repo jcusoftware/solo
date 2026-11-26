@@ -101,6 +101,6 @@ Make sure `~/.cargo/bin` is on `PATH` so `wrangler dev` can find `worker-build`.
 ## 10. Git & GitHub workflow
 
 - **Branches and commits.** Work on one isolated feature branch per change (`feat/…`, `fix/…`, `chore/…`). Use conventional commits that reference issues, e.g. `feat(sws-compiler): enforce heading hierarchy (fixes #12)`. All commits and release tags must be cryptographically signed (`git commit -S` / `commit.gpgsign=true`, verified with `git log --show-signature -1`).
-- **Pull requests.** PRs include the verification log: `npm run verify`, plus `test:a11y` and `lhci` when UI changed.
+- **Pull requests.** PRs include the verification log: `npm run verify`, plus `test:a11y` and `lhci` when UI changed. PRs into `main` are squash-merged with a conventional PR title; use `Closes #N` only for issues the PR fully completes and `Refs #N` otherwise. Release tags are signed and cut from the verified final squash commit on `main` (see `CONTRIBUTING.md` §6–§7).
 - **Ask first.** `git push`, `wrangler deploy`, secrets and remote D1 writes need user confirmation.
 - **Before committing,** run `npm run verify` and `git diff --stat`, and verify no real-client/Zone B data or secrets are staged.
