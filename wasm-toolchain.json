@@ -1,0 +1,18 @@
+{
+	"_comment": "Single source of truth for the pinned Wasm toolchain (see docs/WASM_TOOLCHAIN.md). The Rust channel lives in rust-toolchain.toml; the wasm-bindgen version is derived from Cargo.lock. `npm run check:toolchain` fails when CI, the devcontainer or scripts drift from these pins.",
+	"workerBuild": "0.9.0",
+	"binaryen": "133",
+	"wasmFeatures": {
+		"cargo": [
+			"bulk-memory",
+			"bulk-memory-opt",
+			"call-indirect-overlong",
+			"multivalue",
+			"mutable-globals",
+			"nontrapping-fptoint",
+			"reference-types",
+			"sign-ext"
+		],
+		"optimizer": ["exception-handling"]
+	}
+}

@@ -8,8 +8,9 @@
 	"compatibility_date": "2026-11-01",
 	"workers_dev": true,
 	"build": {
-		// Requires: cargo install worker-build@^0.9 --locked (CI installs it).
-		"command": "cd crates/sws-worker-site && worker-build --release",
+		// Requires: cargo install worker-build@0.9.0 --locked (CI installs it; pin in wasm-toolchain.json).
+		// The script skips Cargo/worker-build when the Rust inputs are unchanged (docs/WASM_TOOLCHAIN.md).
+		"command": "node scripts/build-wasm.mjs --profile release",
 		"watch_dir": "crates/sws-worker-site/src"
 	},
 	"assets": {

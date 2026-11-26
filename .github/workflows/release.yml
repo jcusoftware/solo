@@ -25,8 +25,9 @@ jobs:
       has_cli: ${{ steps.detect.outputs.has_cli }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -108,8 +109,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Install cross-linker for aarch64-unknown-linux-gnu
@@ -243,8 +245,9 @@ jobs:
             echo "Error: packs/hospitality/crate/Cargo.toml not found on this tag."
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
