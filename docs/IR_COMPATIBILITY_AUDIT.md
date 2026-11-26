@@ -421,3 +421,16 @@ Gate scoping per `AGENTS.md` section 9: `npm run verify` covers `render:check`, 
 11. `solo init` output form and canonical null-vs-absent save form (6.1, Q5, Q7).
 12. All names in section 6.1 (new CLI/MCP/Wasm actions) are placeholders.
 13. Generated-schema unknown-field policy and the pack-schema scope in #56 (9, Q10 to Q12).
+
+## 11. Maintainer decisions (2026-11-26)
+
+The maintainer confirmed the following after reviewing this audit. They supersede the matching "Proposed" labels above; every other item in section 10 remains a proposal.
+
+| Decision | Outcome | Supersedes |
+| --- | --- | --- |
+| Where the stable node ID lives | A new optional, never-rendered `uid` field on every `Node` variant, unique across the whole document. `Node::Element.id` is not reused. | 3.1, Q1, Q8 |
+| Version marker | `schema_version` stays `1`. The explicit upgrade writes `metadata["sws.ir"] = {"uid_scheme": 1}`; a marked document whose nodes lack `uid` is refused for editing until re-upgraded. | 3.8, Q3 |
+| Pack editing scope for #55 | Site IR only. A venue manifest is edited through a one-way lowering to IR, and lowered IR is never written back over `venue.json`. Pack-level commands are out of scope for #55. | 3.7, Q2 |
+| Scope of #56 | Generate the site IR types and schema **and** the hospitality pack's `venue.schema.json` from Rust. The generated pack schema must not be looser than the hand-written one. | 9 item 9, Q12 |
+
+Still open (working defaults used by #55, pending confirmation): Q4 (`check`/`build` diagnostics for legacy files stay unchanged), Q5 (`solo init` output unchanged), Q6 (no page-rename command in #55), Q7 (IR optionals keep serializing as `null`), Q9 (the command batch carries its own `version`, independent of `schema_version`), Q10 and Q11.
