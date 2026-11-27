@@ -16,6 +16,12 @@
 // the WebSocket stays open; a fresh instance serves the next message from the restored
 // attachment and DO SQL) and the authorization recheck after it.
 //
+// The dev-auth build is fenced at runtime too: it answers 401 unless the Host is loopback AND the
+// var SWS_INSECURE_DEV_AUTH=1 is passed, which only this script does (`--var`, never a config file).
+// It also serves a few dev-only routes (`/api/dev/...`) to reach the Worker -> Durable Object
+// internals that #65 and #64 will call (`entry::revoke_user`, `entry::fetch_revision`), to prove DO SQL
+// `transactionSync`, and to simulate a D1 outage.
+//
 // Usage: node scripts/test-studio-sessions.mjs [--port 8790]
 // Server-dependent: CI only (not part of `npm run verify`). Exit 0 = all passed.
 
@@ -40,7 +46,9 @@ const FIXTURE_PATH = join(ROOT, 'crates/sws-worker-studio/tests/fixtures/session
 const FIXTURE = readFileSync(FIXTURE_PATH, 'utf8');
 const ORIGINAL = JSON.parse(FIXTURE);
 
-const FAST = ['--var', 'SESSION_PRESENCE_TTL_MS:1500', '--var', 'SESSION_AUTHZ_RECHECK_MS:1000'];
+const FAST = ['--var', 'SESSION_PRESENCE_TTL_MS:1500', '--var', 'SESSION_AUTHZ_RECHECK_MS:1000', '--var', 'SESSION_IDLE_SWEEP_MS:1000'];
+// Always passed: the runtime fence of the dev-auth build, and the origin this server is reached on.
+const BASE_VARS = ['--var', 'SWS_INSECURE_DEV_AUTH:1', '--var', `STUDIO_PUBLIC_ORIGIN:http://127.0.0.1:${PORT}`];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 let opCounter = 0;
@@ -72,7 +80,7 @@ async function startServer(extra) {
   serverLog = '';
   server = spawn(
     'npx',
-    ['wrangler', 'dev', '-c', CFG, '--persist-to', STATE, '--port', String(PORT), '--ip', '127.0.0.1', ...extra],
+    ['wrangler', 'dev', '-c', CFG, '--persist-to', STATE, '--port', String(PORT), '--ip', '127.0.0.1', ...BASE_VARS, ...extra],
     { cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   server.stdout.on('data', (d) => (serverLog += d));
@@ -98,10 +106,15 @@ async function stopServer() {
   } catch {
     // already gone
   }
+  const pid = server.pid;
   server = null;
   if (!(await waitPortFree())) {
-    // wrangler left a workerd child behind: kill the whole group harder
-    spawnSync('pkill', ['-f', `wrangler dev -c ${CFG}`]);
+    // wrangler left a workerd child behind: kill the whole process group we started (by PID, never by name)
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
     await waitPortFree(10_000);
   }
 }
@@ -119,8 +132,26 @@ function d1(sql) {
   return parsed.flatMap((p) => p.results ?? []);
 }
 
+/** Run a (possibly multi-statement, trigger-containing) SQL file against the local D1. */
+function d1File(sql) {
+  const dir = mkdtempSync(join(tmpdir(), 'sws-sessions-'));
+  const file = join(dir, 'q.sql');
+  writeFileSync(file, sql);
+  try {
+    wrangler(['d1', 'execute', 'STUDIO_DB', '--local', '-c', CFG, '--persist-to', STATE, '--file', file]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Test-only routes of the dev-auth build (loopback + SWS_INSECURE_DEV_AUTH only). */
+async function dev(method, path) {
+  const r = await fetch(`${HTTP}/api/dev/${path}`, { method });
+  return { status: r.status, body: await r.json().catch(() => null) };
+}
+
 const revisions = (site) =>
-  d1(`SELECT revision, ir_sha256, byte_size, created_by FROM site_revisions WHERE workspace_id = 'ws-a' AND site_id = '${site}' ORDER BY revision`);
+  d1(`SELECT id, revision, ir_sha256, byte_size, created_by FROM site_revisions WHERE workspace_id = 'ws-a' AND site_id = '${site}' ORDER BY revision`);
 
 /** Raw HTTP request that may carry Upgrade headers (fetch() forbids them). Resolves {status, headers, body}. */
 function rawGet(path, headers = {}, method = 'GET', body = null) {
@@ -149,9 +180,12 @@ class Client {
     this.queue = [];
     this.waiters = [];
     this.closeInfo = null;
+    /** Every message ever received, in arrival order (the queue is consumed by waiters). */
+    this.log = [];
     this.closedP = new Promise((res) => (this.onClosed = res));
     ws.onmessage = (e) => {
       const m = JSON.parse(String(e.data));
+      this.log.push(m);
       this.queue.push(m);
       this.flush();
     };
@@ -258,7 +292,10 @@ async function edit(client, base, commands, tag = 'e') {
 // --- Tests --------------------------------------------------------------------------------
 
 const results = [];
+// STUDIO_SESSIONS_ONLY=<regex> runs just the matching phase-1 tests (debugging aid; skips phase 2).
+const ONLY = process.env.STUDIO_SESSIONS_ONLY ? new RegExp(process.env.STUDIO_SESSIONS_ONLY, 'i') : null;
 async function test(name, fn) {
+  if (ONLY && !ONLY.test(name)) return;
   const t0 = Date.now();
   try {
     await fn();
@@ -270,7 +307,10 @@ async function test(name, fn) {
   }
 }
 
-const SITES = ['s-auth', 's-sync', 's-idem', 's-rebase', 's-undo', 's-pres', 's-ckpt', 's-rev1', 's-rev2', 's-persist', 's-hib', 's-roles'];
+const SITES = [
+  's-auth', 's-sync', 's-idem', 's-rebase', 's-undo', 's-pres', 's-ckpt', 's-rev1', 's-rev2', 's-persist', 's-hib', 's-roles',
+  's-pipe', 's-caps', 's-race', 's-dev', 's-d1', 's-backlog', 's-perm', 's-abandon', 's-retain',
+];
 
 function seedD1() {
   const sites = SITES.map((s) => `('ws-a','${s}','${s}','${s}')`).join(',');
@@ -279,8 +319,8 @@ function seedD1() {
   writeFileSync(
     file,
     `INSERT INTO workspaces (id, name) VALUES ('ws-a','Workspace A'), ('ws-b','Workspace B');
-INSERT INTO users (id, github_id, github_login) VALUES (1,1001,'owner'),(2,1002,'editor'),(3,1003,'editor3'),(4,1004,'outsider'),(5,1005,'revoked-a'),(6,1006,'revoked-b'),(7,1007,'hib-peer'),(8,1008,'publisher');
-INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a',1,'owner'),('ws-a',2,'editor'),('ws-a',3,'editor'),('ws-a',5,'editor'),('ws-a',6,'editor'),('ws-a',7,'editor'),('ws-a',8,'publisher'),('ws-b',4,'owner');
+INSERT INTO users (id, github_id, github_login) VALUES (1,1001,'owner'),(2,1002,'editor'),(3,1003,'editor3'),(4,1004,'outsider'),(5,1005,'revoked-a'),(6,1006,'revoked-b'),(7,1007,'hib-peer'),(8,1008,'publisher'),(9,1009,'cap-peer');
+INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a',1,'owner'),('ws-a',2,'editor'),('ws-a',3,'editor'),('ws-a',5,'editor'),('ws-a',6,'editor'),('ws-a',7,'editor'),('ws-a',8,'publisher'),('ws-a',9,'editor'),('ws-b',4,'owner');
 INSERT INTO sites (workspace_id, id, slug, name) VALUES ${sites},('ws-b','sb','sb','SB');
 `,
   );
@@ -608,6 +648,309 @@ async function phase1() {
     idle.close();
   });
 
+  await test('origin gate: a browser Origin other than STUDIO_PUBLIC_ORIGIN is refused before authentication; no Origin is allowed', async () => {
+    const p = '/api/sites/ws-a/s-auth/session';
+    const evil = await rawGet(p, { ...UPGRADE, 'X-Sws-Dev-User': '1', Origin: 'https://evil.example' });
+    assert.equal(evil.status, 403);
+    assert.equal(JSON.parse(evil.body).error, 'forbidden_origin');
+    assert.equal(evil.headers['cache-control'], 'no-store');
+    assert.ok(evil.headers['x-frame-options'] && evil.headers['strict-transport-security'], 'security headers on the refusal');
+    // The Origin check runs BEFORE authenticate: an unauthenticated cross-origin request is 403, not 401.
+    assert.equal((await rawGet(p, { ...UPGRADE, Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await rawGet(p, { ...UPGRADE, 'X-Sws-Dev-User': '1', Origin: 'null' })).status, 403);
+    assert.equal((await rawGet(p, { ...UPGRADE, 'X-Sws-Dev-User': '1', Origin: `${HTTP}.evil.example` })).status, 403);
+    // The Studio's own origin and clients that send no Origin (CLI/MCP) are let through.
+    assert.equal((await rawGet(p, { ...UPGRADE, 'X-Sws-Dev-User': '1', Origin: HTTP })).status, 101);
+    assert.equal((await upgrade(p, 1)).status, 101);
+  });
+
+  await test('dev-auth runtime fence: without a loopback Host the dev header is ignored (401)', async () => {
+    const r = await rawGet('/api/sites/ws-a/s-auth/session', { ...UPGRADE, 'X-Sws-Dev-User': '1', Host: 'studio.example' });
+    assert.equal(r.status, 401, 'a non-loopback Host never reaches the dev identity');
+    const d = await rawGet('/api/dev/tx-probe/ws-a/s-dev', { Host: 'studio.example' }, 'POST');
+    assert.equal(d.status, 404, 'dev routes are closed too');
+  });
+
+  await test('connection caps: 4 sockets per user and 16 per site answer 429 with Retry-After', async () => {
+    const p = '/api/sites/ws-a/s-caps/session';
+    const mine = [];
+    for (let i = 0; i < 4; i++) mine.push(await Client.connect('s-caps', 1));
+    const fifth = await upgrade(p, 1);
+    assert.equal(fifth.status, 429);
+    assert.equal(JSON.parse(fifth.body).error, 'too_many_connections_for_user');
+    assert.equal(fifth.headers['retry-after'], '5');
+    // Another user is not affected by user 1's cap.
+    const others = [];
+    for (const u of [2, 3, 8]) for (let i = 0; i < 4; i++) others.push(await Client.connect('s-caps', u));
+    assert.equal(mine.length + others.length, 16);
+    const full = await upgrade(p, 9);
+    assert.equal(full.status, 429);
+    assert.equal(JSON.parse(full.body).error, 'too_many_connections');
+    // Closing one frees a slot.
+    mine[0].close();
+    await sleep(500);
+    assert.equal((await upgrade(p, 9)).status, 101);
+    [...mine, ...others].forEach((c) => c.close());
+  });
+
+  await test('pipelined messages from one socket are applied in the order they were sent', async () => {
+    const a = await Client.connect('s-pipe', 1);
+    const b = await Client.connect('s-pipe', 2);
+    await seed(a);
+    // Five dependent batches (batch i is based on seq i), sent back to back WITHOUT waiting for any ack.
+    // Every one awaits a D1 membership read; without per-object FIFO handling a later one could commit
+    // first and be refused as `invalid_base`.
+    const N = 5;
+    for (let i = 0; i < N; i++) a.send(batchMsg('pipe', i, [setText('home.title-text', `pipe ${i}`)], `op-pipe-${i}-fixed`));
+    a.send({ type: 'undo', op_id: 'op-pipe-undo-fixed', target_seq: N }); // depends on seq N existing
+    a.send({ type: 'ping' });
+    const acks = [];
+    for (let i = 0; i <= N; i++) acks.push(await a.next((m) => m.type === 'ack' || m.type === 'error' || m.type === 'conflict'));
+    assert.deepEqual(acks.map((m) => [m.type, m.seq]), [...Array(N + 1).keys()].map((i) => ['ack', i + 1]), JSON.stringify(acks));
+    // The ping that followed them is answered after them, with the final head.
+    assert.equal((await a.next((m) => m.type === 'pong')).head_seq, N + 1);
+    // The other client received the entries in exactly send order.
+    const seen = [];
+    for (let i = 0; i <= N; i++) seen.push((await b.next((m) => m.type === 'entry')).seq);
+    assert.deepEqual(seen, [1, 2, 3, 4, 5, 6]);
+    assert.equal(titleOf(await a.doc()), 'pipe 3', 'the undo of the last batch ran last');
+    // Interleaved pipelines from two sockets keep each socket's own order.
+    for (let i = 0; i < 4; i++) {
+      a.send(batchMsg('pa', 6, [setAttr('home.hero', `data-a${i}`, String(i))], `op-pipe-a${i}-fixed`));
+      b.send(batchMsg('pb', 6, [setAttr('home.lede', `data-b${i}`, String(i))], `op-pipe-b${i}-fixed`));
+    }
+    const ackA = [];
+    const ackB = [];
+    for (let i = 0; i < 4; i++) {
+      ackA.push((await a.next((m) => m.type === 'ack' || m.type === 'conflict' || m.type === 'error')));
+      ackB.push((await b.next((m) => m.type === 'ack' || m.type === 'conflict' || m.type === 'error')));
+    }
+    for (const m of [...ackA, ...ackB]) assert.equal(m.type, 'ack', JSON.stringify(m));
+    assert.ok(ackA.every((m, i) => i === 0 || m.seq > ackA[i - 1].seq), 'a: acks in send order');
+    assert.ok(ackB.every((m, i) => i === 0 || m.seq > ackB[i - 1].seq), 'b: acks in send order');
+    a.close();
+    b.close();
+  });
+
+  await test('revoke_user (Worker -> DO): closes that user\'s sockets at once; an edit racing the revocation is never applied after it', async () => {
+    const a = await Client.connect('s-race', 1);
+    await seed(a);
+    const victim = await Client.connect('s-race', 2);
+    const bystander = await Client.connect('s-race', 3);
+    const r0 = await dev('POST', 'revoke/ws-a/s-race/2');
+    assert.deepEqual([r0.status, r0.body], [200, { revoked: true }]);
+    const told = await victim.next((m) => m.type === 'revoked');
+    assert.equal(told.reason, 'credential_revoked');
+    // The close event can lag the close frame in the local runtime (see the membership test below);
+    // when it is reported it must be 4403.
+    const closed = await Promise.race([victim.closedP, sleep(2000).then(() => null)]);
+    if (closed) assert.equal(closed.code, 4403);
+    // Only that user's sockets: the bystander and owner keep working, and membership is unchanged,
+    // so the revoked user can reconnect (revocation is of the credential, not of membership).
+    await edit(bystander, 0, [setText('home.title-text', 'bystander edit')], 'race');
+    await a.next((m) => m.type === 'entry' && m.seq === 1);
+    const again = await Client.connect('s-race', 2);
+    again.close();
+
+    // The race: a batch is in flight (it awaits D1) while the credential is revoked. Whatever the
+    // interleaving, the edit is either acked BEFORE the `revoked` frame or refused: never applied after it,
+    // and the owner (a delivery target) sees an entry only for what was acked.
+    let head = 1;
+    let acked = 0;
+    const ROUNDS = 16;
+    for (let round = 0; round < ROUNDS; round++) {
+      const e = await Client.connect('s-race', 2);
+      // Vary who goes first and by how much, so the revocation lands at different points of the
+      // edit's pipeline (before its D1 membership read, during it, or after the commit).
+      const gap = (round >> 1) % 4;
+      let revoke;
+      if (round % 2 === 0) {
+        e.send(batchMsg('race', head, [setText('home.title-text', `race ${round}`)]));
+        revoke = sleep(gap).then(() => dev('POST', 'revoke/ws-a/s-race/2'));
+      } else {
+        revoke = dev('POST', 'revoke/ws-a/s-race/2');
+        await sleep(gap);
+        if (e.ws.readyState === 1) e.send(batchMsg('race', head, [setText('home.title-text', `race ${round}`)]));
+      }
+      const rev = await revoke;
+      assert.equal(rev.status, 200);
+      await e.next((m) => m.type === 'revoked', 5000);
+      await sleep(600);
+      const kinds = e.log.map((m) => m.type).filter((t) => ['ack', 'revoked', 'error', 'conflict'].includes(t));
+      const iRev = kinds.indexOf('revoked');
+      assert.ok(iRev >= 0, JSON.stringify(kinds));
+      assert.ok(!kinds.slice(iRev + 1).includes('ack'), `an edit was acknowledged after revocation: ${JSON.stringify(kinds)}`);
+      const ack = e.log.find((m) => m.type === 'ack');
+      if (ack) {
+        acked++;
+        head = ack.seq;
+        const entry = await a.next((m) => m.type === 'entry' && m.seq === ack.seq);
+        assert.equal(entry.user_id, 2);
+      } else {
+        await a.none((m) => m.type === 'entry' && m.user_id === 2, 300);
+      }
+      assert.equal((await a.request({ type: 'ping' }, (m) => m.type === 'pong')).head_seq, head, `round ${round}: log head equals the last acked edit`);
+    }
+    console.log(`         ${acked}/${ROUNDS} racing edits were acked before the revocation; the rest were refused`);
+
+    // Deterministic window: with membership reads slowed to 400 ms the edit is parked awaiting its own
+    // membership recheck and the revocation lands INSIDE that await. The pre-await attachment copy must
+    // not be written back (that used to reset `revoked` to false and let the edit through).
+    const racing = await Client.connect('s-race', 2);
+    const watcher = await Client.connect('s-race', 3);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-race/slow')).status, 200);
+    const base = (await a.request({ type: 'ping' }, (m) => m.type === 'pong')).head_seq;
+    racing.send(batchMsg('race', base, [setText('home.title-text', 'parked during recheck')]));
+    await sleep(150);
+    assert.equal((await dev('POST', 'revoke/ws-a/s-race/2')).status, 200);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-race/up')).status, 200);
+    await racing.next((m) => m.type === 'revoked', 5000);
+    await sleep(1200); // let the parked handler resume
+    assert.equal(racing.log.some((m) => m.type === 'ack'), false, 'the parked edit must not be acked after revocation');
+    assert.equal(a.log.some((m) => m.type === 'entry' && m.seq > base), false, 'nothing was broadcast');
+    assert.equal(watcher.log.some((m) => m.type === 'entry' && m.seq > base), false);
+    assert.equal((await a.request({ type: 'ping' }, (m) => m.type === 'pong')).head_seq, base, 'the parked edit was not applied');
+    console.log('         an edit parked in its membership recheck was refused when the revocation landed meanwhile');
+    watcher.close();    // After a revocation lands, an edit on the dead socket is never applied.
+    victim.send(batchMsg('race', head, [setText('home.title-text', 'from a revoked socket')]));
+    await sleep(500);
+    assert.equal((await a.request({ type: 'ping' }, (m) => m.type === 'pong')).head_seq, head);
+    [a, bystander].forEach((c) => c.close());
+  });
+
+  await test('transactionSync: DO SQL is available and a failed body rolls its writes back', async () => {
+    const r = await dev('POST', 'tx-probe/ws-a/s-dev');
+    assert.equal(r.status, 200, JSON.stringify(r));
+    assert.deepEqual(r.body, { transaction_sync_available: true, rows_after_failed_body: 0 });
+    console.log(`         ${JSON.stringify(r.body)}`);
+  });
+
+  await test('D1 unavailable: edits and stale reads fail closed (sockets stay open, nothing applied or broadcast); service resumes', async () => {
+    const a = await Client.connect('s-d1', 1);
+    const b = await Client.connect('s-d1', 2);
+    await seed(a);
+    await edit(a, 0, [setText('home.title-text', 'before outage')], 'd1');
+    await b.next((m) => m.type === 'entry' && m.seq === 1);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-d1/down')).status, 200);
+    await sleep(1300); // the cached verification (recheck interval 1 s) is now stale
+    const refused = await a.request(batchMsg('d1', 1, [setText('home.title-text', 'during outage')]), (m) => m.type === 'error' || m.type === 'ack');
+    assert.equal(refused.type, 'error');
+    assert.equal(refused.code, 'unavailable', 'membership could not be verified: fail closed');
+    b.queue = b.queue.filter((m) => m.type !== 'state'); // drop the seed broadcast
+    const readRefused = await b.request({ type: 'sync' }, (m) => m.type === 'error' || m.type === 'state');
+    assert.equal(readRefused.code, 'unavailable', `a stale cached role is not trusted for reads either: ${JSON.stringify(readRefused).slice(0, 200)}`);
+    await b.none((m) => m.type === 'entry', 300);
+    assert.equal(a.closeInfo, null, 'an outage does not close sockets');
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-d1/up')).status, 200);
+    const ok = await edit(a, 1, [setText('home.title-text', 'after outage')], 'd1');
+    assert.equal(ok.seq, 2, 'the refused edit left no trace');
+    assert.equal((await b.next((m) => m.type === 'entry')).seq, 2);
+    a.close();
+    b.close();
+  });
+
+  await test('checkpoint_backlog (DO level): with the D1 write failing, edits are refused 200 commands past the last checkpoint and resume once it lands', async () => {
+    const a = await Client.connect('s-backlog', 1);
+    await seed(a);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-backlog/checkpoint')).status, 200);
+    let head = 0;
+    let refused = null;
+    for (let i = 0; i < 300 && !refused; i++) {
+      const m = await a.request(batchMsg('bk', head, [setText('home.title-text', `bk ${i}`)]), (x) => x.type === 'ack' || x.type === 'error');
+      if (m.type === 'ack') head = m.seq;
+      else refused = m;
+    }
+    assert.ok(refused, 'edits were never refused');
+    assert.equal(refused.code, 'checkpoint_backlog');
+    assert.equal(head, 250, 'refused exactly 200 commands after the checkpoint at seq 50');
+    assert.equal(revisions('s-backlog').length, 0, 'D1 never received the checkpoint');
+    assert.equal(a.closeInfo, null);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-backlog/up')).status, 200);
+    // An explicit save resolves the outstanding row first (so the wedge clears at once), then checkpoints.
+    const saved = await a.request({ type: 'checkpoint', reason: 'save' }, (m) => m.type === 'checkpoint' && m.seq === 250);
+    assert.equal(saved.status, 'written');
+    assert.deepEqual(revisions('s-backlog').map((r) => r.revision), [1, 2], 'the pending seq-50 row and the seq-250 row, each exactly once');
+    const ok = await edit(a, 250, [setText('home.title-text', 'resumed')], 'bk');
+    assert.equal(ok.seq, 251);
+    a.close();
+  });
+
+  await test('a checkpoint that can never be written: re-attributed to the workspace owner, or dropped with an alert so edits resume', async () => {
+    // (a) The recorded author is refused by D1 (a constraint violation, standing in for a deleted user):
+    // the checkpoint is re-attributed to the workspace owner and written.
+    d1File(`CREATE TRIGGER t_perm_author BEFORE INSERT ON site_revisions WHEN NEW.created_by <> 1 BEGIN SELECT RAISE(ABORT, 'constraint failed: author not permitted (test)'); END;`);
+    try {
+      const o = await Client.connect('s-perm', 1);
+      const ed = await Client.connect('s-perm', 2);
+      await seed(o);
+      let head = 0;
+      for (let i = 0; i < 50; i++) head = (await edit(ed, head, [setText('home.title-text', `perm ${i}`)], 'pm')).seq;
+      const written = await o.next((m) => m.type === 'checkpoint' && m.seq === 50, 15_000);
+      assert.equal(written.status, 'written');
+      const rows = revisions('s-perm');
+      assert.deepEqual(rows.map((r) => r.created_by), [1], 'written as the owner, not the refused author');
+      o.close();
+      ed.close();
+    } finally {
+      d1File('DROP TRIGGER IF EXISTS t_perm_author;');
+    }
+    // (b) Refused whoever the author is: dropped so the site is not wedged; edits keep working.
+    d1File(`CREATE TRIGGER t_perm_all BEFORE INSERT ON site_revisions BEGIN SELECT RAISE(ABORT, 'constraint failed: unwritable (test)'); END;`);
+    try {
+      const o = await Client.connect('s-abandon', 1);
+      await seed(o);
+      let head = 0;
+      for (let i = 0; i < 50; i++) head = (await edit(o, head, [setText('home.title-text', `ab ${i}`)], 'ab')).seq;
+      const dropped = await o.next((m) => m.type === 'checkpoint' && m.seq === 50, 15_000);
+      assert.equal(dropped.status, 'abandoned');
+      assert.deepEqual(revisions('s-abandon'), []);
+      // Not wedged: edits continue well past where the backlog guard would have refused (200).
+      for (let i = 0; i < 12; i++) head = (await edit(o, head, [setText('home.title-text', `ab-after ${i}`)], 'ab')).seq;
+      assert.equal(head, 62);
+      // When the cause is fixed, an explicit save writes a fresh checkpoint.
+      d1File('DROP TRIGGER IF EXISTS t_perm_all;');
+      const save = await o.request({ type: 'checkpoint', reason: 'save' }, (m) => m.type === 'checkpoint' && m.seq === head);
+      assert.equal(save.status, 'written');
+      assert.equal(revisions('s-abandon').length, 1);
+      o.close();
+    } finally {
+      d1File('DROP TRIGGER IF EXISTS t_perm_all;');
+    }
+  });
+
+  await test('checkpoint revisions stay recoverable: unchanged publish names the last revision; publish and latest checkpoint bytes are fetchable by id', async () => {
+    const a = await Client.connect('s-retain', 8); // a publisher
+    await seed(a);
+    let head = 0;
+    for (let i = 0; i < 2; i++) head = (await edit(a, head, [setText('home.title-text', `r ${i}`)], 'rt')).seq;
+    const save = await a.request({ type: 'checkpoint', reason: 'save' }, (m) => m.type === 'checkpoint');
+    assert.equal(save.status, 'written');
+    assert.match(save.revision_id, /^ck-[0-9a-f]{24}$/);
+    head = (await edit(a, head, [setText('home.title-text', 'to publish')], 'rt')).seq;
+    const pub = await a.request({ type: 'checkpoint', reason: 'publish' }, (m) => m.type === 'checkpoint' && m.reason === 'publish');
+    assert.equal(pub.status, 'written');
+    // Publishing again with nothing new: `unchanged` names that same revision (never an empty id).
+    const again = await a.request({ type: 'checkpoint', reason: 'publish' }, (m) => m.type === 'checkpoint' && m.status === 'unchanged');
+    assert.equal(again.revision_id, pub.revision_id);
+    assert.equal(again.seq, pub.seq);
+    // The id is the D1 row id, and its bytes are fetchable (the contract #64 consumes).
+    const rows = revisions('s-retain');
+    assert.equal(rows.at(-1).id, pub.revision_id);
+    const got = await dev('GET', `revision/ws-a/s-retain/${pub.revision_id}`);
+    assert.equal(got.status, 200, JSON.stringify(got));
+    assert.equal(sha256(got.body.document), rows.at(-1).ir_sha256, 'the bytes hash to the revision\'s ir_sha256');
+    assert.equal(got.body.seq, pub.seq);
+    // 50 more commands: an automatic checkpoint becomes the latest, the publish snapshot is still kept,
+    // and the older non-publish checkpoint is gone (retention is bounded).
+    for (let i = 0; i < 50; i++) head = (await edit(a, head, [setText('home.title-text', `m ${i}`)], 'rt')).seq;
+    const auto = await a.next((m) => m.type === 'checkpoint' && m.status === 'written' && m.reason === 'auto');
+    assert.equal((await dev('GET', `revision/ws-a/s-retain/${pub.revision_id}`)).status, 200, 'latest publish still retained');
+    assert.equal((await dev('GET', `revision/ws-a/s-retain/${auto.revision_id}`)).status, 200, 'latest checkpoint retained');
+    assert.equal((await dev('GET', `revision/ws-a/s-retain/${save.revision_id}`)).status, 404, 'older non-publish snapshot dropped');
+    assert.equal((await dev('GET', 'revision/ws-a/s-retain/ck-000000000000000000000000')).status, 404);
+    a.close();
+  });
+
   await test('s-persist: build up state that must survive the restart', async () => {
     const a = await Client.connect('s-persist', 1);
     const b = await Client.connect('s-persist', 2);
@@ -704,9 +1047,11 @@ async function main() {
     console.log(`starting wrangler dev on :${PORT} (builds the insecure-dev-auth Worker on first run) ...`);
     await startServer(FAST);
     const persist = await phase1();
-    await stopServer();
-    await startServer([]);
-    await phase2(persist);
+    if (!ONLY) {
+      await stopServer();
+      await startServer([]);
+      await phase2(persist);
+    }
     const failed = results.filter((r) => !r.ok);
     console.log(`\n${results.length - failed.length}/${results.length} session tests passed`);
     code = failed.length ? 1 : 0;

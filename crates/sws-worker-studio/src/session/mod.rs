@@ -19,13 +19,17 @@
 
 pub mod attach;
 pub mod authz;
+pub mod devfence;
 pub mod engine;
+pub mod fifo;
 pub mod protocol;
 pub mod rebase;
 pub mod sha256;
 pub mod sql;
 pub mod store;
 
+#[cfg(all(target_arch = "wasm32", feature = "insecure-dev-auth"))]
+pub mod dev;
 #[cfg(target_arch = "wasm32")]
 pub mod do_store;
 #[cfg(target_arch = "wasm32")]
@@ -37,6 +41,51 @@ pub mod object;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod origin_tests {
+    use super::origin_allowed;
+
+    #[test]
+    fn upgrade_origin_must_match_the_public_origin() {
+        let p = Some("https://studio.example");
+        assert!(origin_allowed(None, p), "CLI/MCP clients send no Origin");
+        assert!(origin_allowed(None, None));
+        assert!(origin_allowed(Some("https://studio.example"), p));
+        assert!(origin_allowed(
+            Some("https://studio.example"),
+            Some("https://studio.example/")
+        ));
+        for bad in [
+            "https://evil.example",
+            "http://studio.example",
+            "https://studio.example:8443",
+            "https://studio.example.evil.example",
+            "null",
+            "",
+        ] {
+            assert!(!origin_allowed(Some(bad), p), "{bad}");
+        }
+        assert!(!origin_allowed(Some("https://studio.example"), None));
+        assert!(!origin_allowed(Some("https://studio.example"), Some("")));
+    }
+
+    #[test]
+    fn idle_sweep_is_long_by_default_and_capped() {
+        use super::*;
+        let d = SessionConfig::default();
+        assert!(d.idle_sweep_ms >= 60_000);
+        assert!(d.idle_sweep_ms > d.authz_recheck_ms);
+        let c = SessionConfig::from_vars(None, None, Some("99999999"));
+        assert_eq!(c.idle_sweep_ms, MAX_IDLE_SWEEP_MS);
+        assert_eq!(
+            SessionConfig::from_vars(None, None, Some("1")).idle_sweep_ms,
+            250
+        );
+        // Delivery to a removed member is bounded by the gate, whatever the sweep does.
+        const { assert!(2 * MAX_AUTHZ_RECHECK_MS <= 60_000) };
+    }
+}
 
 #[cfg(test)]
 mod close_code_tests {
@@ -88,9 +137,19 @@ pub const PRESENCE_MIN_INTERVAL_MS: i64 = 50;
 /// Defaults and clamps for the two operational knobs (Worker vars).
 pub const DEFAULT_PRESENCE_TTL_MS: i64 = 30_000;
 pub const DEFAULT_AUTHZ_RECHECK_MS: i64 = 15_000;
-/// Documented upper bound for the membership recheck interval (and the
-/// worst-case delivery window after a membership removal, plus the alarm tick).
+/// Upper bound for the membership recheck interval. The delivery gate is twice
+/// the interval ([`authz::delivery_allowed`]), so the worst-case time a removed
+/// member can still be sent anything is `2 * MAX_AUTHZ_RECHECK_MS` = 60 s,
+/// independent of when the object next wakes.
 pub const MAX_AUTHZ_RECHECK_MS: i64 = 30_000;
+/// Idle membership sweep (alarm) cadence while sockets are attached. Deliberately
+/// long so an idle site can hibernate between sweeps (the object is billed for
+/// wall-clock time while awake); security does not depend on it, because
+/// delivery is gated by the age of each socket's last verification and every
+/// state-changing message re-reads membership. The sweep only closes idle
+/// sockets of removed members.
+pub const DEFAULT_IDLE_SWEEP_MS: i64 = 60_000;
+pub const MAX_IDLE_SWEEP_MS: i64 = 120_000;
 
 /// Application close codes (4000-4999 are reserved for applications).
 pub const CLOSE_PROTOCOL: u16 = 4400;
@@ -111,16 +170,31 @@ pub const H_CREDENTIAL: &str = "X-Sws-Internal-Credential";
 /// Internal DO paths.
 pub const PATH_SESSION: &str = "/session";
 pub const PATH_REVOKE: &str = "/internal/revoke";
+/// `GET /internal/revision?id=<revision_id>`: the snapshot bytes of a checkpoint (#64).
+pub const PATH_REVISION: &str = "/internal/revision";
+/// Test-build only: prove DO SQL `transactionSync` commits and rolls back.
+#[cfg(feature = "insecure-dev-auth")]
+pub const PATH_TX_PROBE: &str = "/internal/tx-probe";
+/// Test-build only: `POST /internal/d1-fault?mode=down|checkpoint|up` makes this object's D1
+/// calls (down: membership reads and checkpoint writes; checkpoint: writes only) fail,
+/// or (slow) every membership read takes 400 ms, to prove fail-closed behaviour.
+#[cfg(feature = "insecure-dev-auth")]
+pub const PATH_D1_FAULT: &str = "/internal/d1-fault";
 
 /// Operational settings read from Worker vars, clamped to safe ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionConfig {
     pub presence_ttl_ms: i64,
     pub authz_recheck_ms: i64,
+    pub idle_sweep_ms: i64,
 }
 
 impl SessionConfig {
-    pub fn from_vars(presence_ttl: Option<&str>, authz_recheck: Option<&str>) -> Self {
+    pub fn from_vars(
+        presence_ttl: Option<&str>,
+        authz_recheck: Option<&str>,
+        idle_sweep: Option<&str>,
+    ) -> Self {
         let get = |v: Option<&str>, default: i64, lo: i64, hi: i64| {
             v.and_then(|s| s.trim().parse::<i64>().ok())
                 .map_or(default, |n| n.clamp(lo, hi))
@@ -133,14 +207,26 @@ impl SessionConfig {
                 250,
                 MAX_AUTHZ_RECHECK_MS,
             ),
+            idle_sweep_ms: get(idle_sweep, DEFAULT_IDLE_SWEEP_MS, 250, MAX_IDLE_SWEEP_MS),
         }
     }
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
-        Self::from_vars(None, None)
+        Self::from_vars(None, None, None)
     }
+}
+
+/// Browser-origin gate for the WebSocket upgrade (CSWSH defence). A request
+/// without an `Origin` header (CLI and MCP token clients are not browsers) is
+/// allowed; one that carries an `Origin` must equal the configured
+/// `STUDIO_PUBLIC_ORIGIN` exactly (a trailing `/` on the setting is ignored). An
+/// unset or empty setting fails closed for browser-originated requests.
+pub fn origin_allowed(origin: Option<&str>, public_origin: Option<&str>) -> bool {
+    let Some(origin) = origin else { return true };
+    let allowed = public_origin.map(|o| o.trim().trim_end_matches('/'));
+    matches!(allowed, Some(a) if !a.is_empty() && a == origin.trim())
 }
 
 /// Close code to echo back for a peer's close frame. Reserved codes (1005 "no

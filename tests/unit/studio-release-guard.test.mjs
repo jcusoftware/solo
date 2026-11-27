@@ -1,11 +1,15 @@
 // Unit tests for scripts/check-studio-release.mjs (the insecure-dev-auth release guard, #62).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   ALLOWED_SCRIPTS,
+  checkSessionsConfig,
   checkStatic,
   defaultFeatures,
+  enabledByDefault,
+  featureTable,
   enablesOnDependency,
   scanCi,
   scanPackageScripts,
@@ -45,10 +49,39 @@ describe('studio release guard', () => {
     assert.deepEqual(scanCi('run: cargo clippy -p x --features insecure-dev-auth', 'ci.yml'), []);
     assert.equal(scanCi('run: npm run studio:build -- --features insecure-dev-auth', 'ci.yml').length, 1);
     assert.deepEqual(scanCi('run: npm run studio:build', 'ci.yml'), []);
+    // The words alone are not enough: it must BE a cargo clippy/test invocation.
+    assert.equal(scanCi('run: echo cargo test --features insecure-dev-auth', 'ci.yml').length, 1);
+    assert.equal(scanCi('run: npm run studio:build && cargo test --features insecure-dev-auth', 'ci.yml').length, 1);
+    assert.equal(scanCi('run: wrangler deploy # cargo clippy insecure-dev-auth', 'ci.yml').length, 1);
+    assert.deepEqual(scanCi('  - run: cargo test -p sws-worker-studio --features insecure-dev-auth', 'ci.yml'), []);
+    assert.deepEqual(scanCi('        cargo +nightly clippy --features insecure-dev-auth', 'ci.yml'), []);
+  });
+
+  it('resolves feature aliases, so default = ["dev"] cannot hide the dev-auth feature', () => {
+    const aliased = '[features]\ndefault = ["panic", "dev"]\npanic = []\ndev = [\n  "other", # note\n  "insecure-dev-auth",\n]\ninsecure-dev-auth = []\n';
+    assert.deepEqual(featureTable(aliased).dev, ['other', 'insecure-dev-auth']);
+    assert.ok(enabledByDefault(aliased).includes('insecure-dev-auth'));
+    const chained = '[features]\ndefault = ["a"]\na = ["b"]\nb = ["insecure-dev-auth"]\ninsecure-dev-auth = []\n';
+    assert.ok(enabledByDefault(chained).includes('insecure-dev-auth'));
+    const dep = '[features]\ndefault = ["a"]\na = ["sws-worker-studio/insecure-dev-auth"]\n';
+    assert.ok(enabledByDefault(dep).includes('insecure-dev-auth'));
+    assert.ok(!enabledByDefault('[features]\ndefault = ["x"]\nx = []\ninsecure-dev-auth = []\n').includes('insecure-dev-auth'));
+    assert.ok(!enabledByDefault(readFileSync(resolve(ROOT, 'crates/sws-worker-studio/Cargo.toml'), 'utf8')).includes('insecure-dev-auth'));
+  });
+
+  it('the dev-auth test config must close workers.dev and must not set the fence var', () => {
+    assert.deepEqual(checkSessionsConfig('{ "workers_dev": false }'), []);
+    assert.equal(checkSessionsConfig('{ "workers_dev": true }').length, 1);
+    assert.equal(checkSessionsConfig('{ }').length, 1);
+    assert.equal(checkSessionsConfig('{ "workers_dev": false, "vars": { "SWS_INSECURE_DEV_AUTH": "1" } }').length, 1);
+    // A comment may explain the var without setting it.
+    assert.deepEqual(checkSessionsConfig('// SWS_INSECURE_DEV_AUTH is passed by --var\n{ "workers_dev": false }'), []);
   });
 
   it('detects the dev header name in Wasm bytes', () => {
     assert.equal(wasmHasDevAuth(Buffer.from('\0\0X-Sws-Dev-User\0')), true);
     assert.equal(wasmHasDevAuth(Buffer.from('\0\0x-sws-other\0')), false);
+    assert.equal(wasmHasDevAuth(Buffer.from('\0SWS_INSECURE_DEV_AUTH\0')), true, 'the fence var');
+    assert.equal(wasmHasDevAuth(Buffer.from('\0/api/dev/revoke\0')), true, 'the test-only routes');
   });
 });

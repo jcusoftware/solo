@@ -141,6 +141,15 @@ mod wasm {
             ));
         }
 
+        // Test-only routes: exist only in the `insecure-dev-auth` build, behind the
+        // runtime fence; every other build falls straight through.
+        #[cfg(feature = "insecure-dev-auth")]
+        if seen == 0
+            && let Some(r) = session::dev::handle(&req, env, &method, &path).await?
+        {
+            return Ok(Outcome::Raw(r));
+        }
+
         let version =
             var(env, "STUDIO_VERSION").unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
         Ok(Outcome::Local(respond::respond(&facts, seen, &version)))

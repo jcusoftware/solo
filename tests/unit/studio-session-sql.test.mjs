@@ -66,13 +66,19 @@ describe('site session Durable Object SQL', () => {
     append(7);
   });
 
-  it('keeps only the latest snapshot', () => {
+  it('keeps the latest snapshot and the retained publish snapshot only', () => {
     run('SNAPSHOT_PUT', 0, 'a', 'h0', 1);
-    run('SNAPSHOT_PUT', 50, 'b', 'h50', 2);
-    run('SNAPSHOT_DELETE_OLDER', 50);
+    run('SNAPSHOT_PUT', 20, 'p', 'h20', 2);
+    run('SNAPSHOT_PUT', 50, 'b', 'h50', 3);
+    run('SNAPSHOT_PRUNE', 50, 20);
+    assert.deepEqual(db.prepare('SELECT seq FROM snapshots ORDER BY seq').all().map((r) => r.seq), [20, 50]);
     assert.deepEqual(all('SNAPSHOT_LATEST').map((r) => ({ ...r })), [{ seq: 50, doc: 'b', sha256: 'h50' }]);
-    run('SNAPSHOT_PUT', 50, 'b2', 'h50b', 3); // re-taking a checkpoint overwrites, never duplicates
+    assert.equal(all('SNAPSHOT_GET', 20)[0].doc, 'p', 'the publish snapshot is fetchable by seq');
+    assert.equal(all('SNAPSHOT_GET', 0).length, 0);
+    run('SNAPSHOT_PUT', 50, 'b2', 'h50b', 4); // re-taking a checkpoint overwrites, never duplicates
     assert.equal(all('SNAPSHOT_LATEST')[0].doc, 'b2');
+    run('SNAPSHOT_PRUNE', 50, -1); // no retained publish snapshot
+    assert.deepEqual(db.prepare('SELECT seq FROM snapshots').all().map((r) => r.seq), [50]);
   });
 
   it('meta is one upserted JSON row', () => {
@@ -82,11 +88,12 @@ describe('site session Durable Object SQL', () => {
   });
 
   it('operation ids dedupe, expire and are capped', () => {
-    run('OP_PUT', 'op-a', 1, 1, 0, 5000);
-    run('OP_PUT', 'op-a', 1, 1, 0, 5000); // retry of the bookkeeping is harmless
+    run('OP_PUT', 'op-a', 1, 1, 0, 5000, 'hash-a');
+    run('OP_PUT', 'op-a', 1, 1, 0, 5000, 'hash-a'); // retry of the bookkeeping is harmless
+    assert.equal(all('OP_GET', 'op-a', 10)[0].payload, 'hash-a', 'the request fingerprint is stored');
     assert.equal(all('OP_GET', 'op-a', 4999).length, 1);
     assert.equal(all('OP_GET', 'op-a', 5000).length, 0, 'expired ops are invisible');
-    for (let i = 0; i < 10; i++) run('OP_PUT', `op-${i}`, 1, 10 + i, 0, 9000);
+    for (let i = 0; i < 10; i++) run('OP_PUT', `op-${i}`, 1, 10 + i, 0, 9000, `h${i}`);
     run('OP_PRUNE_EXPIRED', 6000);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM ops').get().n, 10);
     run('OP_PRUNE_EXCESS', 4);

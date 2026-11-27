@@ -5,15 +5,30 @@
 //! membership recheck and the checkpoint revision row, and one alarm for
 //! retries, compaction, presence expiry and the membership sweep.
 //!
-//! Concurrency model: awaits (D1) can interleave other events, so every
-//! state-changing message does its awaits FIRST (membership recheck, refreshing
-//! stale peers) and then commits and broadcasts in one synchronous block. That
-//! keeps log order equal to delivery order and makes the commit atomic.
+//! Concurrency model:
+//!
+//! * **Ordering.** Inbound messages are handled one at a time through a FIFO
+//!   ([`Fifo`]): a handler takes its ticket synchronously on arrival and runs only
+//!   when every earlier message has finished. So pipelined messages (a client that
+//!   sends batch N+1 before the ack of batch N) are applied in the order they were
+//!   sent, per socket and across sockets, even though handlers await D1.
+//! * **Atomic commit.** Awaits (D1) can interleave other events, so every
+//!   state-changing message does its awaits FIRST (membership recheck, refreshing
+//!   stale peers), re-checks the socket was not revoked meanwhile, and then
+//!   commits and broadcasts in one synchronous block. Each engine call runs
+//!   inside `storage.transactionSync` so its DO SQL writes commit or roll back
+//!   together.
+//! * **Revocation is sticky.** After any await the socket's attachment is read
+//!   again and merged ([`merge_membership`]); a copy taken before an await is
+//!   never written back, so a concurrent revocation cannot be undone.
 
 use std::cell::{Cell, RefCell};
 
 use serde_json::Value;
 use worker::wasm_bindgen;
+use worker::wasm_bindgen::JsCast;
+use worker::wasm_bindgen::JsValue;
+use worker::wasm_bindgen::closure::ScopedClosure;
 use worker::{
     Date, DurableObject, Env, Request, Response, Result, State, WebSocket,
     WebSocketIncomingMessage, WebSocketPair, console_error, console_log, durable_object,
@@ -22,18 +37,20 @@ use worker::{
 use crate::model::Role;
 use crate::repo;
 use crate::respond::json_error;
-use crate::session::attach::{Attachment, admit};
+use crate::session::attach::{Attachment, Refresh, admit, merge_membership};
 use crate::session::authz::{Action, allows, delivery_allowed, needs_recheck, role_from_row};
 use crate::session::do_store::DoStore;
 use crate::session::engine::{
-    Actor, CheckpointOutcome, Committed, Engine, EngineError, Rejection, SyncPlan,
+    Actor, CheckpointOutcome, Committed, Engine, EngineError, FailurePlan, Rejection, SyncPlan,
+    plan_checkpoint_failure,
 };
+use crate::session::fifo::Fifo;
 use crate::session::http::to_response;
 use crate::session::protocol::{self, CheckpointReason, ClientMessage};
 use crate::session::{
     CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_TOO_LARGE, CLOSE_UNAUTHENTICATED, CLOSE_UNSUPPORTED_DATA,
-    H_CREDENTIAL, H_ROLE, H_SITE, H_USER, H_WORKSPACE, PATH_REVOKE, PATH_SESSION, SessionConfig,
-    is_valid_id,
+    H_CREDENTIAL, H_ROLE, H_SITE, H_USER, H_WORKSPACE, PATH_REVISION, PATH_REVOKE, PATH_SESSION,
+    SessionConfig, is_valid_id,
 };
 
 type Eng = Engine<DoStore>;
@@ -66,6 +83,30 @@ pub struct SiteSession {
     instance_id: String,
     config: SessionConfig,
     flushing: Cell<bool>,
+    /// Serializes message handling (see the module docs).
+    fifo: Fifo,
+    /// Test build only: simulate a D1 outage (see `PATH_D1_FAULT`).
+    #[cfg(feature = "insecure-dev-auth")]
+    dev_d1_down: Cell<bool>,
+    /// Test build only: only checkpoint writes fail (membership reads work).
+    #[cfg(feature = "insecure-dev-auth")]
+    dev_ckpt_down: Cell<bool>,
+    /// Test build only: every membership read takes 400 ms, so a test can land a
+    /// revocation deterministically while a message is awaiting D1.
+    #[cfg(feature = "insecure-dev-auth")]
+    dev_d1_slow: Cell<bool>,
+}
+
+/// What a checkpoint flush ended with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flush {
+    /// Nothing was pending, or another flush is in flight.
+    Idle,
+    Written,
+    /// Transient failure: still pending, retried by the alarm with backoff.
+    Pending,
+    /// Permanently unwritable: dropped (with an alert) so edits resume.
+    Abandoned,
 }
 
 impl DurableObject for SiteSession {
@@ -74,6 +115,7 @@ impl DurableObject for SiteSession {
         let config = SessionConfig::from_vars(
             var("SESSION_PRESENCE_TTL_MS").as_deref(),
             var("SESSION_AUTHZ_RECHECK_MS").as_deref(),
+            var("SESSION_IDLE_SWEEP_MS").as_deref(),
         );
         Self {
             state,
@@ -82,6 +124,13 @@ impl DurableObject for SiteSession {
             instance_id: random_hex(8),
             config,
             flushing: Cell::new(false),
+            fifo: Fifo::new(),
+            #[cfg(feature = "insecure-dev-auth")]
+            dev_d1_down: Cell::new(false),
+            #[cfg(feature = "insecure-dev-auth")]
+            dev_ckpt_down: Cell::new(false),
+            #[cfg(feature = "insecure-dev-auth")]
+            dev_d1_slow: Cell::new(false),
         }
     }
 
@@ -102,6 +151,52 @@ impl DurableObject for SiteSession {
                 let n = self.revoke_user(body.user_id).await;
                 Response::from_json(&serde_json::json!({ "closed": n }))
             }
+            ("GET", PATH_REVISION) => {
+                let id = req
+                    .url()
+                    .ok()
+                    .and_then(|u| {
+                        u.query_pairs()
+                            .find(|(k, _)| k == "id")
+                            .map(|(_, v)| v.to_string())
+                    })
+                    .filter(|id| is_valid_id(id));
+                let Some(id) = id else {
+                    return to_response(json_error(400, "bad_request", &[]));
+                };
+                let snap = self
+                    .with(None, |e| e.revision_snapshot(&id))
+                    .await?
+                    .map_err(engine_err)?;
+                match snap {
+                    Some(s) => Response::from_json(&serde_json::json!({
+                        "revision_id": id,
+                        "seq": s.seq,
+                        "sha256": s.sha256,
+                        "document": s.doc,
+                    })),
+                    None => to_response(json_error(404, "not_found", &[])),
+                }
+            }
+            #[cfg(feature = "insecure-dev-auth")]
+            ("POST", crate::session::PATH_TX_PROBE) => self.tx_probe().await,
+            #[cfg(feature = "insecure-dev-auth")]
+            ("POST", crate::session::PATH_D1_FAULT) => {
+                let mode = req
+                    .url()
+                    .ok()
+                    .and_then(|u| {
+                        u.query_pairs()
+                            .find(|(k, _)| k == "mode")
+                            .map(|(_, v)| v.to_string())
+                    })
+                    .unwrap_or_default();
+                self.dev_d1_down.set(mode == "down");
+                self.dev_d1_slow.set(mode == "slow");
+                self.dev_ckpt_down
+                    .set(mode == "down" || mode == "checkpoint");
+                Response::from_json(&serde_json::json!({ "mode": mode }))
+            }
             _ => to_response(json_error(404, "not_found", &[])),
         }
     }
@@ -115,7 +210,7 @@ impl DurableObject for SiteSession {
             self.broadcast_presence(now);
         }
         // 2. Membership sweep: every connection, so a removed member is closed
-        //    even if nobody is sending.
+        //    even if nobody is sending. (Cadence: `idle_sweep_ms`, see `ensure_alarm`.)
         self.recheck_peers(now, true).await;
         // 3. Retry the D1 checkpoint row if one is outstanding (idempotent).
         self.flush_pending().await;
@@ -136,6 +231,9 @@ impl DurableObject for SiteSession {
         ws: WebSocket,
         message: WebSocketIncomingMessage,
     ) -> Result<()> {
+        // The ticket is taken before the first await, i.e. in arrival order.
+        let turn = self.fifo.enter();
+        let _held = turn.await;
         let text = match message {
             WebSocketIncomingMessage::String(s) => s,
             WebSocketIncomingMessage::Binary(_) => {
@@ -222,7 +320,13 @@ impl SiteSession {
     // --- engine access ------------------------------------------------------
 
     /// Open the engine on first use (rebuilding from DO SQL after eviction), then
-    /// run `f` synchronously. `identity` is `Some` on a fresh connection.
+    /// run `f` synchronously inside one `transactionSync`, so its DO SQL writes
+    /// commit together or not at all. `identity` is `Some` on a fresh connection.
+    ///
+    /// A storage failure rolls the transaction back AND drops the cached engine,
+    /// so the next call rebuilds from durable state: memory is never trusted
+    /// after a partial failure. `f`'s own result is still returned to the caller
+    /// (it carries the client-facing `unavailable` rejection).
     async fn with<T>(
         &self,
         identity: Option<(&str, &str)>,
@@ -250,11 +354,64 @@ impl SiteSession {
                 Engine::open(store, &w, &s).map_err(|e| worker::Error::RustError(e.to_string()))?;
             *self.engine.borrow_mut() = Some(engine);
         }
-        let mut guard = self.engine.borrow_mut();
-        let engine = guard
-            .as_mut()
-            .ok_or_else(|| worker::Error::RustError("engine unavailable".into()))?;
-        Ok(f(engine))
+        let mut f = Some(f);
+        let mut out: Option<T> = None;
+        let mut failed = false;
+        let mut body = || -> std::result::Result<JsValue, JsValue> {
+            let mut guard = self.engine.borrow_mut();
+            let Some(engine) = guard.as_mut() else {
+                return Err(JsValue::from_str("engine unavailable"));
+            };
+            if let Some(f) = f.take() {
+                out = Some(f(engine));
+            }
+            if engine.store_failed() {
+                failed = true;
+                return Err(JsValue::from_str("storage failure: rolling back"));
+            }
+            Ok(JsValue::UNDEFINED)
+        };
+        self.transaction_sync(&mut body);
+        if failed {
+            console_error!("session storage failed; transaction rolled back, engine dropped");
+            *self.engine.borrow_mut() = None;
+        }
+        out.ok_or_else(|| worker::Error::RustError("engine unavailable".into()))
+    }
+
+    /// `ctx.storage.transactionSync(body)`: all DO SQL the body issues commits
+    /// together; a thrown error (an `Err` from `body`) rolls them all back.
+    /// workers-rs 0.9 does not wrap this API, so it is called through JS.
+    /// Without the API (very old runtime) the body runs unwrapped and the caller
+    /// still drops its cached engine on failure.
+    fn transaction_sync<F>(&self, body: &mut F)
+    where
+        F: FnMut() -> std::result::Result<JsValue, JsValue>,
+    {
+        let storage: Option<(JsValue, worker::js_sys::Function)> = self
+            .state
+            .as_raw()
+            .storage()
+            .ok()
+            .map(JsValue::from)
+            .and_then(|st| {
+                worker::js_sys::Reflect::get(&st, &JsValue::from_str("transactionSync"))
+                    .ok()
+                    .and_then(|f| f.dyn_into::<worker::js_sys::Function>().ok())
+                    .map(|f| (st, f))
+            });
+        match storage {
+            Some((st, func)) => {
+                let closure =
+                    ScopedClosure::<dyn FnMut() -> std::result::Result<JsValue, JsValue>>::borrow_mut_assert_unwind_safe(body);
+                // An Err here is the rollback signal thrown by `body`.
+                let _ = func.call1(&st, closure.as_ref());
+            }
+            None => {
+                console_error!("storage.transactionSync is unavailable; writes are not atomic");
+                let _ = body();
+            }
+        }
     }
 
     fn identity(&self) -> Option<(String, String)> {
@@ -344,11 +501,30 @@ impl SiteSession {
             .identity()
             .ok_or_else(|| worker::Error::RustError("session is not initialised".into()))?;
         // #65: also validate the session/token behind `att.credential` here.
+        #[cfg(feature = "insecure-dev-auth")]
+        {
+            if self.dev_d1_down.get() {
+                return Err(worker::Error::RustError("simulated D1 outage".into()));
+            }
+            if self.dev_d1_slow.get() {
+                worker::Delay::from(std::time::Duration::from_millis(400)).await;
+            }
+        }
         let db = crate::d1::database(&self.env)?;
         let row = crate::d1::first(&db, &repo::membership_get(&workspace_id, user_id)).await?;
         Ok(row.as_ref().and_then(role_from_row))
     }
 
+    /// The socket's attachment as it is RIGHT NOW, unless it was revoked.
+    fn live(&self, ws: &WebSocket) -> Option<Attachment> {
+        ws.deserialize_attachment::<Attachment>()
+            .ok()
+            .flatten()
+            .filter(|a| !a.revoked)
+    }
+
+    /// Mark revoked, tell the peer and close. Synchronous: the read that fed `att`
+    /// and this write have no await between them.
     fn revoke_socket(&self, ws: &WebSocket, att: Attachment, reason: &str) {
         let mut a = att;
         a.revoked = true;
@@ -357,20 +533,34 @@ impl SiteSession {
         let _ = ws.close(Some(CLOSE_REVOKED), Some(reason));
     }
 
-    /// Re-read membership for `ws`'s user and update/close the socket.
-    /// `Ok(Some(role))` = still allowed.
-    async fn recheck(&self, ws: &WebSocket, att: &Attachment, now: i64) -> Result<Option<Role>> {
-        match self.fetch_role(att.user_id).await? {
-            Some(role) => {
-                let _ = ws.serialize_attachment(att.clone().refreshed(role, now));
-                Ok(Some(role))
+    /// Apply a membership result (read BEFORE the caller's await) to the socket's
+    /// attachment as it is now. Never writes back a pre-await copy: a revocation
+    /// that happened meanwhile stays revoked. `Ok(Some(role))` = still allowed.
+    async fn apply_membership(&self, ws: &WebSocket, role: Option<Role>, now: i64) -> Option<Role> {
+        let fresh = ws.deserialize_attachment::<Attachment>().ok().flatten();
+        match merge_membership(fresh, role, now) {
+            Refresh::Gone => None,
+            Refresh::Member(a) => {
+                let _ = ws.serialize_attachment(&a);
+                role
             }
-            None => {
-                self.revoke_socket(ws, att.clone(), "membership_revoked");
-                self.drop_presence(&att.client_id).await;
-                Ok(None)
+            Refresh::Removed(a) => {
+                let client = a.client_id.clone();
+                self.revoke_socket(ws, a, "membership_revoked");
+                self.drop_presence(&client).await;
+                None
             }
         }
+    }
+
+    /// Re-read membership for `ws`'s user and update/close the socket.
+    /// `Ok(Some(role))` = still allowed; `Ok(None)` = revoked/closed (now or earlier).
+    async fn recheck(&self, ws: &WebSocket, now: i64) -> Result<Option<Role>> {
+        let Some(before) = self.live(ws) else {
+            return Ok(None);
+        };
+        let role = self.fetch_role(before.user_id).await?;
+        Ok(self.apply_membership(ws, role, now).await)
     }
 
     /// Refresh every other connection whose last check is older than the
@@ -378,13 +568,10 @@ impl SiteSession {
     async fn recheck_peers(&self, now: i64, force: bool) {
         let mut seen: Vec<(i64, Option<Role>)> = Vec::new();
         for ws in self.state.get_websockets() {
-            let Ok(Some(att)) = ws.deserialize_attachment::<Attachment>() else {
+            let Some(att) = self.live(&ws) else {
                 continue;
             };
-            if att.revoked
-                || !(force
-                    || needs_recheck(now, att.authz_checked_ms, self.config.authz_recheck_ms))
-            {
+            if !(force || needs_recheck(now, att.authz_checked_ms, self.config.authz_recheck_ms)) {
                 continue;
             }
             let role = match seen.iter().find(|(u, _)| *u == att.user_id) {
@@ -400,16 +587,7 @@ impl SiteSession {
                     }
                 },
             };
-            match role {
-                Some(r) => {
-                    let _ = ws.serialize_attachment(att.refreshed(r, now));
-                }
-                None => {
-                    let client = att.client_id.clone();
-                    self.revoke_socket(&ws, att, "membership_revoked");
-                    self.drop_presence(&client).await;
-                }
-            }
+            self.apply_membership(&ws, role, now).await;
         }
     }
 
@@ -417,7 +595,8 @@ impl SiteSession {
     async fn revoke_user(&self, user_id: i64) -> usize {
         let mut n = 0;
         for ws in self.state.get_websockets_with_tag(&user_tag(user_id)) {
-            if let Ok(Some(att)) = ws.deserialize_attachment::<Attachment>() {
+            // Fresh read, immediate write: no await in between.
+            if let Some(att) = self.live(&ws) {
                 let client = att.client_id.clone();
                 self.revoke_socket(&ws, att, "credential_revoked");
                 self.drop_presence(&client).await;
@@ -494,9 +673,9 @@ impl SiteSession {
                     .is_some_and(|a| !a.revoked)
             })
             .count();
-        let recheck = self.config.authz_recheck_ms;
+        let sweep = self.config.idle_sweep_ms;
         let at = match self
-            .with(None, |e| e.next_alarm(now, connections, recheck))
+            .with(None, |e| e.next_alarm(now, connections, sweep))
             .await
         {
             Ok(Ok(at)) => at,
@@ -517,61 +696,114 @@ impl SiteSession {
 
     /// Write the pending revision row to D1, once. Safe to call from anywhere,
     /// repeatedly: the id is deterministic and the insert ignores an `id` conflict.
-    /// Returns true when nothing is pending afterwards.
-    async fn flush_pending(&self) -> bool {
+    async fn flush_pending(&self) -> Flush {
         if self.flushing.replace(true) {
-            return false;
+            return Flush::Idle;
         }
         let result = self.flush_inner().await;
         self.flushing.set(false);
         result
     }
 
-    async fn flush_inner(&self) -> bool {
-        let snapshot = {
-            let g = self.engine.borrow();
-            g.as_ref().and_then(|e| {
-                e.pending().map(|p| {
-                    (
-                        e.meta().workspace_id.clone(),
-                        e.meta().site_id.clone(),
-                        p.clone(),
-                    )
+    /// The workspace owner (author of last resort for a checkpoint whose author
+    /// can no longer be referenced). `Err` = D1 unavailable.
+    async fn fetch_owner(&self, workspace_id: &str) -> Result<Option<i64>> {
+        let db = crate::d1::database(&self.env)?;
+        let row = crate::d1::first(&db, &repo::membership_owner(workspace_id)).await?;
+        Ok(row
+            .as_ref()
+            .and_then(|r| r.get("user_id"))
+            .and_then(Value::as_i64))
+    }
+
+    async fn flush_inner(&self) -> Flush {
+        // Two rounds: a permanent failure may be fixed once by re-attribution.
+        for _ in 0..2 {
+            let snapshot = {
+                let g = self.engine.borrow();
+                g.as_ref().and_then(|e| {
+                    e.pending().map(|p| {
+                        (
+                            e.meta().workspace_id.clone(),
+                            e.meta().site_id.clone(),
+                            p.clone(),
+                        )
+                    })
                 })
-            })
-        };
-        let Some((workspace_id, site_id, p)) = snapshot else {
-            return true;
-        };
-        let stmt = repo::revision_checkpoint_idempotent(
-            &workspace_id,
-            &site_id,
-            &p.revision_id,
-            &p.ir_sha256,
-            p.byte_size,
-            p.created_by,
-        );
-        let written = match crate::d1::database(&self.env) {
-            Ok(db) => crate::d1::run(&db, &stmt).await.map(|_| ()),
-            Err(e) => Err(e),
-        };
-        match written {
-            Ok(()) => {
-                if let Ok(Ok(true)) = self.with(None, |e| e.mark_revision_written(p.seq)).await {
+            };
+            let Some((workspace_id, site_id, p)) = snapshot else {
+                return Flush::Idle;
+            };
+            let stmt = repo::revision_checkpoint_idempotent(
+                &workspace_id,
+                &site_id,
+                &p.revision_id,
+                &p.ir_sha256,
+                p.byte_size,
+                p.created_by,
+            );
+            #[cfg(feature = "insecure-dev-auth")]
+            let simulated_down = self.dev_ckpt_down.get();
+            #[cfg(not(feature = "insecure-dev-auth"))]
+            let simulated_down = false;
+            let written = if simulated_down {
+                Err(worker::Error::RustError("simulated D1 outage".into()))
+            } else {
+                match crate::d1::database(&self.env) {
+                    Ok(db) => crate::d1::run(&db, &stmt).await.map(|_| ()),
+                    Err(e) => Err(e),
+                }
+            };
+            let err = match written {
+                Ok(()) => {
+                    if let Ok(Ok(true)) = self.with(None, |e| e.mark_revision_written(p.seq)).await
+                    {
+                        self.broadcast(
+                            &protocol::checkpoint(p.seq, &p.revision_id, "written", &p.reason),
+                            None,
+                            now_ms(),
+                        );
+                    }
+                    return Flush::Written;
+                }
+                Err(e) => e.to_string(),
+            };
+            console_error!("checkpoint D1 write failed: {err}");
+            let owner = if crate::session::engine::is_permanent_d1_error(&err) {
+                self.fetch_owner(&workspace_id).await.ok()
+            } else {
+                None
+            };
+            match plan_checkpoint_failure(&err, p.created_by, owner) {
+                FailurePlan::Retry => {
+                    let _ = self.with(None, |e| e.note_revision_failure()).await;
+                    return Flush::Pending;
+                }
+                FailurePlan::Reattribute(owner_id) => {
+                    console_error!(
+                        "checkpoint {} cannot be written as user {}; re-attributing to workspace owner {owner_id}",
+                        p.revision_id,
+                        p.created_by
+                    );
+                    let _ = self.with(None, |e| e.reattribute_pending(owner_id)).await;
+                }
+                FailurePlan::Abandon => {
+                    let _ = self.with(None, |e| e.abandon_pending()).await;
+                    console_error!(
+                        "ALERT: checkpoint {} (seq {}, workspace {workspace_id}, site {site_id}) can never be written ({err}); dropped so edits resume. The document is intact in the session.",
+                        p.revision_id,
+                        p.seq
+                    );
                     self.broadcast(
-                        &protocol::checkpoint(p.seq, &p.revision_id, "written", &p.reason),
+                        &protocol::checkpoint(p.seq, &p.revision_id, "abandoned", &p.reason),
                         None,
                         now_ms(),
                     );
+                    return Flush::Abandoned;
                 }
-                true
-            }
-            Err(e) => {
-                console_error!("checkpoint D1 write failed (will retry): {e}");
-                let _ = self.with(None, |e| e.note_revision_failure()).await;
-                false
             }
         }
+        Flush::Pending
     }
 
     // --- message handling ---------------------------------------------------------
@@ -581,8 +813,8 @@ impl SiteSession {
         // Reads and presence: the cached verification is enough while it is
         // fresh; otherwise re-read now. Writes always re-read (below).
         let action = match &msg {
-            ClientMessage::Ping => return self.on_ping(ws).await,
-            ClientMessage::Sync { .. }
+            ClientMessage::Ping
+            | ClientMessage::Sync { .. }
             | ClientMessage::PresenceGet
             | ClientMessage::Presence { .. } => Action::Read,
             ClientMessage::Batch { .. } | ClientMessage::Undo { .. } => Action::Edit,
@@ -595,7 +827,7 @@ impl SiteSession {
         let is_write = !matches!(action, Action::Read);
         let role =
             if is_write || needs_recheck(now, att.authz_checked_ms, self.config.authz_recheck_ms) {
-                match self.recheck(ws, &att, now).await {
+                match self.recheck(ws, now).await {
                     Ok(Some(r)) => r,
                     Ok(None) => return Ok(()), // revoked and closed
                     Err(e) => {
@@ -628,12 +860,28 @@ impl SiteSession {
             role: role.as_str().to_string(),
             ..att
         };
+        // Everything that broadcasts first refreshes stale peers (an await), then
+        // re-checks THIS socket was not revoked meanwhile; after that the commit
+        // and the broadcast are one synchronous block.
+        if matches!(
+            msg,
+            ClientMessage::Batch { .. }
+                | ClientMessage::Undo { .. }
+                | ClientMessage::Seed { .. }
+                | ClientMessage::Checkpoint { .. }
+                | ClientMessage::Presence { .. }
+        ) {
+            self.recheck_peers(now_ms(), false).await;
+            if self.live(ws).is_none() {
+                return Ok(());
+            }
+        }
         let actor = Actor {
             user_id: att.user_id,
             client_id: att.client_id.clone(),
         };
         match msg {
-            ClientMessage::Ping => Ok(()),
+            ClientMessage::Ping => self.on_ping(ws).await,
             ClientMessage::Sync { since_seq } => self.on_sync(ws, since_seq).await,
             ClientMessage::PresenceGet => {
                 let now = now_ms();
@@ -648,8 +896,6 @@ impl SiteSession {
                 base_seq,
                 batch,
             } => {
-                // Awaits first: keep delivery targets verified before the commit.
-                self.recheck_peers(now_ms(), false).await;
                 let now = now_ms();
                 let res = self
                     .with(None, |e| {
@@ -659,7 +905,6 @@ impl SiteSession {
                 self.finish_submit(ws, &op_id, res, now, att.user_id).await
             }
             ClientMessage::Undo { op_id, target_seq } => {
-                self.recheck_peers(now_ms(), false).await;
                 let now = now_ms();
                 let res = self
                     .with(None, |e| e.submit_undo(&actor, &op_id, target_seq, now))
@@ -796,17 +1041,25 @@ impl SiteSession {
     ) -> Result<()> {
         // Resolve any outstanding row first so this request sees a clean slate.
         self.flush_pending().await;
+        // The flush awaited D1: the sender may have been revoked meanwhile.
+        if self.live(ws).is_none() {
+            return Ok(());
+        }
         let now = now_ms();
         let out = self
             .with(None, |e| e.take_checkpoint(att.user_id, reason, now))
             .await?;
         match out {
             Ok(CheckpointOutcome::Taken(p)) => {
-                let done = self.flush_pending().await;
-                let status = if done { "written" } else { "pending" };
+                let flushed = self.flush_pending().await;
+                let status = match flushed {
+                    Flush::Written => "written",
+                    Flush::Abandoned => "abandoned",
+                    _ => "pending",
+                };
                 let m = protocol::checkpoint(p.seq, &p.revision_id, status, reason.as_str());
-                if done {
-                    // `flush_pending` already broadcast "written" to everyone.
+                if matches!(flushed, Flush::Written | Flush::Abandoned) {
+                    // `flush_pending` already broadcast the outcome to everyone.
                     send(ws, &m);
                 } else {
                     self.broadcast(&m, None, now);
@@ -819,15 +1072,56 @@ impl SiteSession {
                     &protocol::checkpoint(p.seq, &p.revision_id, "pending", p.reason.as_str()),
                 );
             }
-            Ok(CheckpointOutcome::Unchanged { seq }) => {
+            Ok(CheckpointOutcome::Unchanged { seq, revision_id }) => {
                 send(
                     ws,
-                    &protocol::checkpoint(seq, "", "unchanged", reason.as_str()),
+                    &protocol::checkpoint(seq, &revision_id, "unchanged", reason.as_str()),
                 );
             }
             Err(r) => send(ws, &conflict_or_error(None, &r)),
         }
         Ok(())
+    }
+
+    /// Test build only: prove `transactionSync` is available and that a failing
+    /// body rolls back the DO SQL writes it made.
+    #[cfg(feature = "insecure-dev-auth")]
+    async fn tx_probe(&self) -> Result<Response> {
+        let sql = self.state.storage().sql();
+        let ddl = "CREATE TABLE IF NOT EXISTS tx_probe (k TEXT PRIMARY KEY)";
+        sql.exec(ddl, None)?;
+        sql.exec("DELETE FROM tx_probe", None)?;
+        let sql2 = sql.clone();
+        let mut body = move || -> std::result::Result<JsValue, JsValue> {
+            sql2.exec("INSERT INTO tx_probe (k) VALUES ('rolled-back')", None)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Err(JsValue::from_str("probe: roll back"))
+        };
+        let available = worker::js_sys::Reflect::get(
+            &JsValue::from(
+                self.state
+                    .as_raw()
+                    .storage()
+                    .map_err(|_| worker::Error::RustError("no storage".into()))?,
+            ),
+            &JsValue::from_str("transactionSync"),
+        )
+        .ok()
+        .is_some_and(|f| f.is_function());
+        self.transaction_sync(&mut body);
+        let sql3 = self.state.storage().sql();
+        let n: Vec<serde_json::Value> = sql3
+            .exec("SELECT COUNT(*) AS n FROM tx_probe", None)?
+            .to_array()?;
+        let rows = n
+            .first()
+            .and_then(|r| r.get("n"))
+            .and_then(Value::as_i64)
+            .unwrap_or(-1);
+        Response::from_json(&serde_json::json!({
+            "transaction_sync_available": available,
+            "rows_after_failed_body": rows,
+        }))
     }
 }
 

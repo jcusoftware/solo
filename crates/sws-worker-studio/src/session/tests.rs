@@ -10,7 +10,9 @@ use super::engine::{
 use super::protocol::CheckpointReason;
 use super::rebase::ConflictKind;
 use super::store::{EntryKind, MemStore, Store};
-use super::{CHECKPOINT_EVERY, LOG_RETAIN, MAX_UNCHECKPOINTED};
+use super::{CHECKPOINT_EVERY, DEFAULT_IDLE_SWEEP_MS, LOG_RETAIN, MAX_UNCHECKPOINTED};
+
+const SWEEP: i64 = DEFAULT_IDLE_SWEEP_MS;
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/session-site.json");
 const WS: &str = "ws-a";
@@ -403,7 +405,8 @@ fn checkpoint_every_n_commands_queues_exactly_one_revision() {
     assert_eq!(
         e.take_checkpoint(1, CheckpointReason::Save, 9_002).unwrap(),
         CheckpointOutcome::Unchanged {
-            seq: CHECKPOINT_EVERY
+            seq: CHECKPOINT_EVERY,
+            revision_id: p.revision_id.clone(),
         }
     );
     assert!(!e.checkpoint_due());
@@ -454,7 +457,7 @@ fn checkpoint_retry_state_survives_hibernation() {
     assert_eq!(backoff_ms(0), 2_000);
     assert_eq!(backoff_ms(2), 8_000);
     assert_eq!(backoff_ms(40), 256_000);
-    let at = e.next_alarm(1_000, 0, 15_000).unwrap().unwrap();
+    let at = e.next_alarm(1_000, 0, SWEEP).unwrap().unwrap();
     assert_eq!(at, 1_000 + 8_000);
     e.mark_revision_written(q.seq).unwrap();
     assert!(e.pending().is_none());
@@ -697,20 +700,20 @@ fn presence_survives_hibernation_until_it_expires() {
 fn alarm_planning_covers_every_outstanding_job() {
     let mut e = seeded();
     // Nothing outstanding, nobody connected: no alarm.
-    assert_eq!(e.next_alarm(1_000, 0, 15_000).unwrap(), None);
+    assert_eq!(e.next_alarm(1_000, 0, SWEEP).unwrap(), None);
     // Connections need the membership sweep.
-    assert_eq!(e.next_alarm(1_000, 2, 15_000).unwrap(), Some(16_000));
+    assert_eq!(e.next_alarm(1_000, 2, SWEEP).unwrap(), Some(1_000 + SWEEP));
     // A presence row expiring sooner wins.
     e.presence_set("c-1", 1, "{}".into(), 1_000, 3_000).unwrap();
-    assert_eq!(e.next_alarm(1_000, 2, 15_000).unwrap(), Some(4_000));
+    assert_eq!(e.next_alarm(1_000, 2, SWEEP).unwrap(), Some(4_000));
     // A checkpoint awaiting D1 wins with its backoff.
     churn(&mut e, 2, 1);
     e.take_checkpoint(1, CheckpointReason::Save, 1_000).unwrap();
-    assert_eq!(e.next_alarm(1_000, 2, 15_000).unwrap(), Some(1_000 + 2_000));
+    assert_eq!(e.next_alarm(1_000, 2, SWEEP).unwrap(), Some(1_000 + 2_000));
     // Ops are remembered for OP_TTL: the last job to remain.
     e.mark_revision_written(2).unwrap();
     e.presence_remove("c-1").unwrap();
-    let at = e.next_alarm(2_000, 0, 15_000).unwrap().unwrap();
+    let at = e.next_alarm(2_000, 0, SWEEP).unwrap().unwrap();
     assert!(at > 2_000 + 60_000, "{at}");
 }
 
@@ -722,4 +725,392 @@ fn revision_ids_are_deterministic_and_scoped() {
     assert_ne!(a, revision_id(WS, SITE, 51, &"a".repeat(64)));
     assert_eq!(a.len(), 27);
     assert!(a.starts_with("ck-") && a[3..].bytes().all(|b| b.is_ascii_hexdigit()));
+}
+
+// --- Review fixes ----------------------------------------------------------------
+
+use super::engine::{FailurePlan, is_permanent_d1_error, plan_checkpoint_failure};
+
+#[test]
+fn a_reused_op_id_with_a_different_request_is_refused_not_acked() {
+    let mut e = seeded();
+    let first = e
+        .submit_batch(&actor(1), &op(1), 0, &text("home.title-text", "A"), 1)
+        .unwrap();
+    // Same user, same op id, SAME payload: the idempotent retry.
+    assert!(
+        e.submit_batch(&actor(1), &op(1), 0, &text("home.title-text", "A"), 2)
+            .unwrap()
+            .duplicate
+    );
+    // Same user, same op id, different content: never a silent duplicate ack.
+    let r = e
+        .submit_batch(&actor(1), &op(1), 0, &text("home.title-text", "B"), 3)
+        .unwrap_err();
+    assert_eq!(r, Rejection::OpIdReused);
+    assert_eq!(r.code(), "op_id_reused");
+    // Same op id reused as a different kind (undo) is refused too.
+    assert_eq!(
+        e.submit_undo(&actor(1), &op(1), first.seq, 4).unwrap_err(),
+        Rejection::OpIdReused
+    );
+    // An undo retried with its own payload is a duplicate; with another target it is not.
+    let u = e.submit_undo(&actor(1), &op(2), 1, 5).unwrap();
+    assert!(e.submit_undo(&actor(1), &op(2), 1, 6).unwrap().duplicate);
+    assert_eq!(
+        e.submit_undo(&actor(1), &op(2), 2, 7).unwrap_err(),
+        Rejection::OpIdReused
+    );
+    assert_eq!(e.head_seq(), u.seq, "none of the refused requests applied");
+    // The fingerprint is durable: it survives hibernation.
+    let mut woke = Engine::open(e.into_store(), WS, SITE).unwrap();
+    assert_eq!(
+        woke.submit_batch(&actor(1), &op(1), 0, &text("home.title-text", "B"), 8)
+            .unwrap_err(),
+        Rejection::OpIdReused
+    );
+}
+
+#[test]
+fn unchanged_save_and_publish_name_the_last_checkpoint() {
+    let mut e = seeded();
+    churn(&mut e, 3, 1);
+    let CheckpointOutcome::Taken(p) = e.take_checkpoint(1, CheckpointReason::Save, 1).unwrap()
+    else {
+        panic!()
+    };
+    e.mark_revision_written(p.seq).unwrap();
+    // Publishing a site with nothing new publishes THAT checkpoint (never an empty id)...
+    let out = e.take_checkpoint(1, CheckpointReason::Publish, 2).unwrap();
+    assert_eq!(
+        out,
+        CheckpointOutcome::Unchanged {
+            seq: 3,
+            revision_id: p.revision_id.clone()
+        }
+    );
+    // ...and its bytes are kept as the publish snapshot even after later checkpoints.
+    churn(&mut e, 2, 10);
+    let CheckpointOutcome::Taken(q) = e.take_checkpoint(1, CheckpointReason::Save, 3).unwrap()
+    else {
+        panic!()
+    };
+    e.mark_revision_written(q.seq).unwrap();
+    let kept = e.revision_snapshot(&p.revision_id).unwrap().unwrap();
+    assert_eq!(kept.seq, 3);
+    assert_eq!(kept.sha256, p.ir_sha256);
+}
+
+#[test]
+fn checkpoint_snapshots_are_retained_for_the_latest_publish_and_latest_checkpoint_only() {
+    let mut e = seeded();
+    let mut n = churn(&mut e, 2, 1);
+    let CheckpointOutcome::Taken(save1) = e.take_checkpoint(1, CheckpointReason::Save, 1).unwrap()
+    else {
+        panic!()
+    };
+    e.mark_revision_written(save1.seq).unwrap();
+    n = churn(&mut e, 2, n);
+    let CheckpointOutcome::Taken(publish1) =
+        e.take_checkpoint(1, CheckpointReason::Publish, 2).unwrap()
+    else {
+        panic!()
+    };
+    // Pending checkpoints are fetchable too (the id is already announced).
+    assert!(
+        e.revision_snapshot(&publish1.revision_id)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        e.revision_snapshot(&save1.revision_id).unwrap().is_none(),
+        "the earlier non-publish checkpoint is no longer retained"
+    );
+    e.mark_revision_written(publish1.seq).unwrap();
+    // Later auto/save checkpoints do not evict the latest publish snapshot.
+    for i in 0..3 {
+        n = churn(&mut e, 2, n);
+        let CheckpointOutcome::Taken(p) = e
+            .take_checkpoint(1, CheckpointReason::Save, 10 + i)
+            .unwrap()
+        else {
+            panic!()
+        };
+        e.mark_revision_written(p.seq).unwrap();
+    }
+    let kept = e.revision_snapshot(&publish1.revision_id).unwrap().unwrap();
+    assert_eq!((kept.seq, kept.sha256), (4, publish1.ir_sha256.clone()));
+    let store = e.into_store();
+    assert_eq!(
+        store.snapshots.keys().copied().collect::<Vec<_>>(),
+        vec![4, 10],
+        "bounded: exactly the latest publish and the latest checkpoint"
+    );
+    // After a restart the same lookups work (the refs live in meta).
+    let woke = Engine::open(store, WS, SITE).unwrap();
+    assert!(
+        woke.revision_snapshot(&publish1.revision_id)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        woke.revision_snapshot("ck-000000000000000000000000")
+            .unwrap(),
+        None
+    );
+    // A newer publish replaces the retained one.
+    let mut woke = woke;
+    churn(&mut woke, 1, 99);
+    let CheckpointOutcome::Taken(publish2) = woke
+        .take_checkpoint(1, CheckpointReason::Publish, 50)
+        .unwrap()
+    else {
+        panic!()
+    };
+    woke.mark_revision_written(publish2.seq).unwrap();
+    churn(&mut woke, 1, 120);
+    woke.take_checkpoint(1, CheckpointReason::Save, 51).unwrap();
+    woke.mark_revision_written(publish2.seq + 1).unwrap();
+    assert!(
+        woke.revision_snapshot(&publish1.revision_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        woke.revision_snapshot(&publish2.revision_id)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_storage_failure_mid_append_poisons_the_engine_and_a_rollback_is_consistent() {
+    let mut e = seeded();
+    churn(&mut e, 2, 1);
+    // What the object does for a failed call: the DO transaction rolls storage
+    // back to its state before the call...
+    let before_call = e.into_store();
+    let mut store = before_call.clone();
+    // ...here modelled by restoring `before_call`. The append is a two-statement
+    // turn (log row, then op id): fail the second.
+    store.fail_in = Some(2);
+    let mut e = Engine::open(store, WS, SITE).unwrap();
+    assert!(!e.store_failed());
+    let r = e
+        .submit_batch(&actor(1), &op(50), 2, &text("home.title-text", "X"), 5)
+        .unwrap_err();
+    assert_eq!(r.code(), "unavailable", "the client may retry");
+    assert!(e.store_failed(), "the object must drop this engine");
+    assert!(!e.store_failed(), "reported once");
+    assert_eq!(e.head_seq(), 2, "memory did not advance past storage");
+    // The partial write (log row without its op id) is exactly what a rollback removes.
+    let half_written = e.into_store();
+    assert!(half_written.log.contains_key(&3) && !half_written.ops.contains_key(&op(50)));
+    // Rolled back and rebuilt from storage: the retry with the same op id applies ONCE.
+    let mut rebuilt = Engine::open(before_call, WS, SITE).unwrap();
+    assert_eq!(rebuilt.head_seq(), 2);
+    let ok = rebuilt
+        .submit_batch(&actor(1), &op(50), 2, &text("home.title-text", "X"), 6)
+        .unwrap();
+    assert_eq!((ok.seq, ok.duplicate), (3, false));
+    assert!(
+        rebuilt
+            .submit_batch(&actor(1), &op(50), 2, &text("home.title-text", "X"), 7)
+            .unwrap()
+            .duplicate
+    );
+    assert_eq!(rebuilt.head_seq(), 3);
+}
+
+#[test]
+fn a_failed_checkpoint_or_compaction_never_leaves_memory_ahead_of_storage() {
+    // take_checkpoint: snapshot, prune, then meta; fail each in turn.
+    for fail_at in 1..=3 {
+        let mut e = seeded();
+        churn(&mut e, 4, 1);
+        let mut store = e.into_store();
+        let durable = store.clone();
+        store.fail_in = Some(fail_at);
+        let mut e = Engine::open(store, WS, SITE).unwrap();
+        let meta_before = e.meta().clone();
+        let r = e.take_checkpoint(1, CheckpointReason::Save, 9).unwrap_err();
+        assert_eq!(r.code(), "unavailable", "fail_at {fail_at}");
+        assert!(e.store_failed());
+        assert_eq!(e.meta(), &meta_before, "meta unchanged (fail_at {fail_at})");
+        assert!(e.pending().is_none() && !e.checkpoint_due());
+        // After the rollback the same checkpoint can be taken cleanly.
+        let mut again = Engine::open(durable, WS, SITE).unwrap();
+        assert!(matches!(
+            again
+                .take_checkpoint(1, CheckpointReason::Save, 10)
+                .unwrap(),
+            CheckpointOutcome::Taken(_)
+        ));
+    }
+    // compact: meta is only adopted after save_meta succeeded.
+    let mut e = seeded();
+    churn(&mut e, 80, 1);
+    e.take_checkpoint(1, CheckpointReason::Save, 5).unwrap();
+    e.mark_revision_written(80).unwrap();
+    let mut store = e.into_store();
+    store.fail_in = Some(3); // prune_ops, compact_log, then save_meta
+    let mut e = Engine::open(store, WS, SITE).unwrap();
+    assert!(e.compact(6).is_err());
+    assert!(e.store_failed());
+    assert_eq!(e.meta().compacted_through, 0, "memory did not move ahead");
+    // The failed compaction is retried and then succeeds (idempotent).
+    assert_eq!(e.compact(7).unwrap(), Some(80 - LOG_RETAIN));
+}
+
+#[test]
+fn seed_failure_leaves_the_site_unseeded_in_memory() {
+    let store = MemStore {
+        fail_in: Some(2), // snapshot ok, meta fails
+        ..MemStore::default()
+    };
+    let mut e = Engine::open(store, WS, SITE).unwrap();
+    assert!(e.seed(FIXTURE, 0).is_err());
+    assert!(e.store_failed());
+    assert!(!e.seeded() && e.meta().snapshot_seq == 0);
+}
+
+#[test]
+fn constraint_errors_are_permanent_and_outages_are_not() {
+    assert!(is_permanent_d1_error(
+        "D1_ERROR: FOREIGN KEY constraint failed: SQLITE_CONSTRAINT"
+    ));
+    assert!(is_permanent_d1_error("D1_ERROR: CHECK constraint failed"));
+    assert!(!is_permanent_d1_error("D1_ERROR: Network connection lost"));
+    assert!(!is_permanent_d1_error("simulated D1 outage"));
+    let fk = "FOREIGN KEY constraint failed";
+    assert_eq!(
+        plan_checkpoint_failure("timeout", 5, Some(Some(1))),
+        FailurePlan::Retry
+    );
+    assert_eq!(
+        plan_checkpoint_failure(fk, 5, Some(Some(1))),
+        FailurePlan::Reattribute(1)
+    );
+    // Already the owner, or no owner: nothing to re-attribute to.
+    assert_eq!(
+        plan_checkpoint_failure(fk, 1, Some(Some(1))),
+        FailurePlan::Abandon
+    );
+    assert_eq!(
+        plan_checkpoint_failure(fk, 5, Some(None)),
+        FailurePlan::Abandon
+    );
+    // The owner lookup itself failing is an outage, not a verdict.
+    assert_eq!(plan_checkpoint_failure(fk, 5, None), FailurePlan::Retry);
+}
+
+#[test]
+fn a_permanently_failing_checkpoint_is_reattributed_or_dropped_so_edits_resume() {
+    // Wedged: a pending checkpoint that never confirms blocks edits at the backlog bound.
+    let mut e = seeded();
+    churn(&mut e, 1, 1);
+    let CheckpointOutcome::Taken(p) = e.take_checkpoint(7, CheckpointReason::Save, 1).unwrap()
+    else {
+        panic!()
+    };
+    let mut n = 10;
+    for _ in 0..MAX_UNCHECKPOINTED {
+        n = churn(&mut e, 1, n);
+    }
+    let blocked = |e: &mut Engine<MemStore>, k: u32| {
+        e.submit_batch(
+            &actor(1),
+            &op(k),
+            e.head_seq(),
+            &text("home.title-text", "x"),
+            1,
+        )
+    };
+    assert_eq!(
+        blocked(&mut e, 9_000).unwrap_err(),
+        Rejection::CheckpointBacklog
+    );
+
+    // Re-attribution keeps the checkpoint and resets its backoff.
+    e.note_revision_failure().unwrap();
+    e.reattribute_pending(1).unwrap();
+    let q = e.pending().unwrap();
+    assert_eq!((q.created_by, q.attempts, q.seq), (1, 0, p.seq));
+    assert_eq!(
+        q.revision_id, p.revision_id,
+        "same row id: retries stay idempotent"
+    );
+    assert_eq!(
+        blocked(&mut e, 9_001).unwrap_err(),
+        Rejection::CheckpointBacklog
+    );
+
+    // Abandoning drops it, restores the bookkeeping and edits resume.
+    let dropped = e.abandon_pending().unwrap().unwrap();
+    assert_eq!(dropped.revision_id, p.revision_id);
+    assert!(e.pending().is_none());
+    assert_eq!(
+        e.meta().last_checkpoint_seq,
+        None,
+        "back to before the dropped checkpoint"
+    );
+    assert!(blocked(&mut e, 9_002).is_ok(), "edits resume");
+    assert_eq!(e.abandon_pending().unwrap(), None, "idempotent");
+    assert_eq!(e.meta().abandoned_seq, Some(p.seq));
+    assert!(
+        e.checkpoint_due(),
+        "head is far past the dropped checkpoint: retry now"
+    );
+    // An explicit save can always take a fresh checkpoint.
+    assert!(matches!(
+        e.take_checkpoint(1, CheckpointReason::Save, 3).unwrap(),
+        CheckpointOutcome::Taken(_)
+    ));
+    // Survives hibernation.
+    let woke = Engine::open(e.into_store(), WS, SITE).unwrap();
+    assert!(woke.pending().is_some(), "the fresh save is pending");
+}
+
+#[test]
+fn engine_level_checkpoint_backlog_names_the_cause() {
+    // (The Durable Object test drives this over a real socket with D1 unavailable.)
+    let r = Rejection::CheckpointBacklog;
+    assert_eq!(r.code(), "checkpoint_backlog");
+    assert!(r.message().contains(&MAX_UNCHECKPOINTED.to_string()));
+}
+
+#[test]
+fn delivery_stops_within_the_gate_when_d1_stays_unavailable() {
+    use super::authz::{delivery_allowed, needs_recheck};
+    use super::{DEFAULT_AUTHZ_RECHECK_MS as R, MAX_AUTHZ_RECHECK_MS as MAX};
+    // A socket verified at t=0; D1 then goes away so no recheck can succeed. Walk time:
+    // it is due for a recheck from R, still delivered to until 2R, never after.
+    let checked = 0;
+    assert!(!needs_recheck(R - 1, checked, R) && needs_recheck(R, checked, R));
+    assert!(delivery_allowed(2 * R - 1, checked, R));
+    assert!(!delivery_allowed(2 * R, checked, R));
+    // Even at the configured maximum the delivery window is 60 s, whatever the
+    // idle sweep cadence is (the sweep only closes idle sockets).
+    assert!(!delivery_allowed(2 * MAX, checked, MAX));
+    assert_eq!(2 * MAX, 60_000);
+}
+
+#[test]
+fn a_persistent_failure_is_retried_every_n_commands_not_on_every_edit() {
+    let mut e = seeded();
+    churn(&mut e, CHECKPOINT_EVERY as u32, 1);
+    assert!(e.checkpoint_due());
+    e.take_checkpoint(1, CheckpointReason::Auto, 1).unwrap();
+    e.abandon_pending().unwrap();
+    assert!(
+        !e.checkpoint_due(),
+        "just dropped: do not hammer D1 on the next edit"
+    );
+    churn(&mut e, (CHECKPOINT_EVERY - 1) as u32, 1_000);
+    assert!(!e.checkpoint_due());
+    churn(&mut e, 1, 2_000);
+    assert!(
+        e.checkpoint_due(),
+        "after another N commands it tries again"
+    );
 }

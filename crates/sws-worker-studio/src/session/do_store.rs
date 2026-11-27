@@ -2,8 +2,13 @@
 //!
 //! The statement text lives in [`crate::session::sql`] (also exercised against
 //! real SQLite by `tests/unit/studio-session-sql.test.mjs`). Every value is a
-//! bound parameter. DO SQL is synchronous, so all methods are synchronous and
-//! a handful of writes issued in one turn commit atomically.
+//! bound parameter. DO SQL is synchronous, so all methods are synchronous. Writes
+//! issued in one turn are NOT atomic by themselves (a failing statement leaves
+//! the earlier ones applied): `object::SiteSession::with` wraps each engine call
+//! in `storage.transactionSync`, and any failed statement is recorded here
+//! ([`Store::take_failure`]) so the object also drops its cached engine.
+
+use std::cell::Cell;
 
 use serde::Deserialize;
 use worker::SqlStorage;
@@ -16,6 +21,7 @@ use super::store::{
 
 pub struct DoStore {
     sql: SqlStorage,
+    failed: Cell<bool>,
 }
 
 fn err(e: worker::Error) -> StoreError {
@@ -70,6 +76,7 @@ struct OpRow {
     seq: i64,
     rebased: i64,
     expires_ms: i64,
+    payload: String,
 }
 
 #[derive(Deserialize)]
@@ -114,19 +121,31 @@ impl DoStore {
         for stmt in sql::SCHEMA {
             sql_storage.exec(stmt, None).map_err(err)?;
         }
-        Ok(Self { sql: sql_storage })
+        Ok(Self {
+            sql: sql_storage,
+            failed: Cell::new(false),
+        })
+    }
+
+    fn note<T>(&self, r: StoreResult<T>) -> StoreResult<T> {
+        if r.is_err() {
+            self.failed.set(true);
+        }
+        r
     }
 
     fn run(&self, q: &str, params: Vec<V>) -> StoreResult<()> {
-        self.sql.exec(q, Some(params)).map(|_| ()).map_err(err)
+        let r = self.sql.exec(q, Some(params)).map(|_| ()).map_err(err);
+        self.note(r)
     }
 
     fn rows<T: serde::de::DeserializeOwned>(&self, q: &str, params: Vec<V>) -> StoreResult<Vec<T>> {
-        self.sql
+        let r = self
+            .sql
             .exec(q, Some(params))
-            .map_err(err)?
-            .to_array::<T>()
             .map_err(err)
+            .and_then(|c| c.to_array::<T>().map_err(err));
+        self.note(r)
     }
 }
 
@@ -162,6 +181,21 @@ impl Store for DoStore {
         }))
     }
 
+    fn snapshot_get(&self, seq: i64) -> StoreResult<Option<SnapshotRow>> {
+        #[derive(Deserialize)]
+        struct Row {
+            seq: i64,
+            doc: String,
+            sha256: String,
+        }
+        let rows: Vec<Row> = self.rows(sql::SNAPSHOT_GET, vec![V::Integer(seq)])?;
+        Ok(rows.into_iter().next().map(|r| SnapshotRow {
+            seq: r.seq,
+            doc: r.doc,
+            sha256: r.sha256,
+        }))
+    }
+
     fn put_snapshot(&mut self, snap: &SnapshotRow, now_ms: i64) -> StoreResult<()> {
         self.run(
             sql::SNAPSHOT_PUT,
@@ -171,8 +205,18 @@ impl Store for DoStore {
                 V::String(snap.sha256.clone()),
                 V::Integer(now_ms),
             ],
-        )?;
-        self.run(sql::SNAPSHOT_DELETE_OLDER, vec![V::Integer(snap.seq)])
+        )
+    }
+
+    fn prune_snapshots(&mut self, latest_seq: i64, keep_seq: Option<i64>) -> StoreResult<()> {
+        self.run(
+            sql::SNAPSHOT_PRUNE,
+            vec![V::Integer(latest_seq), V::Integer(keep_seq.unwrap_or(-1))],
+        )
+    }
+
+    fn take_failure(&mut self) -> bool {
+        self.failed.replace(false)
     }
 
     fn log_max_seq(&self) -> StoreResult<i64> {
@@ -232,6 +276,7 @@ impl Store for DoStore {
                 V::Integer(op.seq),
                 V::Integer(i64::from(op.rebased)),
                 V::Integer(op.expires_ms),
+                V::String(op.payload.clone()),
             ],
         )
     }
@@ -251,6 +296,7 @@ impl Store for DoStore {
             seq: r.seq,
             rebased: r.rebased != 0,
             expires_ms: r.expires_ms,
+            payload: r.payload,
         }))
     }
 

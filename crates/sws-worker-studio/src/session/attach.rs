@@ -56,6 +56,33 @@ impl Attachment {
     }
 }
 
+/// What an asynchronous membership read means for a socket, decided against the
+/// attachment as it is AFTER the await (never the copy taken before it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refresh {
+    /// The socket is gone or was revoked meanwhile (revocation is sticky):
+    /// write nothing, do nothing.
+    Gone,
+    /// Still a member: store this refreshed attachment.
+    Member(Attachment),
+    /// No longer a member: mark this attachment revoked and close the socket.
+    Removed(Attachment),
+}
+
+/// Merge a membership result onto the *fresh* attachment. A pre-await copy
+/// must never be written back: a concurrent revocation (`revoke_user`, another
+/// recheck) would be reset to `revoked: false`.
+pub fn merge_membership(fresh: Option<Attachment>, role: Option<Role>, now_ms: i64) -> Refresh {
+    match fresh {
+        None => Refresh::Gone,
+        Some(a) if a.revoked => Refresh::Gone,
+        Some(a) => match role {
+            Some(r) => Refresh::Member(a.refreshed(r, now_ms)),
+            None => Refresh::Removed(a),
+        },
+    }
+}
+
 /// Decide whether a new connection fits the bounds, given the user ids of the
 /// connections already attached. `Err` carries the actionable reason.
 pub fn admit(existing: &[i64], user_id: i64) -> Result<(), &'static str> {
@@ -100,6 +127,35 @@ mod tests {
     fn refresh_updates_role_and_time() {
         let a = Attachment::new("c".into(), 1, Role::Publisher, 10).refreshed(Role::Editor, 99);
         assert_eq!((a.role(), a.authz_checked_ms), (Some(Role::Editor), 99));
+    }
+
+    #[test]
+    fn refresh_never_undoes_a_concurrent_revocation() {
+        let stale = Attachment::new("c".into(), 1, Role::Editor, 10);
+        // Between the pre-await read and now, the socket was revoked.
+        let mut fresh = stale.clone();
+        fresh.revoked = true;
+        assert_eq!(
+            merge_membership(Some(fresh.clone()), Some(Role::Editor), 99),
+            Refresh::Gone
+        );
+        assert_eq!(merge_membership(Some(fresh), None, 99), Refresh::Gone);
+        assert_eq!(merge_membership(None, Some(Role::Owner), 99), Refresh::Gone);
+        // A live socket takes the new role and time and stays unrevoked.
+        match merge_membership(Some(stale.clone()), Some(Role::Publisher), 99) {
+            Refresh::Member(a) => {
+                assert_eq!(
+                    (a.role(), a.authz_checked_ms, a.revoked),
+                    (Some(Role::Publisher), 99, false)
+                );
+                assert_eq!(a.client_id, stale.client_id);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            merge_membership(Some(stale.clone()), None, 99),
+            Refresh::Removed(stale)
+        );
     }
 
     #[test]

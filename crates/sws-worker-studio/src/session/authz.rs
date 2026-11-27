@@ -5,25 +5,32 @@
 //! Durable Object re-reads:
 //!
 //! * from D1 **before every state-changing message** (seed, batch, undo,
-//!   checkpoint), so a removed or demoted member can never apply an edit; and
-//! * at least every `authz_recheck_ms` (default 15 s, hard cap
-//!   [`crate::session::MAX_AUTHZ_RECHECK_MS`] = 30 s) for every connection, by
-//!   the alarm sweep and before each broadcast, so a removed member stops
-//!   receiving updates and the socket is closed with code 4403.
+//!   checkpoint), so a removed or demoted member can never apply an edit;
+//! * before a read when the cached verification is older than
+//!   `authz_recheck_ms` (default 15 s, hard cap
+//!   [`crate::session::MAX_AUTHZ_RECHECK_MS`] = 30 s);
+//! * for every other connection before each broadcast that originates from a
+//!   message, and by the alarm sweep (every
+//!   [`crate::session::DEFAULT_IDLE_SWEEP_MS`] while sockets are attached), so a
+//!   removed member stops receiving updates and the socket is closed with code
+//!   4403; and
+//! * as a hard gate at delivery time ([`delivery_allowed`]): a socket whose last
+//!   verification is two intervals old is skipped, whatever else happens.
 //!
-//! #65 hook: [`Revalidation`] is what the D1 lookup (`object::revalidate`)
-//! returns. Adding session-expiry and token-revocation checks there, and
-//! calling the Worker -> DO `/internal/revoke` request on logout or token
-//! revocation, is the whole integration; no protocol change is needed.
+//! #65 hook: `object::fetch_role` is the one D1 lookup; adding session-expiry
+//! and token-revocation checks there, and calling `entry::revoke_user` (the
+//! Worker -> DO `/internal/revoke` request) on logout, token revocation or
+//! membership change, is the whole integration; no protocol change is needed.
 
 use crate::model::Role;
 
 /// What a message wants to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Read state, presence, replay.
+    /// Read state, replay, ping, and read or set presence (presence is soft,
+    /// never persisted to the document, and is not an edit).
     Read,
-    /// Apply a command batch or an undo; set presence.
+    /// Apply a command batch or an undo.
     Edit,
     /// Explicit save checkpoint.
     Save,
@@ -37,15 +44,6 @@ pub fn allows(role: Role, action: Action) -> bool {
         Action::Read | Action::Edit | Action::Save => true,
         Action::Publish => matches!(role, Role::Owner | Role::Publisher),
     }
-}
-
-/// Outcome of re-reading the caller's standing from the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Revalidation {
-    /// Still a member with this (possibly changed) role.
-    Member(Role),
-    /// No longer a member (or the credential was revoked, #65).
-    Revoked,
 }
 
 /// True when a recheck is due: `checked_ms` is older than `ttl_ms`.

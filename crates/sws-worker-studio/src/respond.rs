@@ -77,6 +77,11 @@ pub fn json_error(status: u16, code: &str, extra: &[(&str, &str)]) -> Resp {
     Resp::new(status, Some(error_body(code)), extra)
 }
 
+/// JSON 200 body with the standard header set (internal glue and test-only routes).
+pub fn json_ok(body: Value) -> Resp {
+    Resp::new(200, Some(body), &[])
+}
+
 pub fn internal_error() -> Resp {
     Resp::new(500, Some(error_body("internal_error")), &[])
 }

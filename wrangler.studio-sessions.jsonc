@@ -6,12 +6,17 @@
 // WebSocket flows can be driven without OAuth (#65). That feature is never part of the
 // default `build/` (`npm run studio:build`) or any deploy; `npm run check:studio:release`
 // proves it. State lives under .wrangler/studio-sessions-state (see test:studio:sessions).
+//
+// Runtime fence: the dev-auth build answers 401 unless the request Host is loopback AND the var
+// SWS_INSECURE_DEV_AUTH=1 is present. This file deliberately does NOT set that var; only
+// scripts/test-studio-sessions.mjs passes `--var SWS_INSECURE_DEV_AUTH:1`. `workers_dev` is false so
+// the test Worker never gets a public workers.dev URL even if it is deployed by mistake.
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "sws-studio-sessions-test",
 	"main": "crates/sws-worker-studio/build-dev-auth/index.js",
 	"compatibility_date": "2026-11-01",
-	"workers_dev": true,
+	"workers_dev": false,
 	"build": {
 		"command": "node scripts/build-wasm.mjs --profile dev --crate crates/sws-worker-studio --features insecure-dev-auth --out-dir build-dev-auth",
 		"watch_dir": "crates/sws-worker-studio/src"

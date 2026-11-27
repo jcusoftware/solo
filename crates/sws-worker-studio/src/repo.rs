@@ -53,6 +53,11 @@ pub const MEMBERSHIP_INSERT: &str =
 pub const MEMBERSHIP_GET: &str =
     "SELECT user_id, role FROM memberships WHERE workspace_id = ?1 AND user_id = ?2";
 
+/// The workspace's earliest-id owner (the author a checkpoint is re-attributed
+/// to when its original author can no longer be referenced).
+pub const MEMBERSHIP_OWNER: &str = "SELECT user_id, role FROM memberships \
+WHERE workspace_id = ?1 AND role = 'owner' ORDER BY user_id LIMIT 1";
+
 pub const SITE_INSERT: &str =
     "INSERT INTO sites (workspace_id, id, slug, name) VALUES (?1, ?2, ?3, ?4)";
 pub const SITE_GET: &str =
@@ -118,6 +123,7 @@ pub const ALL: &[(&str, &str, bool)] = &[
     ("USER_BY_GITHUB_ID", USER_BY_GITHUB_ID, false),
     ("MEMBERSHIP_INSERT", MEMBERSHIP_INSERT, true),
     ("MEMBERSHIP_GET", MEMBERSHIP_GET, true),
+    ("MEMBERSHIP_OWNER", MEMBERSHIP_OWNER, true),
     ("SITE_INSERT", SITE_INSERT, true),
     ("SITE_GET", SITE_GET, true),
     ("SITE_BY_SLUG", SITE_BY_SLUG, true),
@@ -155,6 +161,13 @@ pub fn membership_get(workspace_id: &str, user_id: i64) -> Statement {
     Statement {
         sql: MEMBERSHIP_GET,
         params: vec![t(workspace_id), Param::Int(user_id)],
+    }
+}
+
+pub fn membership_owner(workspace_id: &str) -> Statement {
+    Statement {
+        sql: MEMBERSHIP_OWNER,
+        params: vec![t(workspace_id)],
     }
 }
 
@@ -304,6 +317,7 @@ mod tests {
         let ws = "ws-a";
         let stmts = [
             membership_get(ws, 1),
+            membership_owner(ws),
             site_get(ws, "s"),
             site_by_slug(ws, "s"),
             site_list(ws, 10),

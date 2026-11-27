@@ -78,6 +78,9 @@ pub struct OpRecord {
     pub seq: i64,
     pub rebased: bool,
     pub expires_ms: i64,
+    /// Hash of the request kind and content that produced this op id, so a
+    /// reused id carrying a different request is refused, not silently acked.
+    pub payload: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +108,13 @@ pub struct PendingRevision {
     pub attempts: u32,
 }
 
+/// A checkpoint revision and the snapshot sequence that holds its bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionRef {
+    pub seq: i64,
+    pub revision_id: String,
+}
+
 /// Small durable state of the session, stored as one JSON row.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Meta {
@@ -115,6 +125,23 @@ pub struct Meta {
     /// Log entries with `seq <= compacted_through` are gone.
     pub compacted_through: i64,
     pub last_checkpoint_seq: Option<i64>,
+    /// `last_checkpoint_seq` before the pending checkpoint was taken (restored
+    /// when a permanently failing pending row is abandoned).
+    #[serde(default)]
+    pub prev_checkpoint_seq: Option<i64>,
+    /// Head seq of the latest checkpoint dropped as permanently unwritable. The
+    /// next automatic checkpoint is due `CHECKPOINT_EVERY` commands after it, so
+    /// a persistent failure is retried at that cadence, never once per edit.
+    #[serde(default)]
+    pub abandoned_seq: Option<i64>,
+    /// The latest checkpoint whose D1 row is confirmed written. Its id is what an
+    /// `unchanged` save/publish answers with.
+    #[serde(default)]
+    pub last_revision: Option<RevisionRef>,
+    /// The latest confirmed publish checkpoint; its snapshot is retained so its
+    /// bytes stay fetchable by `revision_id` (#64).
+    #[serde(default)]
+    pub last_publish: Option<RevisionRef>,
     pub pending: Option<PendingRevision>,
 }
 
@@ -123,8 +150,16 @@ pub trait Store {
     fn save_meta(&mut self, meta: &Meta) -> StoreResult<()>;
 
     fn latest_snapshot(&self) -> StoreResult<Option<SnapshotRow>>;
-    /// Write the snapshot, then delete older ones.
+    fn snapshot_get(&self, seq: i64) -> StoreResult<Option<SnapshotRow>>;
     fn put_snapshot(&mut self, snap: &SnapshotRow, now_ms: i64) -> StoreResult<()>;
+    /// Delete every snapshot older than `latest_seq` except `keep_seq`.
+    fn prune_snapshots(&mut self, latest_seq: i64, keep_seq: Option<i64>) -> StoreResult<()>;
+    /// True (once) if any storage statement failed since the last call. A failed
+    /// call may have left earlier writes in place, so the caller must drop its
+    /// in-memory state and rebuild from storage.
+    fn take_failure(&mut self) -> bool {
+        false
+    }
 
     /// Highest `seq` in the log (0 when empty).
     fn log_max_seq(&self) -> StoreResult<i64>;
@@ -159,6 +194,25 @@ pub struct MemStore {
     pub log: std::collections::BTreeMap<i64, LogEntry>,
     pub ops: std::collections::BTreeMap<String, OpRecord>,
     pub presence: std::collections::BTreeMap<String, PresenceRow>,
+    /// Fault injection: fail the Nth mutating statement from now (1 = the next).
+    pub fail_in: Option<usize>,
+    pub failed: bool,
+}
+
+#[cfg(test)]
+impl MemStore {
+    /// One mutating statement; models a statement error part-way through a turn.
+    fn gate(&mut self) -> StoreResult<()> {
+        if let Some(n) = self.fail_in {
+            if n <= 1 {
+                self.fail_in = None;
+                self.failed = true;
+                return Err(StoreError("injected storage failure".into()));
+            }
+            self.fail_in = Some(n - 1);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -167,16 +221,29 @@ impl Store for MemStore {
         Ok(self.meta.clone().unwrap_or_default())
     }
     fn save_meta(&mut self, meta: &Meta) -> StoreResult<()> {
+        self.gate()?;
         self.meta = Some(meta.clone());
         Ok(())
     }
     fn latest_snapshot(&self) -> StoreResult<Option<SnapshotRow>> {
         Ok(self.snapshots.values().next_back().cloned())
     }
+    fn snapshot_get(&self, seq: i64) -> StoreResult<Option<SnapshotRow>> {
+        Ok(self.snapshots.get(&seq).cloned())
+    }
     fn put_snapshot(&mut self, snap: &SnapshotRow, _now_ms: i64) -> StoreResult<()> {
+        self.gate()?;
         self.snapshots.insert(snap.seq, snap.clone());
-        self.snapshots.retain(|seq, _| *seq >= snap.seq);
         Ok(())
+    }
+    fn prune_snapshots(&mut self, latest_seq: i64, keep_seq: Option<i64>) -> StoreResult<()> {
+        self.gate()?;
+        self.snapshots
+            .retain(|seq, _| *seq >= latest_seq || Some(*seq) == keep_seq);
+        Ok(())
+    }
+    fn take_failure(&mut self) -> bool {
+        std::mem::take(&mut self.failed)
     }
     fn log_max_seq(&self) -> StoreResult<i64> {
         Ok(self.log.keys().next_back().copied().unwrap_or(0))
@@ -214,11 +281,15 @@ impl Store for MemStore {
                 entry.seq
             )));
         }
+        self.gate()?;
         self.log.insert(entry.seq, entry.clone());
+        // A failure here leaves the log row without its op id (a partial turn).
+        self.gate()?;
         self.ops.insert(op.op_id.clone(), op.clone());
         Ok(())
     }
     fn compact_log(&mut self, through_seq: i64) -> StoreResult<()> {
+        self.gate()?;
         self.log.retain(|seq, _| *seq > through_seq);
         Ok(())
     }
@@ -230,6 +301,7 @@ impl Store for MemStore {
             .cloned())
     }
     fn prune_ops(&mut self, now_ms: i64, keep: i64) -> StoreResult<()> {
+        self.gate()?;
         self.ops.retain(|_, o| o.expires_ms > now_ms);
         let mut by_seq: Vec<(i64, String)> = self
             .ops

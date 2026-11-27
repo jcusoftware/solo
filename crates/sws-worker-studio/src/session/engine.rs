@@ -20,8 +20,8 @@ use super::protocol::CheckpointReason;
 use super::rebase::{self, Conflict, ConflictKind};
 use super::sha256::sha256_hex;
 use super::store::{
-    EntryKind, LogEntry, Meta, OpRecord, PendingRevision, PresenceRow, SnapshotRow, Store,
-    StoreError,
+    EntryKind, LogEntry, Meta, OpRecord, PendingRevision, PresenceRow, RevisionRef, SnapshotRow,
+    Store, StoreError,
 };
 use super::{
     CHECKPOINT_EVERY, LOG_RETAIN, MAX_DOCUMENT_BYTES, MAX_OPS, MAX_UNCHECKPOINTED, OP_TTL_MS,
@@ -110,9 +110,9 @@ impl Rejection {
             Rejection::InvalidBase { base_seq, head_seq } => format!(
                 "base_seq {base_seq} is ahead of the document (seq {head_seq}); send `sync` to resync"
             ),
-            Rejection::OpIdReused => {
-                "this op_id was already used by another user; choose a fresh op_id".into()
-            }
+            Rejection::OpIdReused => "this op_id was already used by another user or for a \
+                different request; choose a fresh op_id"
+                .into(),
             Rejection::DocumentTooLarge { bytes } => {
                 format!("the document would be {bytes} bytes; the limit is {MAX_DOCUMENT_BYTES}")
             }
@@ -157,8 +157,9 @@ pub enum CheckpointOutcome {
     Taken(PendingRevision),
     /// An earlier checkpoint is still waiting for its D1 row.
     Pending(PendingRevision),
-    /// Nothing changed since the last checkpoint.
-    Unchanged { seq: i64 },
+    /// Nothing changed since the last checkpoint. `revision_id` is that
+    /// checkpoint's revision (so a publish of an unchanged site still names it).
+    Unchanged { seq: i64, revision_id: String },
 }
 
 /// What `sync` should send.
@@ -178,6 +179,59 @@ pub fn backoff_ms(attempts: u32) -> i64 {
 pub fn revision_id(workspace_id: &str, site_id: &str, seq: i64, ir_sha256: &str) -> String {
     let digest = sha256_hex(format!("{workspace_id}\0{site_id}\0{seq}\0{ir_sha256}").as_bytes());
     format!("ck-{}", &digest[..24])
+}
+
+/// What to do with a pending checkpoint whose D1 write failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailurePlan {
+    /// Transient (outage, timeout): keep it pending and retry with backoff.
+    Retry,
+    /// A permanent constraint failure caused by the recorded author (for example a
+    /// deleted user): write it as this user (the workspace owner) instead.
+    Reattribute(i64),
+    /// Permanent and not fixable by re-attribution: drop the pending row (loudly)
+    /// so edits resume instead of wedging behind `checkpoint_backlog`.
+    Abandon,
+}
+
+/// True when a D1 error message is a constraint violation, which retrying can
+/// never fix (an outage or timeout is not).
+pub fn is_permanent_d1_error(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("constraint") || m.contains("sqlite_constraint")
+}
+
+/// Decide the fate of a failed checkpoint write. `owner` is the workspace owner
+/// lookup: `None` = the lookup itself failed (stay transient), `Some(None)` = no
+/// owner exists.
+pub fn plan_checkpoint_failure(
+    message: &str,
+    created_by: i64,
+    owner: Option<Option<i64>>,
+) -> FailurePlan {
+    if !is_permanent_d1_error(message) {
+        return FailurePlan::Retry;
+    }
+    match owner {
+        None => FailurePlan::Retry,
+        Some(Some(o)) if o != created_by => FailurePlan::Reattribute(o),
+        Some(_) => FailurePlan::Abandon,
+    }
+}
+
+/// Request fingerprint stored with an op id (kind + content).
+pub fn batch_payload(batch: &CommandBatch) -> String {
+    sha256_hex(
+        format!(
+            "batch\0{}",
+            serde_json::to_string(batch).unwrap_or_default()
+        )
+        .as_bytes(),
+    )
+}
+
+pub fn undo_payload(target_seq: i64) -> String {
+    sha256_hex(format!("undo\0{target_seq}").as_bytes())
 }
 
 pub struct Engine<S: Store> {
@@ -267,6 +321,36 @@ impl<S: Store> Engine<S> {
         self.doc.as_ref().map(canonical_json)
     }
 
+    /// True (once) if a storage statement failed since the last call. Earlier
+    /// statements of that call may have been applied, so the owner of this
+    /// engine must discard it and rebuild with [`Engine::open`].
+    pub fn store_failed(&mut self) -> bool {
+        self.store.take_failure()
+    }
+
+    /// The snapshot bytes of a checkpoint revision, by `revision_id`. Retained for
+    /// the pending checkpoint, the latest confirmed checkpoint and the latest
+    /// confirmed publish checkpoint; older revisions are no longer held here.
+    pub fn revision_snapshot(&self, revision_id: &str) -> Result<Option<SnapshotRow>, EngineError> {
+        let pending = self
+            .meta
+            .pending
+            .as_ref()
+            .map(|p| (p.seq, p.revision_id.as_str()));
+        let refs = [&self.meta.last_publish, &self.meta.last_revision]
+            .into_iter()
+            .flatten()
+            .map(|r| (r.seq, r.revision_id.as_str()));
+        let Some((seq, _)) = pending
+            .into_iter()
+            .chain(refs)
+            .find(|(_, id)| *id == revision_id)
+        else {
+            return Ok(None);
+        };
+        Ok(self.store.snapshot_get(seq)?)
+    }
+
     pub fn checkpoint_seq(&self) -> Option<i64> {
         self.meta.last_checkpoint_seq
     }
@@ -305,10 +389,10 @@ impl<S: Store> Engine<S> {
         self.store
             .put_snapshot(&snap, now_ms)
             .map_err(|e| store_failure(&e))?;
-        self.meta.snapshot_seq = 0;
-        self.store
-            .save_meta(&self.meta)
-            .map_err(|e| store_failure(&e))?;
+        let mut meta = self.meta.clone();
+        meta.snapshot_seq = 0;
+        self.store.save_meta(&meta).map_err(|e| store_failure(&e))?;
+        self.meta = meta;
         self.doc = Some(doc);
         self.head = 0;
         Ok(())
@@ -320,6 +404,7 @@ impl<S: Store> Engine<S> {
         &self,
         actor: &Actor,
         op_id: &str,
+        payload: &str,
         now_ms: i64,
     ) -> Result<Option<Committed>, Rejection> {
         match self
@@ -328,7 +413,11 @@ impl<S: Store> Engine<S> {
             .map_err(|e| store_failure(&e))?
         {
             None => Ok(None),
-            Some(op) if op.user_id != actor.user_id => Err(Rejection::OpIdReused),
+            // Another user, or the same id carrying a different request: never a
+            // silent duplicate ack for something that was not applied.
+            Some(op) if op.user_id != actor.user_id || op.payload != payload => {
+                Err(Rejection::OpIdReused)
+            }
             Some(op) => Ok(Some(Committed {
                 seq: op.seq,
                 duplicate: true,
@@ -355,6 +444,7 @@ impl<S: Store> Engine<S> {
         target_seq: Option<i64>,
         base_seq: i64,
         rebased: bool,
+        payload: String,
         new_doc: SiteDocument,
         tx: &Transaction,
         now_ms: i64,
@@ -389,6 +479,7 @@ impl<S: Store> Engine<S> {
             seq,
             rebased,
             expires_ms: now_ms.saturating_add(OP_TTL_MS),
+            payload,
         };
         // One synchronous turn on DO SQL: the log row and its op id commit together.
         self.store
@@ -413,7 +504,8 @@ impl<S: Store> Engine<S> {
         batch: &CommandBatch,
         now_ms: i64,
     ) -> Submit {
-        if let Some(dup) = self.duplicate(actor, op_id, now_ms)? {
+        let payload = batch_payload(batch);
+        if let Some(dup) = self.duplicate(actor, op_id, &payload, now_ms)? {
             return Ok(dup);
         }
         let doc = self.doc.as_ref().ok_or(Rejection::NotSeeded)?;
@@ -470,6 +562,7 @@ impl<S: Store> Engine<S> {
             None,
             base_seq,
             stale,
+            payload,
             new_doc,
             &tx,
             now_ms,
@@ -485,7 +578,8 @@ impl<S: Store> Engine<S> {
         target_seq: i64,
         now_ms: i64,
     ) -> Submit {
-        if let Some(dup) = self.duplicate(actor, op_id, now_ms)? {
+        let payload = undo_payload(target_seq);
+        if let Some(dup) = self.duplicate(actor, op_id, &payload, now_ms)? {
             return Ok(dup);
         }
         let doc = self.doc.as_ref().ok_or(Rejection::NotSeeded)?;
@@ -552,6 +646,7 @@ impl<S: Store> Engine<S> {
             Some(target_seq),
             head,
             false,
+            payload,
             new_doc,
             &undo_tx,
             now_ms,
@@ -585,7 +680,13 @@ impl<S: Store> Engine<S> {
     pub fn checkpoint_due(&self) -> bool {
         self.doc.is_some()
             && self.meta.pending.is_none()
-            && self.head - self.meta.last_checkpoint_seq.unwrap_or(0) >= CHECKPOINT_EVERY
+            && self.head
+                - self
+                    .meta
+                    .last_checkpoint_seq
+                    .max(self.meta.abandoned_seq)
+                    .unwrap_or(0)
+                >= CHECKPOINT_EVERY
     }
 
     pub fn pending(&self) -> Option<&PendingRevision> {
@@ -607,19 +708,36 @@ impl<S: Store> Engine<S> {
         if let Some(p) = &self.meta.pending {
             return Ok(CheckpointOutcome::Pending(p.clone()));
         }
-        if self.meta.last_checkpoint_seq == Some(self.head) {
-            return Ok(CheckpointOutcome::Unchanged { seq: self.head });
-        }
         let text = canonical_json(doc);
         let ir_sha256 = sha256_hex(text.as_bytes());
+        let rev_id = revision_id(
+            &self.meta.workspace_id,
+            &self.meta.site_id,
+            self.head,
+            &ir_sha256,
+        );
+        if self.meta.last_checkpoint_seq == Some(self.head) {
+            // The id is deterministic, so it is also what the earlier checkpoint used.
+            let head = self.head;
+            let mut meta = self.meta.clone();
+            let last = RevisionRef {
+                seq: head,
+                revision_id: rev_id.clone(),
+            };
+            // A publish of an unchanged site publishes that checkpoint: keep its bytes.
+            if reason == CheckpointReason::Publish && meta.last_publish.as_ref() != Some(&last) {
+                meta.last_publish = Some(last);
+                self.store.save_meta(&meta).map_err(|e| store_failure(&e))?;
+                self.meta = meta;
+            }
+            return Ok(CheckpointOutcome::Unchanged {
+                seq: head,
+                revision_id: rev_id,
+            });
+        }
         let pending = PendingRevision {
             seq: self.head,
-            revision_id: revision_id(
-                &self.meta.workspace_id,
-                &self.meta.site_id,
-                self.head,
-                &ir_sha256,
-            ),
+            revision_id: rev_id,
             ir_sha256: ir_sha256.clone(),
             byte_size: text.len() as i64,
             created_by,
@@ -631,36 +749,89 @@ impl<S: Store> Engine<S> {
             doc: text,
             sha256: ir_sha256,
         };
-        // Snapshot, then meta (both in this synchronous turn).
+        // Meta is built on a copy and only adopted after every write succeeded,
+        // so a storage failure never leaves memory ahead of storage.
+        let mut meta = self.meta.clone();
+        meta.prev_checkpoint_seq = meta.last_checkpoint_seq;
+        meta.snapshot_seq = self.head;
+        meta.last_checkpoint_seq = Some(self.head);
+        meta.pending = Some(pending.clone());
         self.store
             .put_snapshot(&snap, now_ms)
             .map_err(|e| store_failure(&e))?;
-        self.meta.snapshot_seq = self.head;
-        self.meta.last_checkpoint_seq = Some(self.head);
-        self.meta.pending = Some(pending.clone());
+        // Keep the latest snapshot and the latest confirmed publish snapshot.
         self.store
-            .save_meta(&self.meta)
+            .prune_snapshots(self.head, meta.last_publish.as_ref().map(|r| r.seq))
             .map_err(|e| store_failure(&e))?;
+        self.store.save_meta(&meta).map_err(|e| store_failure(&e))?;
+        self.meta = meta;
         Ok(CheckpointOutcome::Taken(pending))
     }
 
     /// The D1 row for `seq` is confirmed written (or already existed).
     pub fn mark_revision_written(&mut self, seq: i64) -> Result<bool, EngineError> {
-        if self.meta.pending.as_ref().is_some_and(|p| p.seq == seq) {
-            self.meta.pending = None;
-            self.store.save_meta(&self.meta)?;
-            return Ok(true);
+        let Some(p) = self.meta.pending.as_ref().filter(|p| p.seq == seq) else {
+            return Ok(false);
+        };
+        let done = RevisionRef {
+            seq: p.seq,
+            revision_id: p.revision_id.clone(),
+        };
+        let publish = p.reason == CheckpointReason::Publish.as_str();
+        let mut meta = self.meta.clone();
+        meta.pending = None;
+        meta.last_revision = Some(done.clone());
+        if publish {
+            meta.last_publish = Some(done);
         }
-        Ok(false)
+        self.store.save_meta(&meta)?;
+        self.meta = meta;
+        Ok(true)
     }
 
     /// Count a failed D1 attempt (drives the alarm backoff).
     pub fn note_revision_failure(&mut self) -> Result<(), EngineError> {
-        if let Some(p) = self.meta.pending.as_mut() {
-            p.attempts = p.attempts.saturating_add(1);
-            self.store.save_meta(&self.meta)?;
+        if self.meta.pending.is_some() {
+            let mut meta = self.meta.clone();
+            if let Some(p) = meta.pending.as_mut() {
+                p.attempts = p.attempts.saturating_add(1);
+            }
+            self.store.save_meta(&meta)?;
+            self.meta = meta;
         }
         Ok(())
+    }
+
+    /// Change the recorded author of the pending checkpoint (permanent
+    /// constraint failure on the original author) and reset its backoff.
+    pub fn reattribute_pending(&mut self, created_by: i64) -> Result<(), EngineError> {
+        if self.meta.pending.is_some() {
+            let mut meta = self.meta.clone();
+            if let Some(p) = meta.pending.as_mut() {
+                p.created_by = created_by;
+                p.attempts = 0;
+            }
+            self.store.save_meta(&meta)?;
+            self.meta = meta;
+        }
+        Ok(())
+    }
+
+    /// Drop a pending checkpoint that can never be written, so edits resume. The
+    /// checkpoint bookkeeping goes back to before it was taken, so the next
+    /// threshold (counted from the dropped one) or explicit save takes a fresh one.
+    /// Returns what was dropped.
+    pub fn abandon_pending(&mut self) -> Result<Option<PendingRevision>, EngineError> {
+        let Some(dropped) = self.meta.pending.clone() else {
+            return Ok(None);
+        };
+        let mut meta = self.meta.clone();
+        meta.pending = None;
+        meta.last_checkpoint_seq = meta.prev_checkpoint_seq;
+        meta.abandoned_seq = Some(dropped.seq);
+        self.store.save_meta(&meta)?;
+        self.meta = meta;
+        Ok(Some(dropped))
     }
 
     // --- Compaction (alarm) -------------------------------------------------
@@ -684,8 +855,10 @@ impl<S: Store> Engine<S> {
             return Ok(None);
         }
         self.store.compact_log(h)?;
-        self.meta.compacted_through = h;
-        self.store.save_meta(&self.meta)?;
+        let mut meta = self.meta.clone();
+        meta.compacted_through = h;
+        self.store.save_meta(&meta)?;
+        self.meta = meta;
         Ok(Some(h))
     }
 
@@ -738,12 +911,13 @@ impl<S: Store> Engine<S> {
     /// When the next alarm should fire (epoch ms), or `None` when nothing is
     /// outstanding: an unresolved D1 checkpoint (with backoff), compaction,
     /// presence expiry, operation-id expiry, and, while sockets are attached,
-    /// the membership recheck sweep.
+    /// the idle membership sweep (`idle_sweep_ms`, long on purpose so the object
+    /// can hibernate between sweeps).
     pub fn next_alarm(
         &self,
         now_ms: i64,
         connections: usize,
-        authz_recheck_ms: i64,
+        idle_sweep_ms: i64,
     ) -> Result<Option<i64>, EngineError> {
         let mut at: Vec<i64> = Vec::new();
         if let Some(p) = &self.meta.pending {
@@ -759,7 +933,7 @@ impl<S: Store> Engine<S> {
             at.push(t.max(now_ms + 100));
         }
         if connections > 0 {
-            at.push(now_ms + authz_recheck_ms);
+            at.push(now_ms + idle_sweep_ms);
         }
         Ok(at.into_iter().min())
     }

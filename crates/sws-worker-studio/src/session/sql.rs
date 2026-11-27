@@ -5,14 +5,20 @@
 //! them and `tests/unit/studio-session-sql.test.mjs` can run the exact text
 //! against a real SQLite (node:sqlite) on the host.
 //!
-//! Atomicity: statements issued in one synchronous turn of the object (no
-//! `await` between them) commit together, so "append log row + record op id"
-//! and "snapshot + meta" are each all-or-nothing.
+//! Atomicity: the object runs every engine call inside
+//! `ctx.storage.transactionSync(..)` (see `object::SiteSession::with`), which
+//! commits all statements of the call together or rolls them all back when any
+//! one fails, so "append log row + record op id" and "snapshot + meta" are each
+//! all-or-nothing. Merely issuing statements in one synchronous turn is NOT
+//! enough: a statement error mid-turn leaves the earlier writes in place. If the
+//! runtime lacks `transactionSync`, the object instead drops its cached engine on
+//! any storage error so it is rebuilt from durable state (never trusting memory).
 
 /// Idempotent schema (run on every cold start / hibernation wake).
 pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    // Latest snapshot only (older ones are deleted after the new one is written).
+    // The latest snapshot plus the latest written publish checkpoint's snapshot
+    // (so its revision bytes stay fetchable by revision id); older ones are deleted.
     "CREATE TABLE IF NOT EXISTS snapshots (\
        seq INTEGER PRIMARY KEY, doc TEXT NOT NULL, sha256 TEXT NOT NULL, created_ms INTEGER NOT NULL)",
     // The command log. `seq` is contiguous and strictly increasing (trigger below).
@@ -30,7 +36,7 @@ pub const SCHEMA: &[&str] = &[
     // Idempotency index; outlives log compaction.
     "CREATE TABLE IF NOT EXISTS ops (\
        op_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, seq INTEGER NOT NULL, \
-       rebased INTEGER NOT NULL, expires_ms INTEGER NOT NULL)",
+       rebased INTEGER NOT NULL, expires_ms INTEGER NOT NULL, payload TEXT NOT NULL DEFAULT '')",
     "CREATE INDEX IF NOT EXISTS ops_expiry ON ops (expires_ms)",
     "CREATE TABLE IF NOT EXISTS presence (\
        client_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, state TEXT NOT NULL, \
@@ -49,7 +55,10 @@ pub const SNAPSHOT_LATEST: &str =
 pub const SNAPSHOT_PUT: &str = "INSERT INTO snapshots (seq, doc, sha256, created_ms) \
 VALUES (?1, ?2, ?3, ?4) ON CONFLICT (seq) DO UPDATE SET doc = excluded.doc, \
 sha256 = excluded.sha256, created_ms = excluded.created_ms";
-pub const SNAPSHOT_DELETE_OLDER: &str = "DELETE FROM snapshots WHERE seq < ?1";
+pub const SNAPSHOT_GET: &str = "SELECT seq, doc, sha256 FROM snapshots WHERE seq = ?1";
+/// Delete snapshots older than `?1` (the latest) except `?2` (the retained
+/// publish snapshot; bind -1 for none).
+pub const SNAPSHOT_PRUNE: &str = "DELETE FROM snapshots WHERE seq < ?1 AND seq <> ?2";
 
 pub const LOG_COLUMNS: &str = "seq, op_id, user_id, client_id, kind, target_seq, base_seq, \
 rebased, touched, tx, ts_ms";
@@ -65,11 +74,12 @@ pub const LOG_MAX_SEQ: &str = "SELECT COALESCE(MAX(seq), 0) AS seq FROM log";
 /// Compaction: idempotent (deleting already-deleted rows is a no-op).
 pub const LOG_COMPACT: &str = "DELETE FROM log WHERE seq <= ?1";
 
-pub const OP_GET: &str =
-    "SELECT op_id, user_id, seq, rebased, expires_ms FROM ops WHERE op_id = ?1 AND expires_ms > ?2";
-pub const OP_PUT: &str = "INSERT INTO ops (op_id, user_id, seq, rebased, expires_ms) \
-VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (op_id) DO UPDATE SET user_id = excluded.user_id, \
-seq = excluded.seq, rebased = excluded.rebased, expires_ms = excluded.expires_ms";
+pub const OP_GET: &str = "SELECT op_id, user_id, seq, rebased, expires_ms, payload FROM ops \
+WHERE op_id = ?1 AND expires_ms > ?2";
+pub const OP_PUT: &str = "INSERT INTO ops (op_id, user_id, seq, rebased, expires_ms, payload) \
+VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (op_id) DO UPDATE SET user_id = excluded.user_id, \
+seq = excluded.seq, rebased = excluded.rebased, expires_ms = excluded.expires_ms, \
+payload = excluded.payload";
 pub const OP_PRUNE_EXPIRED: &str = "DELETE FROM ops WHERE expires_ms <= ?1";
 /// Keep at most `?1` newest rows (by seq).
 pub const OP_PRUNE_EXCESS: &str =
@@ -95,7 +105,8 @@ pub const ALL: &[(&str, &str)] = &[
     ("META_PUT", META_PUT),
     ("SNAPSHOT_LATEST", SNAPSHOT_LATEST),
     ("SNAPSHOT_PUT", SNAPSHOT_PUT),
-    ("SNAPSHOT_DELETE_OLDER", SNAPSHOT_DELETE_OLDER),
+    ("SNAPSHOT_GET", SNAPSHOT_GET),
+    ("SNAPSHOT_PRUNE", SNAPSHOT_PRUNE),
     ("LOG_APPEND", LOG_APPEND),
     ("LOG_AFTER", LOG_AFTER),
     ("LOG_GET", LOG_GET),
