@@ -317,7 +317,29 @@ All Cloudflare Workers, D1, Durable Object, Queue and R2 limits, quotas and pric
 | `v0.3.0-alpha.1` Opaque Wasm Session & Isolated Canvas | Script-free sandboxed canvas, p95 input-to-preview under 16 ms in a controlled token scrub, verified focus, scroll, instrumentation and origin isolation |
 | `v0.3.0-beta.1` Builder, Inspector & Pack Hooks | Accessible editing of fictional demo menus, hours and tokens with the existing Rust pack, explicit file saves, distinct sync status, live diagnostics, lossless CLI/MCP round-trips |
 | `v0.3.0` Standalone Export & Release Hardening | Verified downloadable standalone export, independent Builder/canvas/export checks, Wasm and licensing budgets, signed tag-only releases from verified squash commits |
+| `v0.3.1` Templates, Fonts & Media Library | Starter template exports pass the WCAG 2.2 AA gates; images resized at build time with no third-party font or image CDN |
+| `v0.3.2` Pages, Navigation & SEO | Sitemap and redirects verified in CI; Lighthouse SEO score does not regress |
+| `v0.3.3` Visual Form Builder | Generated forms pass the WCAG 2.2 AA gates, keep native semantics and fail closed without Turnstile |
 | `v0.4.0` Import Static Sites | Two-page static fixture imports, edits, saves, reopens and exports deterministically with an inert preview |
+| `v0.5.0-alpha.1` Collections & Content Model | Collections round-trip losslessly, native and Wasm output stay byte-identical, legacy files build without writes |
+| `v0.5.0-beta.1` Blog, Search & Media Content | Demo gains a blog and gallery passing the a11y and header gates |
+| `v0.5.0` Multilingual, Scheduling & Restore Points | Scheduled post publishes on time on a cardless account; restore returns to an earlier revision with an audit trail |
+| `v0.6.0-alpha.1` Inbox, Contacts & Webhooks | Tenant-scoped, exportable, log-redacted submissions; signed, safely retried webhooks |
+| `v0.6.0-beta.1` Analytics & Consent | Default site sets no cookies and ships no third-party scripts |
+| `v0.6.0` Campaigns & Engagement | Campaign sends through a BYO provider and never re-subscribes an unsubscribed contact |
+| `v0.7.0-alpha.1` Visitor Identity & Catalog | Visitor sign-in on a cardless account (OAuth-only default, opt-in magic link); catalog passes a11y gates |
+| `v0.7.0-beta.1` Cart, Payments & Fulfilment | Test-mode order completes with webhook-verified state and atomic inventory decrement |
+| `v0.7.0` Orders, Subscriptions & Growth | Refunds and subscriptions verified in Stripe test mode; store passes a11y and header gates |
+| `v0.8.0-beta.1` Core Bookings | Hospitality pack runs on the core bookings API with no regressions |
+| `v0.8.0` Paid Bookings & Reminders | Deposit booking completes in Stripe test mode; reminders respect consent |
+| `v0.9.0-beta.1` Gated Content & Memberships | Gated content never served to unauthorised visitors |
+| `v0.9.0` Community, Courses & Loyalty | Moderation, rate limits and a11y gates pass for member-generated content |
+| `v0.10.0-beta.1` Builder Import Adapters | Fixture exports from WordPress, Squarespace, Shopify and Wix import deterministically with a migration report |
+| `v0.10.0` URL Mapping & GitHub Sync | Old URLs keep working through generated redirects; repo sync round-trips without data loss |
+| `v0.11.0-beta.1` Setup Wizard & Domains | Non-technical tester publishes to a custom domain on a fresh cardless account using only the wizard |
+| `v0.11.0` Operations & Support | Backup and restore verified end to end; PWA Studio passes the a11y gates |
+| `v1.0.0-rc.1` Audits & API Freeze | Audit findings resolved or documented; pack API and IR compatibility policy published |
+| `v1.0.0` Initial Release | All prior milestone exits hold on the release commit |
 
 The separate `v0.2 — Hospitality pack feature ports` GitHub milestone (#43, #44, #45) is not part of this table.
 
