@@ -1169,3 +1169,78 @@ fn a_persistent_failure_is_retried_every_n_commands_not_on_every_edit() {
         "after another N commands it tries again"
     );
 }
+
+/// Every command on the rebase allowlist (`rebase::is_rebaseable`) is exercised
+/// here, so "rebase only explicitly tested independent field updates" holds for
+/// the whole list: each is rebased over an unrelated concurrent edit and becomes
+/// a `field_conflict` over a concurrent edit of the same field.
+#[test]
+fn every_allowlisted_field_update_rebases_and_conflicts_on_overlap() {
+    use super::rebase::is_rebaseable;
+    let allowlisted = [
+        Command::SetSiteMeta {
+            name: Some("Renamed fixture".into()),
+            locale: None,
+            base_url: None,
+        },
+        Command::SetColorToken {
+            key: "accent".into(),
+            hex: "#7A1F2C".into(),
+        },
+        Command::SetFontToken {
+            slot: "body".into(),
+            stack: "Georgia, serif".into(),
+        },
+        Command::SetDataValue {
+            key: "k1".into(),
+            value: serde_json::json!("v2"),
+        },
+        Command::SetAttr {
+            uid: "home.lede".into(),
+            attr: "data-x".into(),
+            value: Some("1".into()),
+        },
+        Command::SetText {
+            uid: "home.lede-text".into(),
+            value: "B lede".into(),
+        },
+        Command::SetTag {
+            uid: "home.lede".into(),
+            tag: "div".into(),
+        },
+        Command::SetClasses {
+            uid: "home.lede".into(),
+            classes: vec!["lede".into()],
+        },
+        Command::SetStyleRefs {
+            uid: "home.lede".into(),
+            style_refs: vec!["body".into()],
+        },
+    ];
+    for cmd in allowlisted {
+        assert!(is_rebaseable(&cmd), "{cmd:?}");
+        let batch = CommandBatch::new(vec![cmd.clone()]);
+
+        // Unrelated concurrent edit: the stale batch is rebased onto the head.
+        let mut e = seeded();
+        e.submit_batch(&actor(1), &op(1), 0, &text("home.visit-p-text", "A"), 1)
+            .unwrap();
+        let c = e
+            .submit_batch(&actor(2), &op(2), 0, &batch, 2)
+            .unwrap_or_else(|r| panic!("{cmd:?} was not rebased: {r:?}"));
+        assert_eq!((c.seq, c.rebased), (2, true), "{cmd:?}");
+
+        // Same field changed concurrently: an actionable field conflict, nothing applied.
+        let mut e = seeded();
+        e.submit_batch(&actor(1), &op(1), 0, &batch, 1).unwrap();
+        match e.submit_batch(&actor(2), &op(2), 0, &batch, 2) {
+            Err(Rejection::Conflict(c)) => {
+                assert_eq!(c.kind, ConflictKind::FieldConflict, "{cmd:?}");
+                assert_eq!(c.seqs, vec![1], "{cmd:?}");
+                assert!(!c.paths.is_empty(), "{cmd:?}");
+            }
+            other => panic!("{cmd:?}: {other:?}"),
+        }
+        assert_eq!(e.head_seq(), 1, "{cmd:?}");
+    }
+}

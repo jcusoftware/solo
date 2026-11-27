@@ -18,7 +18,9 @@ env:
 
 jobs:
   verify:
-    name: verify tag release (deny, test, wasm clippy, headers)
+    # The Rust gates and the Studio release build mirror ci.yml (`rust` and `web` jobs);
+    # tests/unit/release-workflow.test.mjs fails if the two drift apart.
+    name: verify tag release (deny, test, wasm clippy, headers, Studio build)
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
@@ -34,6 +36,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+      - run: npm ci
       - name: cargo deny (licenses, advisories, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -50,17 +54,14 @@ jobs:
             exit 1
           fi
           echo "Tag $GITHUB_REF_NAME matches workspace version $ws_version."
-      - name: cargo test (workspace)
-        run: cargo test --workspace --locked
+      - name: cargo test (host; includes _headers <-> headers.rs parity + ABC lint tests)
+        run: |
+          cargo test --workspace --locked
+          cargo test -p sws-cli --features pack-hospitality --locked
       - name: cargo clippy (wasm32)
         run: |
-          FLAGS=""
-          [ -f core/Cargo.toml ] && FLAGS="$FLAGS -p sws-core"
-          [ -f crates/sws-worker-site/Cargo.toml ] && FLAGS="$FLAGS -p sws-worker-site"
-          [ -f crates/sws-wasm/Cargo.toml ] && FLAGS="$FLAGS -p sws-wasm"
-          if [ -n "$FLAGS" ]; then
-            cargo clippy --locked --target wasm32-unknown-unknown $FLAGS -- -D warnings
-          fi
+          cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -p sws-assets -p sws-worker-studio -- -D warnings
+          cargo clippy --locked --target wasm32-unknown-unknown -p sws-worker-studio --features insecure-dev-auth -- -D warnings
       - name: Generated IR types and schemas up-to-date (codegen:check)
         run: npm run codegen:check
       - name: Static header parity (_headers vs Rust SECURITY_HEADERS)
@@ -71,6 +72,21 @@ jobs:
           node core/tools/check-headers.mjs --headers-file sites/landing/public/_headers
           node core/tools/check-headers.mjs --headers-file sites/docs/public/_headers
           node --test tests/unit/sites-build.test.mjs
+      - name: Release workflow mirrors the CI Rust gates
+        run: node --test tests/unit/release-workflow.test.mjs
+      - name: Install worker-build (exact pin from wasm-toolchain.json)
+        run: cargo install worker-build@0.9.0 --locked
+      - name: Cache worker-build downloads (Binaryen wasm-opt, wasm-bindgen, esbuild)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/worker-build
+          key: worker-build-${{ runner.os }}-${{ hashFiles('wasm-toolchain.json', 'Cargo.lock') }}
+      - name: Pinned tools match wasm-toolchain.json (rustc, worker-build)
+        run: npm run check:toolchain:installed
+      - name: Build Studio Worker (size-optimized release; verifies Binaryen pin and Wasm target features)
+        run: npm run studio:build
+      - name: Release Studio Worker must not contain the test-only dev-auth hook
+        run: npm run check:studio:release -- --require-artifact
       - name: Detect sws-cli crate
         id: detect
         run: |
@@ -170,20 +186,34 @@ jobs:
         run: |
           cd dist
           sha256sum * > SHA256SUMS.txt
+      - name: Classify release channel (a SemVer pre-release version contains '-')
+        id: channel
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT"; echo "$GITHUB_REF_NAME is a pre-release." ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT"; echo "$GITHUB_REF_NAME is a stable release." ;;
+          esac
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          flags=()
+          if [ "${{ steps.channel.outputs.prerelease }}" = "true" ]; then
+            flags+=(--prerelease)
+          fi
           if [ "${{ needs.verify.outputs.has_cli }}" = "true" ]; then
             gh release create "${{ github.ref_name }}" dist/* \
               --title "Solo ${{ github.ref_name }}" \
               --generate-notes \
-              --verify-tag
+              --verify-tag \
+              "${flags[@]}"
           else
             gh release create "${{ github.ref_name }}" \
               --title "Solo ${{ github.ref_name }}" \
               --generate-notes \
-              --verify-tag
+              --verify-tag \
+              "${flags[@]}"
           fi
       - name: Check Cloudflare deploy configuration
         id: cf_deploy
@@ -191,6 +221,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          if [ "${{ steps.channel.outputs.prerelease }}" = "true" ]; then
+            echo "Skipping Cloudflare static site deploys ($GITHUB_REF_NAME is a pre-release)."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
             echo "Skipping Cloudflare static site deploys (CLOUDFLARE_API_TOKEN secret not set)."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -281,7 +316,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          flags=()
+          version="${GITHUB_REF_NAME#pack-hospitality-v}"
+          case "$version" in
+            *-*) flags+=(--prerelease); echo "$GITHUB_REF_NAME is a pre-release." ;;
+          esac
           gh release create "${{ github.ref_name }}" dist/* \
             --title "SWS Hospitality Pack ${{ github.ref_name }}" \
             --generate-notes \
-            --verify-tag
+            --verify-tag \
+            "${flags[@]}"
