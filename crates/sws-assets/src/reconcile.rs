@@ -1,0 +1,126 @@
+//! Reconciliation and retention decisions (pure; the backends execute them).
+
+use std::collections::HashSet;
+
+use crate::limits::GeneratedPolicy;
+use crate::validate::is_r2_object_name;
+
+/// Objects younger than this are never swept: an upload that put its object but has
+/// not committed the metadata yet may still be in flight. It is the reservation TTL
+/// plus [`crate::limits::ORPHAN_SAFETY_SECS`].
+///
+/// Why this is safe: the reservation is created before the object is written, and the
+/// commit statement only succeeds while `expires_at > commit_now + COMMIT_SAFETY_SECS`
+/// (a clock read immediately before the commit batch). So the last instant a commit can
+/// succeed is `COMMIT_SAFETY_SECS` before the reservation expires, and an object at
+/// least `RESERVATION_TTL_SECS + ORPHAN_SAFETY_SECS` old belongs to a reservation that
+/// stopped being able to commit at least `ORPHAN_SAFETY_SECS + COMMIT_SAFETY_SECS`
+/// seconds ago. That margin absorbs clock differences between the Worker's reads and
+/// the object's `uploaded` timestamp, and the duration of the commit batch itself.
+pub const ORPHAN_MIN_AGE_SECS: u64 =
+    crate::limits::RESERVATION_TTL_SECS + crate::limits::ORPHAN_SAFETY_SECS;
+
+const _: () = assert!(
+    ORPHAN_MIN_AGE_SECS > crate::limits::RESERVATION_TTL_SECS + crate::limits::COMMIT_SAFETY_SECS
+);
+
+/// Should the R2 object `key` (listed under `prefix` = `ws/site/`) be deleted?
+/// True for an object no asset row references (`referenced` = some
+/// `assets.object_key` equals this exact key) or whose name is not
+/// `<sha256>/<reservation>`, once it is older than [`ORPHAN_MIN_AGE_SECS`]. Keys
+/// outside the prefix are never touched.
+pub fn object_is_orphan(
+    prefix: &str,
+    key: &str,
+    referenced: bool,
+    uploaded: u64,
+    now: u64,
+) -> bool {
+    let Some(name) = key.strip_prefix(prefix) else {
+        return false;
+    };
+    let unreferenced = !is_r2_object_name(name) || !referenced;
+    unreferenced && now.saturating_sub(uploaded) >= ORPHAN_MIN_AGE_SECS
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub id: String,
+    /// Creation time, unix seconds.
+    pub created_at: u64,
+}
+
+/// Which artifacts to delete: expired ones, then everything beyond `keep_latest`
+/// (newest first, ties broken by id descending). Mirrors the SQL retention statements.
+pub fn retention_plan(artifacts: &[Artifact], policy: &GeneratedPolicy, now: u64) -> Vec<String> {
+    let mut live: Vec<&Artifact> = artifacts
+        .iter()
+        .filter(|a| now < a.created_at.saturating_add(policy.retention_secs))
+        .collect();
+    live.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    let keep: HashSet<&str> = live
+        .iter()
+        .take(policy.keep_latest as usize)
+        .map(|a| a.id.as_str())
+        .collect();
+    artifacts
+        .iter()
+        .filter(|a| !keep.contains(a.id.as_str()))
+        .map(|a| a.id.clone())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::limits::PREVIEW;
+
+    #[test]
+    fn orphans_are_old_unreferenced_keys_inside_the_prefix() {
+        let sha = "a".repeat(64);
+        let key = format!("ws/s/{sha}/r1");
+        let now = 100_000;
+        let old = now - ORPHAN_MIN_AGE_SECS;
+        assert!(object_is_orphan("ws/s/", &key, false, old, now));
+        assert!(
+            !object_is_orphan("ws/s/", &key, true, old, now),
+            "referenced"
+        );
+        assert!(
+            !object_is_orphan("ws/s/", &key, false, old + 1, now),
+            "possibly in flight"
+        );
+        assert!(
+            object_is_orphan("ws/s/", "ws/s/not-a-hash", true, old, now),
+            "malformed"
+        );
+        assert!(
+            !object_is_orphan("ws/s/", &format!("ws/other/{sha}/r1"), false, 0, now),
+            "other prefix"
+        );
+    }
+
+    #[test]
+    fn retention_drops_expired_then_excess() {
+        let now = 10_000_000;
+        let fresh = |i: &str, age: u64| Artifact {
+            id: i.into(),
+            created_at: now - age,
+        };
+        let arts = vec![
+            fresh("old", PREVIEW.retention_secs + 1),
+            fresh("p1", 10),
+            fresh("p2", 20),
+            fresh("p3", 30),
+            fresh("p4", 40),
+        ];
+        let mut del = retention_plan(&arts, &PREVIEW, now);
+        del.sort();
+        assert_eq!(del, vec!["old".to_string(), "p4".to_string()]);
+        assert!(retention_plan(&[], &PREVIEW, now).is_empty());
+    }
+}

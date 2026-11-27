@@ -13,13 +13,19 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 serde_json = "1"
+sws-assets = { path = "../sws-assets" }
 sws-security = { path = "../sws-security" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 worker = { version = "0.9", features = ["d1"] }
+serde = { version = "1", features = ["derive"] }
 # Streamed request-body reads with a hard byte cap.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 console_error_panic_hook = { version = "0.1", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]
+# Local integration tests only (scripts/test-studio-assets.mjs): lets the test harness
+# name the caller with a header. NEVER enabled by the release build or CI release build;
+# `npm run check:studio:no-dev-auth` guards that.
+insecure-dev-auth = []

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Scaffolded the optional Studio Worker `crates/sws-worker-studio` (#61): D1 workspace registry migration (`0001_registry.sql`), tenant-scoped repository SQL, strict request bounds, `GET|HEAD /api/health`, and a separate `wrangler.studio.jsonc` with its own local D1 state (`npm run studio:dev`, `studio:db:migrate:local`, `test:studio`).
+- Bounded Studio asset stores (#63): new `sws-assets` crate (limits, quota reservations, validation, reconciliation, native-only local store), D1 migration `0002_asset_store.sql`, authenticated tenant-scoped asset routes with cardless D1 BLOB chunks by default and opt-in R2, `solo assets` for the local store, and the closed `auth` boundary (real auth is #65). Commit liveness uses a fresh clock read plus a safety margin that the orphan sweep outlasts, R2 objects are per-upload keys with tombstones, R2 downloads and eligible uploads stream, and the local store is lock-protected. Limits are provisional; application caps are not provider-side hard stops. New gates: `test:studio:assets` (CI only) and `check:studio:no-dev-auth`.
 - Renamed `STUDIO_ORIGIN` to `STUDIO_PUBLIC_ORIGIN` in the Studio example config, which is now cardless by default (D1 + vars; R2, Queues and Durable Objects are commented opt-ins).
 
 ## [0.1.2] - 2026-11-25

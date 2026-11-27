@@ -36,7 +36,9 @@ jobs:
           cargo test --workspace --locked
           cargo test -p sws-cli --features pack-hospitality --locked
       - name: cargo clippy (wasm32)
-        run: cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -p sws-worker-studio -- -D warnings
+        run: |
+          cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -p sws-assets -p sws-worker-studio -- -D warnings
+          cargo clippy --locked --target wasm32-unknown-unknown -p sws-worker-studio --features insecure-dev-auth -- -D warnings
 
   export-bundle:
     name: export bundle (compiled + executed)
@@ -173,6 +175,8 @@ jobs:
           echo "$out" | grep -q 'skipping Cargo'
       - name: Build Studio Worker (size-optimized release; verifies Binaryen pin and Wasm target features)
         run: npm run studio:build
+      - name: Release Studio Worker must not contain the test-only dev-auth hook
+        run: npm run check:studio:no-dev-auth
       - name: Local D1 migrations
         run: npx wrangler d1 migrations apply DB --local
       - name: Start wrangler dev
@@ -204,6 +208,13 @@ jobs:
           npm run studio:check:live || status=$?
           # Stop only the Studio dev server (wrangler tears down its workerd children).
           pkill -f 'wrangler dev -c wrangler.studio.jsonc' || true
+          exit $status
+      - name: Studio asset store integration (own dev servers on 8791-8793 and local D1/R2 state; test-only dev-auth build)
+        run: |
+          status=0
+          npm run test:studio:assets || status=$?
+          # The test stops its servers; make sure nothing lingers before the next steps.
+          pkill -f 'studio-assets-test' || true
           exit $status
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium

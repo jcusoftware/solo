@@ -2,6 +2,7 @@
 target/
 core/build/
 crates/*/build/
+crates/*/build-*/
 build/
 
 # wasm-bindgen smoke-test build output (crates/sws-wasm/run-smoke.sh)

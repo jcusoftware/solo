@@ -34,6 +34,7 @@ sws-ir = { path = "../sws-ir" }
 sws-css = { path = "../sws-css" }
 sws-plugin = { path = "../sws-plugin" }
 sws-compiler = { path = "../sws-compiler" }
+sws-assets = { path = "../sws-assets" }
 sws-security = { path = "../sws-security" }
 sws-pack-hospitality = { path = "../../packs/hospitality/crate", optional = true }
 sws-codegen = { path = "../sws-codegen", optional = true }

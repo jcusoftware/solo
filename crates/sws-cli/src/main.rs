@@ -1,5 +1,6 @@
 //! Unified CLI and stdio MCP server (`solo`) for Solo.
 
+mod assets_cmd;
 mod commands;
 mod edit;
 mod mcp;
@@ -74,6 +75,17 @@ enum Command {
     Edit {
         #[command(subcommand)]
         action: EditAction,
+    },
+    /// Offline local asset store: bounded, content-addressed, native filesystem only.
+    Assets {
+        /// Store directory (one workspace's assets).
+        #[arg(long, default_value = ".solo-assets")]
+        store: PathBuf,
+        /// Site id (`[a-z0-9_-]`, 1-64 chars).
+        #[arg(long)]
+        site: String,
+        #[command(subcommand)]
+        action: assets_cmd::AssetsAction,
     },
     /// Run the stdio JSON-RPC 2.0 MCP server.
     Mcp {
@@ -191,13 +203,9 @@ fn run() -> Result<ExitCode, String> {
                     out,
                     transaction,
                     allow_lossy,
-                } => edit::cmd_edit_apply(
-                    &input,
-                    &batch,
-                    &out,
-                    transaction.as_deref(),
-                    allow_lossy,
-                )?,
+                } => {
+                    edit::cmd_edit_apply(&input, &batch, &out, transaction.as_deref(), allow_lossy)?
+                }
                 EditAction::Undo {
                     input,
                     transaction,
@@ -212,6 +220,14 @@ fn run() -> Result<ExitCode, String> {
                     allow_lossy,
                 )?,
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Assets {
+            store,
+            site,
+            action,
+        } => {
+            assets_cmd::run(&store, &site, action)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Mcp { root } => {
