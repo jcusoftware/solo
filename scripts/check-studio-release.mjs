@@ -46,7 +46,7 @@ export const DEV_HEADERS = [
 /** package.json scripts allowed to mention the feature (test and lint only). */
 export const ALLOWED_SCRIPTS = new Set(['test:studio:sessions', 'test:studio:assets', 'lint:clippy']);
 /** Local runners that start a dev-auth Worker; each must open the runtime fence itself. */
-export const DEV_RUNNERS = ['scripts/test-studio-sessions.mjs'];
+export const DEV_RUNNERS = ['scripts/test-studio-sessions.mjs', 'tests/integration/studio-assets.test.mjs'];
 
 const WALK_SKIP = new Set(['target', 'node_modules', '.git', 'build', '.wrangler']);
 

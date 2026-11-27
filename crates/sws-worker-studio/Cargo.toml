@@ -29,7 +29,8 @@ console_error_panic_hook = { version = "0.1", optional = true }
 [features]
 default = ["console_error_panic_hook"]
 # Local integration tests ONLY (scripts/test-studio-sessions.mjs, tests/integration/studio-assets.test.mjs):
-# lets `X-Sws-Dev-*` headers stand in for real authentication (#65) and drive test hooks.
+# lets `X-Sws-Dev-*` headers stand in for real authentication (#65) and drive test hooks,
+# and even then only behind the runtime fence (SWS_INSECURE_DEV_AUTH=1 AND a loopback Host).
 # NEVER enabled by the release build; `npm run check:studio:release` (part of
 # `npm run verify`) and CI enforce that.
 insecure-dev-auth = []

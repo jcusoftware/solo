@@ -9,13 +9,17 @@
 //   A  :8791  cardless default (D1 blobs, no R2 binding)
 //   B  :8792  opt-in R2 (a LOCAL simulated MEDIA_BUCKET, STUDIO_ASSET_BACKEND=r2)
 //   C  :8793  STUDIO_ASSET_BACKEND=r2 WITHOUT a binding (diagnostic)
-// The R2 binding exists only in B's generated test config.
+// The R2 binding exists only in B's generated test config. Every server gets
+// `--var SWS_INSECURE_DEV_AUTH:1` (the runtime fence of the dev-auth build, never set by a
+// committed config) and is reached on a loopback Host; without both, the X-Sws-Dev-*
+// headers are ignored.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import { resolve, join } from 'node:path';
 
@@ -123,6 +127,8 @@ async function startServer(key, { r2, vars = [], seed = true }) {
   }
   const port = PORTS[key];
   const args = ['dev', '-c', cfg, '--port', String(port), '--ip', '127.0.0.1', '--inspector-port', String(INSPECTOR[key]), '--persist-to', persist];
+  // The dev-auth build's runtime fence (the other half is the loopback Host).
+  args.push('--var', 'SWS_INSECURE_DEV_AUTH:1');
   for (const v of vars) args.push('--var', v);
   const child = spawn(WRANGLER, args, {
     cwd: ROOT,
@@ -211,6 +217,20 @@ function streamBody(total, piece = 64 * 1024) {
   });
 }
 
+/** A request with an explicit Host header (fetch cannot set one). */
+function hostRequest(port, method, path, headers) {
+  return new Promise((resolveP, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers }, (r) => {
+      let text = '';
+      r.on('data', (d) => (text += d));
+      r.on('end', () => resolveP({ status: r.statusCode, body: text }));
+    });
+    req.on('error', reject);
+    req.setTimeout(10_000, () => req.destroy(new Error('timeout')));
+    req.end();
+  });
+}
+
 /** Raw HTTP/1.1 over a socket so Content-Length can lie. Resolves the first response. */
 function rawPut(port, path, headers, bodyBytes, { closeAfterSend = false } = {}) {
   return new Promise((resolveP, reject) => {
@@ -268,6 +288,15 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       const bad = await a.call('GET', '/api/sites/ws-a/site-a1/assets', { user: 'abc' });
       assert.equal(bad.status, 401);
       assert.equal((await a.call('GET', '/api/health')).status, 200, 'health stays public');
+    });
+
+    it('honours the dev headers only behind the runtime fence: a non-loopback Host is 401', async () => {
+      const list = '/api/sites/ws-a/site-a1/assets';
+      const ok = await hostRequest(A.port, 'GET', list, { 'X-Sws-Dev-User': '1', Host: `127.0.0.1:${A.port}` });
+      assert.equal(ok.status, 200, 'loopback Host + fence var: the dev identity applies');
+      const fenced = await hostRequest(A.port, 'GET', list, { 'X-Sws-Dev-User': '1', Host: 'studio.example' });
+      assert.equal(fenced.status, 401, 'a non-loopback Host never reaches the dev identity');
+      assert.equal(JSON.parse(fenced.body).error, 'unauthenticated');
     });
 
     it('denies non-members and other workspaces (403), with no existence oracle', async () => {
