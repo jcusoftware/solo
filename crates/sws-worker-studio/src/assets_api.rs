@@ -171,6 +171,8 @@ pub fn limits_json(l: &AssetLimits) -> Value {
         "max_site_bytes": l.max_site_bytes,
         "max_workspace_bytes": l.max_workspace_bytes,
         "max_site_assets": l.max_site_assets,
+        // null: this backend's bytes do not live in D1, so there is no database cap.
+        "max_database_blob_bytes": (l.max_database_bytes != u64::MAX).then_some(l.max_database_bytes),
     })
 }
 

@@ -16,6 +16,24 @@ pub fn sha256_hex(data: &[u8]) -> String {
     to_hex(&Sha256::digest(data))
 }
 
+/// Incremental SHA-256 for streamed bodies (hash while teeing, never buffer to hash).
+#[derive(Default)]
+pub struct StreamHasher(Sha256);
+
+impl StreamHasher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub fn finish_hex(self) -> String {
+        to_hex(&self.0.finalize())
+    }
+}
+
 /// Deterministic, tenant-unique row id for an asset: a hash over
 /// `workspace \0 site \0 sha256`, so no RNG is needed and two workspaces that
 /// upload identical bytes never collide on the global `assets.id` primary key.
@@ -30,6 +48,17 @@ pub fn asset_row_id(workspace_id: &str, site_id: &str, sha256: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_hasher_matches_one_shot_for_any_split() {
+        let data: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        for split in [0, 1, 63, 64, 4999, 5000] {
+            let mut h = StreamHasher::new();
+            h.update(&data[..split]);
+            h.update(&data[split..]);
+            assert_eq!(h.finish_hex(), sha256_hex(&data), "split {split}");
+        }
+    }
 
     #[test]
     fn known_vector() {

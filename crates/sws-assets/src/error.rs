@@ -16,11 +16,13 @@ pub enum AssetError {
     SiteQuotaExceeded,
     WorkspaceQuotaExceeded,
     SiteAssetCountExceeded,
+    DatabaseCapacityExceeded,
     GeneratedBudgetExceeded,
     ReservationExpired,
     R2NotConfigured,
     BackendInvalid,
     UploadBusy,
+    DownloadBusy,
     StoreFailed,
 }
 
@@ -40,7 +42,11 @@ impl AssetError {
             | SiteAssetCountExceeded
             | GeneratedBudgetExceeded
             | ReservationExpired => 409,
-            R2NotConfigured | BackendInvalid | UploadBusy => 503,
+            R2NotConfigured
+            | BackendInvalid
+            | UploadBusy
+            | DownloadBusy
+            | DatabaseCapacityExceeded => 503,
             StoreFailed => 502,
         }
     }
@@ -62,11 +68,13 @@ impl AssetError {
             SiteQuotaExceeded => "site_quota_exceeded",
             WorkspaceQuotaExceeded => "workspace_quota_exceeded",
             SiteAssetCountExceeded => "site_asset_count_exceeded",
+            DatabaseCapacityExceeded => "database_capacity_exceeded",
             GeneratedBudgetExceeded => "generated_budget_exceeded",
             ReservationExpired => "reservation_expired",
             R2NotConfigured => "r2_not_configured",
             BackendInvalid => "asset_backend_invalid",
             UploadBusy => "upload_busy",
+            DownloadBusy => "download_busy",
             StoreFailed => "store_failed",
         }
     }
@@ -97,15 +105,23 @@ impl AssetError {
             SiteAssetCountExceeded => {
                 "Delete unused assets from this site; the file count cap is reached."
             }
+            DatabaseCapacityExceeded => {
+                "The shared Studio database is at its provisional blob capacity; delete unused assets or ask the operator to use the opt-in R2 backend."
+            }
             GeneratedBudgetExceeded => {
                 "Preview/export budget reached; old artifacts expire, or run reconciliation."
             }
-            ReservationExpired => "The upload took too long; retry it.",
+            ReservationExpired => {
+                "The upload outlived its reservation (it took longer than the reservation lifetime); nothing was stored and the space was released. Retry the upload."
+            }
             R2NotConfigured => {
                 "STUDIO_ASSET_BACKEND=r2 but no MEDIA_BUCKET R2 binding exists. Add the opt-in R2 binding (see deploy/cloudflare/wrangler.studio.example.jsonc) or unset STUDIO_ASSET_BACKEND to use cardless D1 storage."
             }
             BackendInvalid => "STUDIO_ASSET_BACKEND must be `d1` (default) or `r2`.",
             UploadBusy => "Too many uploads are in flight on this instance; retry after a moment.",
+            DownloadBusy => {
+                "Too many downloads are in flight on this instance; retry after a moment."
+            }
             StoreFailed => "The storage backend failed; the reservation was released. Retry later.",
         }
     }
@@ -141,11 +157,13 @@ mod tests {
             SiteQuotaExceeded,
             WorkspaceQuotaExceeded,
             SiteAssetCountExceeded,
+            DatabaseCapacityExceeded,
             GeneratedBudgetExceeded,
             ReservationExpired,
             R2NotConfigured,
             BackendInvalid,
             UploadBusy,
+            DownloadBusy,
             StoreFailed,
         ];
         let mut seen = std::collections::HashSet::new();

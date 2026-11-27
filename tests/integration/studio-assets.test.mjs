@@ -14,6 +14,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { resolve, join } from 'node:path';
@@ -27,7 +28,8 @@ const PORTS = { a: 8791, b: 8792, c: 8793 };
 const INSPECTOR = { a: 9391, b: 9392, c: 9393 };
 const SHA = (buf) => createHash('sha256').update(buf).digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const nowSecs = () => Math.floor(Date.now() / 1000);
+// `X-Sws-Dev-Now` (dev build only) is an OFFSET in seconds from the Worker's real clock.
+const PAST_TTL = 700; // past the 600 s reservation TTL / orphan minimum age
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 /** A distinct PNG-signed payload of exactly `len` bytes. */
@@ -77,6 +79,20 @@ INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a', 1, 'owner'
 INSERT INTO sites (workspace_id, id, slug, name) VALUES
   ('ws-a', 'site-a1', 'one', 'One'), ('ws-a', 'site-a2', 'two', 'Two'), ('ws-a', 'site-a3', 'three', 'Three'),
   ('ws-a', 'site-a4', 'four', 'Four'), ('ws-b', 'site-b1', 'bee', 'Bee'), ('ws-c', 'site-c1', 'see', 'See');
+-- Workspace cap: three live 50 MiB reservations fill ws-d's 150 MiB; site-d4 is empty.
+INSERT INTO workspaces (id, name) VALUES ('ws-d', 'Workspace D'), ('ws-e', 'Workspace E');
+INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-d', 1, 'owner'), ('ws-e', 1, 'owner');
+INSERT INTO sites (workspace_id, id, slug, name) VALUES
+  ('ws-d', 'site-d1', 'd1', 'D1'), ('ws-d', 'site-d2', 'd2', 'D2'), ('ws-d', 'site-d3', 'd3', 'D3'), ('ws-d', 'site-d4', 'd4', 'D4'),
+  ('ws-e', 'site-e1', 'e1', 'E1');
+INSERT INTO asset_reservations (workspace_id, site_id, id, kind, byte_size, created_at, expires_at) VALUES
+  ('ws-d', 'site-d1', 'cap1', 'asset', 52428800, '2020-01-01T00:00:00Z', '2099-01-01T00:00:00Z'),
+  ('ws-d', 'site-d2', 'cap2', 'asset', 52428800, '2020-01-01T00:00:00Z', '2099-01-01T00:00:00Z'),
+  ('ws-d', 'site-d3', 'cap3', 'asset', 52428800, '2020-01-01T00:00:00Z', '2099-01-01T00:00:00Z');
+-- Per-site count cap: 500 live 1-byte reservations fill site-e1's 500 files.
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500)
+INSERT INTO asset_reservations (workspace_id, site_id, id, kind, byte_size, created_at, expires_at)
+SELECT 'ws-e', 'site-e1', 'cnt' || i, 'asset', 1, '2020-01-01T00:00:00Z', '2099-01-01T00:00:00Z' FROM n;
 -- Stale state a crashed/aborted run would leave behind, for the reconcile test (site-c1):
 INSERT INTO asset_reservations (workspace_id, site_id, id, kind, byte_size, created_at, expires_at) VALUES
   ('ws-c', 'site-c1', 'stale1', 'asset', 1048576, '2020-01-01T00:00:00Z', '2020-01-01T00:10:00Z'),
@@ -156,12 +172,12 @@ function api(server) {
   const assetPath = (ws, site, sha) => `/api/sites/${ws}/${site}/assets/${sha}`;
   /** Upload with retry on 503 upload_busy (the per-isolate memory guard). */
   const put = async (ws, site, buf, opts = {}) => {
-    const { user = 1, type = 'image/png', lengthHeader = true, sha = SHA(buf), now } = opts;
+    const { user = 1, type = 'image/png', sha = SHA(buf), now, headers = {} } = opts;
     for (let attempt = 0; attempt < 400; attempt++) {
       const res = await call('PUT', assetPath(ws, site, sha), {
         user,
         now,
-        headers: { 'Content-Type': type, ...(lengthHeader ? {} : {}) },
+        headers: { 'Content-Type': type, ...headers },
         body: buf,
       });
       if (res.status === 503 && res.json?.error === 'upload_busy') {
@@ -173,7 +189,8 @@ function api(server) {
     throw new Error('upload stayed busy');
   };
   const list = (ws, site, user = 1) => call('GET', `/api/sites/${ws}/${site}/assets`, { user });
-  const reconcile = (ws, site, opts = {}) => call('POST', `/api/sites/${ws}/${site}/assets/reconcile`, { user: 1, ...opts });
+  const reconcile = (ws, site, { cursor, ...opts } = {}) =>
+    call('POST', `/api/sites/${ws}/${site}/assets/reconcile${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { user: 1, ...opts });
   return { call, put, list, reconcile, assetPath };
 }
 
@@ -328,7 +345,7 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       assert.deepEqual((await a.list('ws-a', 'site-a1')).json.usage, before);
     });
 
-    it('never stores more than a lying Content-Length declares, and releases on a short body', async () => {
+    it('reads only the declared Content-Length from the wire, refuses a hash mismatch, and releases on a truncated body', async () => {
       const a = api(A);
       const real = png(5000);
       const head = real.subarray(0, 100);
@@ -346,9 +363,40 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       await sleep(500);
       assert.equal((await a.call('GET', a.assetPath('ws-a', 'site-a4', SHA(short)), { user: 1 })).status, 404);
       // Whether the Worker released it itself or it must expire, a reconcile after the TTL clears it.
-      assert.equal((await a.reconcile('ws-a', 'site-a4', { now: nowSecs() + 700 })).status, 200);
+      assert.equal((await a.reconcile('ws-a', 'site-a4', { now: PAST_TTL })).status, 200);
       const u = (await a.list('ws-a', 'site-a4', 1)).json.usage;
       assert.equal(u.site_bytes, 100, 'only the 100-byte asset remains accounted');
+    });
+
+    it('refuses a commit that happens after the reservation expired: nothing stored, reservation released', async () => {
+      const a = api(A);
+      const before = (await a.list('ws-a', 'site-a4')).json.usage;
+      const buf = png(2000);
+      // The request STARTS inside the TTL, but the commit clock is read 700 s later
+      // (X-Sws-Dev-Commit-Skew simulates a body that took longer than the reservation).
+      const slow = await a.put('ws-a', 'site-a4', buf, { headers: { 'X-Sws-Dev-Commit-Skew': String(PAST_TTL) } });
+      assert.equal(slow.status, 409, slow.buf.toString());
+      assert.equal(slow.json.error, 'reservation_expired');
+      assert.equal((await a.call('GET', a.assetPath('ws-a', 'site-a4', SHA(buf)), { user: 1 })).status, 404, 'nothing stored');
+      assert.deepEqual((await a.list('ws-a', 'site-a4')).json.usage, before, 'reservation released, no chunks left');
+      const fast = await a.put('ws-a', 'site-a4', buf);
+      assert.equal(fast.status, 201, 'the same bytes commit fine when the clock has not moved');
+      await a.call('DELETE', a.assetPath('ws-a', 'site-a4', SHA(buf)), { user: 1 });
+    });
+
+    it('refuses an upload that would exceed the workspace cap or the per-site file count', async () => {
+      const a = api(A);
+      const ws = await a.put('ws-d', 'site-d4', png(100));
+      assert.equal(ws.status, 409, ws.buf.toString());
+      assert.equal(ws.json.error, 'workspace_quota_exceeded');
+      assert.ok(ws.json.message.length > 10, 'actionable hint');
+      assert.equal(ws.json.details.usage.workspace_bytes, 150 * MIB);
+      const count = await a.put('ws-e', 'site-e1', png(100));
+      assert.equal(count.status, 409, count.buf.toString());
+      assert.equal(count.json.error, 'site_asset_count_exceeded');
+      assert.equal(count.json.details.usage.site_assets, 500);
+      // Refusals reserved nothing.
+      assert.equal((await a.list('ws-d', 'site-d4')).json.usage.site_bytes, 0);
     });
 
     it('validates content type, sniffed bytes, hash and framing with clear codes', async () => {
@@ -425,7 +473,7 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       assert.equal(l.backend, 'd1');
       assert.equal(l.r2_bound, false);
       assert.equal(l.provisional, true);
-      assert.deepEqual(l.limits, { max_asset_bytes: MIB, max_site_bytes: 50 * MIB, max_workspace_bytes: 150 * MIB, max_site_assets: 500 });
+      assert.deepEqual(l.limits, { max_asset_bytes: MIB, max_site_bytes: 50 * MIB, max_workspace_bytes: 150 * MIB, max_site_assets: 500, max_database_blob_bytes: 400 * MIB });
       assert.deepEqual(l.generated.policy.map((p) => p.kind), ['preview', 'export']);
     });
 
@@ -442,6 +490,7 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
         excess_generated: 2, // 5 live previews, keep_latest = 3
         incomplete_assets: 1,
         orphan_chunks: 2,
+        tombstoned_objects: 0,
         orphan_objects: 0,
       });
       assert.equal(r.json.more, false);
@@ -452,7 +501,7 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       const again = await a.reconcile('ws-c', 'site-c1');
       assert.ok(Object.values(again.json.reconciled).every((n) => n === 0), JSON.stringify(again.json));
       // Past the live reservation's expiry (dev clock) it is swept too.
-      const far = await a.reconcile('ws-c', 'site-c1', { now: nowSecs() + 100 * 365 * 24 * 3600 });
+      const far = await a.reconcile('ws-c', 'site-c1', { now: 100 * 365 * 24 * 3600 });
       assert.equal(far.json.reconciled.expired_reservations, 1);
     });
   });
@@ -464,6 +513,7 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       assert.equal(l.backend, 'r2');
       assert.equal(l.r2_bound, true);
       assert.equal(l.limits.max_asset_bytes, 5 * MIB);
+      assert.equal(l.limits.max_database_blob_bytes, null, 'R2 bytes are not in D1');
       const buf = png(3 * MIB); // refused by the 1 MiB D1 cap, fine for opt-in R2
       const up = await b.put('ws-a', 'site-a1', buf);
       assert.equal(up.status, 201, up.buf.toString());
@@ -508,15 +558,114 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       const orphan = png(1200);
       const file = join(STATE, 'orphan.bin');
       writeFileSync(file, orphan);
-      wr(['r2', 'object', 'put', `sws-studio-assets-test-media/ws-a/site-a3/${SHA(orphan)}`, '--file', file, '--local', '-c', B.cfg, '--persist-to', B.persist]);
+      wr(['r2', 'object', 'put', `sws-studio-assets-test-media/ws-a/site-a3/${SHA(orphan)}/orphan1`, '--file', file, '--local', '-c', B.cfg, '--persist-to', B.persist]);
       // Young: could be an in-flight upload, so it is kept.
       const young = await b.reconcile('ws-a', 'site-a3');
       assert.equal(young.json.reconciled.orphan_objects, 0, JSON.stringify(young.json));
       // Past the reservation TTL it is swept; the referenced object is not.
-      const old = await b.reconcile('ws-a', 'site-a3', { now: nowSecs() + 700 });
+      const old = await b.reconcile('ws-a', 'site-a3', { now: PAST_TTL });
       assert.equal(old.json.reconciled.orphan_objects, 1, JSON.stringify(old.json));
-      assert.equal((await b.reconcile('ws-a', 'site-a3', { now: nowSecs() + 700 })).json.reconciled.orphan_objects, 0);
+      assert.equal((await b.reconcile('ws-a', 'site-a3', { now: PAST_TTL })).json.reconciled.orphan_objects, 0);
       assert.ok((await b.call('GET', b.assetPath('ws-a', 'site-a3', SHA(keep)), { user: 1 })).buf.equals(keep));
+    });
+  });
+
+  describe('opt-in R2: verification, expiry, races and paging', () => {
+    it('streams an R2 upload with a Content-Length, and keeps nothing when verification fails', async () => {
+      const b = api(B);
+      const good = png(2 * MIB);
+      assert.equal((await b.put('ws-a', 'site-a4', good)).status, 201, 'streamed (Content-Length known)');
+      assert.ok((await b.call('GET', b.assetPath('ws-a', 'site-a4', SHA(good)), { user: 1 })).buf.equals(good));
+      // Hash mismatch: the object is written while streaming and must be deleted again.
+      const wrong = await b.put('ws-a', 'site-a4', png(3000), { sha: 'f'.repeat(64) });
+      assert.equal(wrong.status, 422, wrong.buf.toString());
+      assert.equal(wrong.json.error, 'sha256_mismatch');
+      // Wrong type is caught from the first 12 bytes, while streaming.
+      const jpeg = await b.put('ws-a', 'site-a4', png(3000), { type: 'image/jpeg' });
+      assert.equal(jpeg.json.error, 'content_type_mismatch');
+      // No object may be left behind: nothing orphaned, even long after the TTL.
+      const sweep = await b.reconcile('ws-a', 'site-a4', { now: PAST_TTL });
+      assert.equal(sweep.json.reconciled.orphan_objects, 0, JSON.stringify(sweep.json));
+      assert.ok((await b.call('GET', b.assetPath('ws-a', 'site-a4', SHA(good)), { user: 1 })).buf.equals(good), 'the referenced object survives');
+      await b.call('DELETE', b.assetPath('ws-a', 'site-a4', SHA(good)), { user: 1 });
+    });
+
+    it('refuses an R2 commit after the reservation expired and removes the object it wrote', async () => {
+      const b = api(B);
+      const before = (await b.list('ws-a', 'site-a4')).json.usage;
+      const buf = png(100 * 1024);
+      const skew = { headers: { 'X-Sws-Dev-Commit-Skew': String(PAST_TTL) } };
+      const streamed = await b.put('ws-a', 'site-a4', buf, skew);
+      assert.equal(streamed.status, 409, streamed.buf.toString());
+      assert.equal(streamed.json.error, 'reservation_expired');
+      // Buffered path (chunked, no Content-Length) too.
+      const sha = SHA(buf);
+      const buffered = await b.call('PUT', b.assetPath('ws-a', 'site-a4', sha), { user: 1, headers: { 'Content-Type': 'image/png', ...skew.headers }, body: Readable.toWeb(Readable.from([buf])) });
+      assert.equal(buffered.status, 409, buffered.buf.toString());
+      assert.equal(buffered.json.error, 'reservation_expired');
+      assert.equal((await b.call('GET', b.assetPath('ws-a', 'site-a4', sha), { user: 1 })).status, 404);
+      assert.deepEqual((await b.list('ws-a', 'site-a4')).json.usage, before, 'reservations released');
+      // Had the refused objects been left behind, an old-enough sweep would count them.
+      assert.equal((await b.reconcile('ws-a', 'site-a4', { now: PAST_TTL })).json.reconciled.orphan_objects, 0);
+    });
+
+    it('releases the reservation when the R2 put itself fails (streamed and buffered)', async () => {
+      const b = api(B);
+      const before = (await b.list('ws-a', 'site-a4')).json.usage;
+      const fail = { 'X-Sws-Dev-Fail-Put': '1' };
+      const streamed = await b.put('ws-a', 'site-a4', png(50 * 1024), { headers: fail });
+      assert.equal(streamed.status, 500);
+      const buf = png(50 * 1024);
+      const buffered = await b.call('PUT', b.assetPath('ws-a', 'site-a4', SHA(buf)), { user: 1, headers: { 'Content-Type': 'image/png', ...fail }, body: Readable.toWeb(Readable.from([buf])) });
+      assert.equal(buffered.status, 500);
+      assert.deepEqual((await b.list('ws-a', 'site-a4')).json.usage, before, 'nothing reserved or stored');
+    });
+
+    it('a delete racing a re-upload of identical bytes never removes the live object', async () => {
+      const b = api(B);
+      for (let i = 0; i < 8; i++) {
+        const buf = png(20 * 1024);
+        const sha = SHA(buf);
+        assert.equal((await b.put('ws-a', 'site-a4', buf)).status, 201);
+        const [del, up] = await Promise.all([b.call('DELETE', b.assetPath('ws-a', 'site-a4', sha), { user: 1 }), b.put('ws-a', 'site-a4', buf)]);
+        assert.ok([200, 404].includes(del.status), `delete ${del.status}`);
+        assert.ok([200, 201].includes(up.status), `upload ${up.status}`);
+        const dl = await b.call('GET', b.assetPath('ws-a', 'site-a4', sha), { user: 1 });
+        // Either the delete ran last (gone) or the re-upload did (intact): never a dangling row.
+        assert.ok(dl.status === 404 || (dl.status === 200 && dl.buf.equals(buf)), `download ${dl.status}: ${dl.buf.toString().slice(0, 120)}`);
+        if (dl.status === 200) {
+          await b.reconcile('ws-a', 'site-a4', { now: PAST_TTL });
+          assert.ok((await b.call('GET', b.assetPath('ws-a', 'site-a4', sha), { user: 1 })).buf.equals(buf), 'a sweep never removes a referenced object');
+          await b.call('DELETE', b.assetPath('ws-a', 'site-a4', sha), { user: 1 });
+        }
+      }
+    });
+
+    it('pages the orphan sweep with a cursor, so orphans past the first page are removed', async () => {
+      const b = api(B);
+      const keep = png(2000);
+      assert.equal((await b.put('ws-a', 'site-a4', keep)).status, 201);
+      for (let i = 0; i < 5; i++) {
+        const orphan = png(300 + i);
+        const file = join(STATE, `orphan-${i}.bin`);
+        writeFileSync(file, orphan);
+        wr(['r2', 'object', 'put', `sws-studio-assets-test-media/ws-a/site-a4/${SHA(orphan)}/orph${i}`, '--file', file, '--local', '-c', B.cfg, '--persist-to', B.persist]);
+      }
+      let cursor;
+      let swept = 0;
+      let pages = 0;
+      do {
+        const r = await b.reconcile('ws-a', 'site-a4', { now: PAST_TTL, cursor, headers: { 'X-Sws-Dev-Batch': '2' } });
+        assert.equal(r.status, 200, r.buf.toString());
+        swept += r.json.reconciled.orphan_objects;
+        cursor = r.json.next_cursor ?? undefined;
+        pages++;
+        assert.ok(pages < 20, 'cursor must advance');
+      } while (cursor);
+      assert.equal(swept, 5, 'every orphan, across pages of 2');
+      assert.ok(pages >= 3, `pages ${pages}`);
+      assert.ok((await b.call('GET', b.assetPath('ws-a', 'site-a4', SHA(keep)), { user: 1 })).buf.equals(keep), 'the referenced object was kept');
+      await b.call('DELETE', b.assetPath('ws-a', 'site-a4', SHA(keep)), { user: 1 });
     });
   });
 

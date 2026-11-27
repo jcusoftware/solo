@@ -111,10 +111,25 @@ pub fn check_declared_vs_sniffed(declared: ContentKind, bytes: &[u8]) -> Result<
     }
 }
 
-/// R2 object key `workspace/site/sha256`. Rejects anything that is not a plain id.
-pub fn r2_key(workspace_id: &str, site_id: &str, sha256: &str) -> Option<String> {
-    (is_id(workspace_id) && is_id(site_id) && is_sha256(sha256))
-        .then(|| format!("{workspace_id}/{site_id}/{sha256}"))
+/// R2 object key `workspace/site/sha256/reservation`. Every upload writes to its OWN
+/// key (the reservation id is unique per request), so concurrent uploads, deletes and
+/// reconciliation can never act on each other's object: an object key is referenced by
+/// at most one `assets.object_key` row, and only unreferenced keys are ever deleted.
+/// Rejects anything that is not a plain id.
+pub fn r2_key(
+    workspace_id: &str,
+    site_id: &str,
+    sha256: &str,
+    reservation_id: &str,
+) -> Option<String> {
+    (is_id(workspace_id) && is_id(site_id) && is_sha256(sha256) && is_id(reservation_id))
+        .then(|| format!("{workspace_id}/{site_id}/{sha256}/{reservation_id}"))
+}
+
+/// Is `name` (a key with its `ws/site/` prefix removed) shaped `sha256/reservation`?
+pub fn is_r2_object_name(name: &str) -> bool {
+    name.split_once('/')
+        .is_some_and(|(sha, rid)| is_sha256(sha) && is_id(rid))
 }
 
 /// R2 listing prefix for one site.
@@ -148,13 +163,19 @@ mod tests {
     #[test]
     fn keys_cannot_traverse() {
         let h = "a".repeat(64);
-        assert_eq!(r2_key("ws", "s", &h), Some(format!("ws/s/{h}")));
-        for (w, s, x) in [
-            ("..", "s", h.as_str()),
-            ("ws", "a/b", &h),
-            ("ws", "s", "../x"),
+        assert_eq!(r2_key("ws", "s", &h, "r1"), Some(format!("ws/s/{h}/r1")));
+        for (w, s, x, r) in [
+            ("..", "s", h.as_str(), "r1"),
+            ("ws", "a/b", &h, "r1"),
+            ("ws", "s", "../x", "r1"),
+            ("ws", "s", &h, "../r"),
+            ("ws", "s", &h, ""),
         ] {
-            assert_eq!(r2_key(w, s, x), None);
+            assert_eq!(r2_key(w, s, x, r), None);
+        }
+        assert!(is_r2_object_name(&format!("{h}/r1")));
+        for bad in [h.as_str(), "x/r1", &format!("{h}/a/b"), &format!("{h}/")] {
+            assert!(!is_r2_object_name(bad), "{bad}");
         }
         assert_eq!(local_file_name("../x", ContentKind::Png), None);
     }

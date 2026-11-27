@@ -3,16 +3,21 @@
 use std::collections::HashSet;
 
 use crate::limits::GeneratedPolicy;
-use crate::validate::is_sha256;
+use crate::validate::is_r2_object_name;
 
 /// Objects younger than this are never swept: an upload that put its object but has
-/// not committed the metadata yet is still in flight. Equal to the reservation TTL,
-/// after which the uploading request can no longer commit.
+/// not committed the metadata yet is still in flight. Equal to the reservation TTL.
+/// This is safe because the commit statement is evaluated against a clock read
+/// immediately before the commit batch and only succeeds while the reservation is
+/// unexpired; the reservation is created before the object is written, so an object
+/// at least this old belongs to a reservation that can no longer commit.
 pub const ORPHAN_MIN_AGE_SECS: u64 = crate::limits::RESERVATION_TTL_SECS;
 
 /// Should the R2 object `key` (listed under `prefix` = `ws/site/`) be deleted?
-/// True for an object no asset row references (or whose name is not a SHA-256) once
-/// it is older than [`ORPHAN_MIN_AGE_SECS`]. Keys outside the prefix are never touched.
+/// True for an object no asset row references (`referenced` = some
+/// `assets.object_key` equals this exact key) or whose name is not
+/// `<sha256>/<reservation>`, once it is older than [`ORPHAN_MIN_AGE_SECS`]. Keys
+/// outside the prefix are never touched.
 pub fn object_is_orphan(
     prefix: &str,
     key: &str,
@@ -23,7 +28,7 @@ pub fn object_is_orphan(
     let Some(name) = key.strip_prefix(prefix) else {
         return false;
     };
-    let unreferenced = !is_sha256(name) || !referenced;
+    let unreferenced = !is_r2_object_name(name) || !referenced;
     unreferenced && now.saturating_sub(uploaded) >= ORPHAN_MIN_AGE_SECS
 }
 
@@ -66,7 +71,7 @@ mod tests {
     #[test]
     fn orphans_are_old_unreferenced_keys_inside_the_prefix() {
         let sha = "a".repeat(64);
-        let key = format!("ws/s/{sha}");
+        let key = format!("ws/s/{sha}/r1");
         let now = 100_000;
         let old = now - ORPHAN_MIN_AGE_SECS;
         assert!(object_is_orphan("ws/s/", &key, false, old, now));
@@ -83,7 +88,7 @@ mod tests {
             "malformed"
         );
         assert!(
-            !object_is_orphan("ws/s/", &format!("ws/other/{sha}"), false, 0, now),
+            !object_is_orphan("ws/s/", &format!("ws/other/{sha}/r1"), false, 0, now),
             "other prefix"
         );
     }

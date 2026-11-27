@@ -17,11 +17,23 @@ pub const MAX_PAGES_PER_SITE: u32 = 20;
 /// A reservation that is not committed or released within this window stops
 /// counting against quota and is swept by reconciliation.
 pub const RESERVATION_TTL_SECS: u64 = 600;
-/// Isolate memory guard: an upload is buffered (to hash and verify it) and chunk
-/// statements copy it again, so a Worker isolate (128 MB limit) admits at most this
-/// many reserved upload bytes at once; further uploads get `503 upload_busy` +
-/// `Retry-After` BEFORE any reservation is written.
+/// Isolate memory guard. A Worker isolate (assumed 128 MB limit) admits at most this
+/// many bytes of upload working memory at once, where each upload is charged
+/// [`crate::quota::upload_memory_cost`] (its buffered copies, not just the body
+/// size). Further uploads get `503 upload_busy` + `Retry-After` BEFORE any
+/// reservation is written.
 pub const MAX_INFLIGHT_UPLOAD_BYTES: u64 = 12 * MIB;
+/// Same guard for downloads: concurrent in-flight downloads on one isolate. Each holds
+/// at most one [`CHUNK_BYTES`] chunk (D1) or a bounded stream window (R2), so
+/// `MAX_INFLIGHT_DOWNLOADS * CHUNK_BYTES` (4 MiB) bounds their working memory.
+pub const MAX_INFLIGHT_DOWNLOADS: u32 = 16;
+/// Assumption: a D1 database tops out around 500 MB on the free plan.
+pub const D1_DATABASE_LIMIT_ASSUMED_BYTES: u64 = 500 * MIB;
+/// Database-wide cap on blob bytes held IN D1 (D1-backed assets, generated artifacts
+/// and live reservations, summed across every workspace). It keeps headroom under
+/// [`D1_DATABASE_LIMIT_ASSUMED_BYTES`] for registry rows and indexes, so many
+/// workspaces at their own caps cannot fill the whole database. Provisional.
+pub const MAX_DATABASE_BLOB_BYTES: u64 = 400 * MIB;
 /// Upper bound on rows touched by one reconciliation pass.
 pub const RECONCILE_BATCH: u32 = 100;
 
@@ -36,6 +48,9 @@ pub struct AssetLimits {
     pub max_workspace_bytes: u64,
     /// Stored plus reserved asset count per site.
     pub max_site_assets: u64,
+    /// Blob bytes allowed in the whole D1 database across every workspace
+    /// (`u64::MAX` for backends whose bytes do not live in D1).
+    pub max_database_bytes: u64,
 }
 
 /// Cardless default: D1 blobs only.
@@ -44,6 +59,7 @@ pub const CARDLESS_D1: AssetLimits = AssetLimits {
     max_site_bytes: 50 * MIB,
     max_workspace_bytes: 150 * MIB,
     max_site_assets: 500,
+    max_database_bytes: MAX_DATABASE_BLOB_BYTES,
 };
 
 /// Opt-in R2 (needs a bucket and, on Cloudflare, a payment method on file).
@@ -52,10 +68,15 @@ pub const R2_OPT_IN: AssetLimits = AssetLimits {
     max_site_bytes: 500 * MIB,
     max_workspace_bytes: 2 * GIB,
     max_site_assets: 5000,
+    // R2 bytes live in the bucket, not in the D1 database.
+    max_database_bytes: u64::MAX,
 };
 
 /// Offline local filesystem store: same envelope as the cardless default.
-pub const LOCAL: AssetLimits = CARDLESS_D1;
+pub const LOCAL: AssetLimits = AssetLimits {
+    max_database_bytes: u64::MAX,
+    ..CARDLESS_D1
+};
 
 /// Generated (preview/export) artifact kinds, budgeted separately from assets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -135,6 +156,16 @@ mod tests {
         assert_eq!(CARDLESS_D1.max_asset_bytes, MIB);
         assert_eq!(CARDLESS_D1.max_site_bytes, 50 * MIB);
         assert_eq!(MAX_PAGES_PER_SITE, 20);
+    }
+
+    #[test]
+    fn database_cap_leaves_headroom_and_exceeds_one_workspace() {
+        const {
+            assert!(MAX_DATABASE_BLOB_BYTES < D1_DATABASE_LIMIT_ASSUMED_BYTES);
+            assert!(MAX_DATABASE_BLOB_BYTES >= CARDLESS_D1.max_workspace_bytes);
+            assert!(MAX_DATABASE_BLOB_BYTES >= MAX_WORKSPACE_GENERATED_BYTES);
+        }
+        assert_eq!(R2_OPT_IN.max_database_bytes, u64::MAX);
     }
 
     #[test]

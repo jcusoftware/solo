@@ -11,7 +11,11 @@
 //! 3. The body is read through a [`StreamCounter`] limited to the reservation.
 //!    `Content-Length` is never trusted: bytes actually received are counted.
 //! 4. Commit stores the ACTUAL size and deletes the reservation in one transaction;
-//!    failure releases it. A crashed request's reservation simply expires.
+//!    failure releases it. The commit statement checks liveness against a clock read
+//!    immediately before the commit (NOT the request-start time), so a slow upload
+//!    that outlives its reservation is refused (`reservation_expired`) instead of
+//!    committing bytes the quota has already stopped counting. A crashed request's
+//!    reservation simply expires.
 
 use crate::error::AssetError;
 use crate::limits::AssetLimits;
@@ -49,6 +53,12 @@ pub fn plan_upload(
             declared: true,
         }),
     }
+}
+
+/// May this isolate start another streamed download? A hard slot count, since each
+/// download holds at most one chunk/stream window.
+pub fn admit_download(current: u32, max: u32) -> bool {
+    current < max
 }
 
 /// Counts bytes as they arrive; the error names which promise was broken.
@@ -96,7 +106,35 @@ impl StreamCounter {
     }
 }
 
-/// May this isolate take on `request` more buffered upload bytes? Always admits a
+/// How an upload is received; decides its working-memory cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadMode {
+    /// D1: the body is buffered to hash/validate it, then each chunk statement copies
+    /// it again and binding copies it into JS: [`BUFFERED_D1_COPIES`] copies.
+    BufferedD1,
+    /// R2 without a `Content-Length`: buffered to hash it, then handed to the put
+    /// (one more copy): [`BUFFERED_R2_COPIES`] copies.
+    BufferedR2,
+    /// R2 with a `Content-Length`: streamed through a hashing tee, never buffered;
+    /// only a small window is resident ([`STREAM_WINDOW_BYTES`]).
+    StreamedR2,
+}
+
+pub const BUFFERED_D1_COPIES: u64 = 3;
+pub const BUFFERED_R2_COPIES: u64 = 2;
+/// Working memory charged to a streamed upload (a few in-flight stream chunks).
+pub const STREAM_WINDOW_BYTES: u64 = 512 * 1024;
+
+/// Bytes the in-flight guard charges for one upload of `reserve_bytes`.
+pub fn upload_memory_cost(mode: UploadMode, reserve_bytes: u64) -> u64 {
+    match mode {
+        UploadMode::BufferedD1 => reserve_bytes.saturating_mul(BUFFERED_D1_COPIES),
+        UploadMode::BufferedR2 => reserve_bytes.saturating_mul(BUFFERED_R2_COPIES),
+        UploadMode::StreamedR2 => reserve_bytes.min(STREAM_WINDOW_BYTES),
+    }
+}
+
+/// May this isolate take on `request` more working-memory bytes? Always admits a
 /// request when nothing else is in flight (the per-asset cap is already enforced).
 pub fn admit_inflight(current: u64, request: u64, budget: u64) -> bool {
     current == 0 || current.saturating_add(request) <= budget
@@ -108,6 +146,8 @@ pub struct Usage {
     pub site_bytes: u64,
     pub site_assets: u64,
     pub workspace_bytes: u64,
+    /// Blob bytes in the whole D1 database (all workspaces); 0 where not tracked.
+    pub database_bytes: u64,
 }
 
 /// Which cap refused `request` bytes (site checked first: it is the more actionable).
@@ -116,8 +156,10 @@ pub fn diagnose(usage: &Usage, request: u64, limits: &AssetLimits) -> AssetError
         AssetError::SiteAssetCountExceeded
     } else if usage.site_bytes.saturating_add(request) > limits.max_site_bytes {
         AssetError::SiteQuotaExceeded
-    } else {
+    } else if usage.workspace_bytes.saturating_add(request) > limits.max_workspace_bytes {
         AssetError::WorkspaceQuotaExceeded
+    } else {
+        AssetError::DatabaseCapacityExceeded
     }
 }
 
@@ -126,6 +168,7 @@ pub fn fits(usage: &Usage, request: u64, limits: &AssetLimits) -> bool {
     usage.site_assets < limits.max_site_assets
         && usage.site_bytes.saturating_add(request) <= limits.max_site_bytes
         && usage.workspace_bytes.saturating_add(request) <= limits.max_workspace_bytes
+        && usage.database_bytes.saturating_add(request) <= limits.max_database_bytes
 }
 
 #[cfg(test)]
@@ -219,26 +262,63 @@ mod tests {
     }
 
     #[test]
+    fn download_slots_are_a_hard_count() {
+        use crate::limits::MAX_INFLIGHT_DOWNLOADS as M;
+        assert!(admit_download(0, M) && admit_download(M - 1, M));
+        assert!(!admit_download(M, M) && !admit_download(M + 1, M));
+    }
+
+    #[test]
+    fn memory_cost_counts_every_buffered_copy() {
+        assert_eq!(upload_memory_cost(UploadMode::BufferedD1, MIB), 3 * MIB);
+        assert_eq!(
+            upload_memory_cost(UploadMode::BufferedR2, 5 * MIB),
+            10 * MIB
+        );
+        assert_eq!(
+            upload_memory_cost(UploadMode::StreamedR2, 5 * MIB),
+            STREAM_WINDOW_BYTES
+        );
+        assert_eq!(upload_memory_cost(UploadMode::StreamedR2, 10), 10);
+        // The largest buffered upload fits the isolate guard on its own.
+        assert!(
+            upload_memory_cost(
+                UploadMode::BufferedR2,
+                crate::limits::R2_OPT_IN.max_asset_bytes
+            ) <= crate::limits::MAX_INFLIGHT_UPLOAD_BYTES
+        );
+    }
+
+    #[test]
     fn diagnosis_names_the_cap() {
         let l = CARDLESS_D1;
         let u = Usage {
             site_bytes: l.max_site_bytes,
             site_assets: 3,
-            workspace_bytes: 0,
+            ..Usage::default()
         };
         assert!(!fits(&u, 1, &l));
         assert_eq!(diagnose(&u, 1, &l), AssetError::SiteQuotaExceeded);
         let u = Usage {
-            site_bytes: 0,
             site_assets: 3,
             workspace_bytes: l.max_workspace_bytes,
+            ..Usage::default()
         };
         assert!(!fits(&u, 1, &l));
         assert_eq!(diagnose(&u, 1, &l), AssetError::WorkspaceQuotaExceeded);
         let u = Usage {
-            site_bytes: 0,
+            database_bytes: l.max_database_bytes,
+            ..Usage::default()
+        };
+        assert!(!fits(&u, 1, &l));
+        assert_eq!(diagnose(&u, 1, &l), AssetError::DatabaseCapacityExceeded);
+        assert!(
+            fits(&u, 1, &crate::limits::R2_OPT_IN),
+            "R2 bytes are not in D1"
+        );
+        let u = Usage {
             site_assets: l.max_site_assets,
-            workspace_bytes: 0,
+            ..Usage::default()
         };
         assert_eq!(diagnose(&u, 1, &l), AssetError::SiteAssetCountExceeded);
         assert!(fits(&Usage::default(), l.max_asset_bytes, &l));
