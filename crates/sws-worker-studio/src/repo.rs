@@ -16,6 +16,8 @@
 pub enum Param {
     Int(i64),
     Text(String),
+    /// Binary value (D1 BLOB), bound as a `Uint8Array`. Used only by the asset store.
+    Blob(Vec<u8>),
     Null,
 }
 

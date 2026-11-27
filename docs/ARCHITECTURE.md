@@ -27,12 +27,12 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
 ====================================================================================================
  PLANE 2: CONTROL PLANE (planned v0.2.0 Studio — optional, Cloudflare Workers)
 ====================================================================================================
-  `sws-worker-studio` (Rust → wasm32; scaffold present: D1 registry + request bounds + /api/health; DOs, R2, Queues and auth are later issues)
+  `sws-worker-studio` (Rust → wasm32; present: D1 registry, request bounds, /api/health and the bounded asset store (#63); DOs, Queues and real auth are later issues)
     ├── SQLite Durable Objects (hibernating, one command session per site)
     │     └── per-site snapshot + monotonic command log + expiring soft presence
     │         (command log, not CRDT; see §10)
     ├── D1 (SQLite)         : Workspace/site/user, token, asset & deployment metadata
-    ├── Asset storage       : size-capped D1 blobs by default (cardless); R2 is opt-in
+    ├── Asset storage       : size-capped D1 blobs by default (cardless); R2 is opt-in (see §10, "Studio asset storage")
     └── Cloudflare Queues   : Async publish jobs (sub-1 KB pointer to an immutable revision)
                               — only if the #59 spike proves Free-plan CPU headroom;
                               otherwise the CLI compiles and uploads (#68)
@@ -82,7 +82,8 @@ crates/                       Open-source Rust workspace (MIT OR Apache-2.0)
   sws-wasm/                   wasm-bindgen target for browser visual canvas
   sws-cli/                    `solo` CLI + MCP server
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          optional studio control-plane Worker — scaffold only (D1 registry, request bounds; Durable Objects, Queues and R2 opt-in/conditional, later issues)
+  sws-assets/                 pure asset-store policy shared by the Studio Worker and CLI (limits, quota reservations, validation, reconciliation) + native-only local store
+  sws-worker-studio/          optional studio control-plane Worker (D1 registry, request bounds, bounded D1/R2 asset store; Durable Objects, Queues and real auth are later issues)
 
 apps/                         planned v0.3.0 — thin TypeScript Builder shell and canvas (MIT OR Apache-2.0); directory names are an open assumption
   builder/                    Editor shell (inspector, tree, diagnostics, save/publish/export dialogs)
@@ -224,6 +225,7 @@ See the `cloudflare-rust-headers` skill.
 | --- | --- | --- | --- | --- |
 | 2026-11-24 | 0 | 0 | Phase 0 scaffold: `cargo test`, `cargo check --target wasm32`, `worker-build` and `wrangler dev` all working first time | — |
 | 2026-11-27 | 0 | 0 | #61 Studio Worker scaffold: wasm32 clippy, `worker-build --release`, local D1 migration and `wrangler dev` all worked first time; no toolchain debugging | — |
+| 2026-11-27 | 0 | 0 | #63 bounded asset stores: D1 BLOB bind/read (`Uint8Array` in, `Vec<u8>` out), atomic D1 batches, R2 put/get/list/delete and `worker-build --features` all worked against local `wrangler dev` first time; the only debugging was SQLite semantics (`INSERT OR IGNORE` also swallows CHECK failures), which is feature work, not toolchain | — |
 
 ---
 
@@ -289,6 +291,40 @@ Each site's Durable Object session keeps a snapshot, a monotonic command log and
 - Authentication is self-hosted GitHub OAuth with one bootstrapped owner and explicit invitations. Cloudflare Access, a card or an auth SaaS is never a default dependency (#60, #65). Edit-only credentials cannot publish or activate production.
 - Provisional cardless envelope (#63, to be tested with #69): up to 20 pages, 1 MiB per uploaded asset, 50 MiB of stored assets per site.
 - Application caps and alerts reduce billing risk but are not provider-side hard stops.
+
+### Studio asset storage (#63)
+
+Implemented in `crates/sws-assets` (pure policy plus a native-only local store), `crates/sws-worker-studio` (`assets_api`, `asset_repo`, wasm glue `assets_http`) and `migrations/0002_asset_store.sql`. **Every number below is a provisional project constant, not a platform fact. They stay assumptions until verified on a fresh Cloudflare account (#59, #69).**
+
+**Application caps and alerts reduce billing risk but are not provider-side hard stops.** The caps below are enforced by this Worker's code and by `CHECK` constraints; they do not stop Cloudflare from billing if the account is configured with a payment method, if another Worker or tool writes to the same resources, or if a limit changes. Set provider-side usage notifications and budgets yourself, and keep R2 unbound (the cardless default) if you do not want any chance of R2 charges.
+
+| Limit (provisional) | Cardless D1 (default) | Opt-in R2 | Constant |
+| --- | --- | --- | --- |
+| Pages per site | 20 (checked by the compiler/IR work, #69) | 20 | `MAX_PAGES_PER_SITE` |
+| Bytes per uploaded asset | 1 MiB | 5 MiB | `AssetLimits::max_asset_bytes` |
+| Stored plus reserved bytes per site | 50 MiB | 500 MiB | `max_site_bytes` |
+| Stored plus reserved bytes per workspace | 150 MiB | 2 GiB | `max_workspace_bytes` |
+| Assets per site | 500 | 5000 | `max_site_assets` |
+| Generated preview: per artifact / per site / retention / keep newest | 5 MiB / 10 MiB / 24 h / 3 | same | `PREVIEW` |
+| Generated export: per artifact / per site / retention / keep newest | 10 MiB / 20 MiB / 7 d / 2 | same | `EXPORT` |
+| Generated artifacts, whole workspace | 40 MiB (separate from the asset budget) | same | `MAX_WORKSPACE_GENERATED_BYTES` |
+| D1 BLOB chunk | 256 KiB (a `CHECK` rejects rows over 512 KiB) | n/a | `CHUNK_BYTES` |
+| Reservation lifetime | 10 min | 10 min | `RESERVATION_TTL_SECS` |
+| Buffered upload bytes per isolate | 12 MiB, then `503 upload_busy` + `Retry-After` | same | `MAX_INFLIGHT_UPLOAD_BYTES` |
+
+Assumptions to verify: a D1 row/value tops out around 2 MB (`D1_ROW_LIMIT_ASSUMED_BYTES`, hence 256 KiB chunks); a Worker isolate has 128 MB of memory (hence the in-flight guard); Workers Free D1 and request limits leave room for 50 MiB per site; R2 needs a payment method. Generated preview/export budgets have routes and producers only once #64/#66 land; the budgets, reservations, retention SQL and reconciliation are in place and tested now.
+
+**Backend selection.** New uploads go to D1 BLOB chunks unless `STUDIO_ASSET_BACKEND=r2` is set. R2 additionally needs the `MEDIA_BUCKET` binding (a commented opt-in in `deploy/cloudflare/wrangler.studio.example.jsonc`). `STUDIO_ASSET_BACKEND=r2` without the binding answers `503 r2_not_configured` with the fix in the message; there is no silent fallback, because the caps differ. Each `assets` row records its own backend, so existing assets keep being served after the setting changes. The local filesystem store exists only in native code (`sws_assets::local`, `solo assets`), never in the Worker.
+
+**Routes** (all authenticated and tenant-scoped; real authentication is #65, so in a normal build every one answers `401 unauthenticated`): `GET /api/sites/{ws}/{site}/assets` (list, usage, limits, backend diagnostics), `PUT|GET|DELETE /api/sites/{ws}/{site}/assets/{sha256}`, `POST /api/sites/{ws}/{site}/assets/reconcile`. A caller must be a member of `{ws}` (otherwise a uniform `403 forbidden`). Assets are served only as an allowlisted non-HTML type (`png`, `jpeg`, `gif`, `webp`, `avif`, `woff2`; no SVG or PDF), as an attachment, with `nosniff`, the Studio CSP and `Cache-Control: no-store`. The declared `Content-Type` must match the file's magic bytes.
+
+**Reservation algorithm.** Usage is `committed rows + live reservations` (no counter to drift). A reservation is one conditional `INSERT ... SELECT ... WHERE` that checks the site bytes, workspace bytes and site asset count in the same statement; D1 serialises writes, so two concurrent requests can never both pass a check that only one of them fits. The reserved size is the validated `Content-Length`, or the per-asset cap when it is absent (chunked uploads). The body is read through a byte counter limited to that reservation: `Content-Length` is never trusted, over-cap bytes are rejected mid-stream (`asset_too_large`, or `content_length_mismatch` if a declared length is exceeded), and SHA-256 and the sniffed type are verified before anything is stored. Commit is one atomic D1 batch (asset row with the actual size, chunks, reservation delete), and it only inserts while the reservation is still live and large enough; any failure releases the reservation. An abandoned request's reservation simply stops counting at `expires_at`.
+
+**Reconciliation** (`POST .../assets/reconcile`, bounded to 100 rows per step, idempotent, `more: true` means call again): delete expired reservations, expired and excess (beyond keep-newest) generated artifacts, D1 assets whose chunks do not add up to their size, chunks whose owner is gone, and (with R2 bound) R2 objects that no asset row references and that are older than the reservation TTL (a younger object may belong to an in-flight upload). There is no scheduled trigger yet; call it from the publish pipeline or a cron trigger added later. The Workers runtime is not asked to run it implicitly.
+
+**Error codes** (`{"ok":false,"error":...,"message":<actionable hint>}`): `unauthenticated`, `forbidden`, `site_not_found`, `asset_not_found`, `invalid_sha256`, `empty_asset`, `content_length_mismatch`, `asset_too_large`, `unsupported_content_type`, `content_type_mismatch`, `sha256_mismatch`, `site_quota_exceeded`, `workspace_quota_exceeded`, `site_asset_count_exceeded`, `generated_budget_exceeded`, `reservation_expired`, `r2_not_configured`, `asset_backend_invalid`, `upload_busy`, `store_failed`.
+
+**Tests.** Host unit tests (`cargo test -p sws-assets -p sws-worker-studio`), SQL-level tests against the real migrations (`tests/unit/studio-assets.test.mjs`, part of `npm run verify`), and the server-dependent local integration test (`npm run test:studio:assets`, CI only) that builds the Worker with the test-only `insecure-dev-auth` feature into a separate output directory and runs D1, R2 (local simulation, binding present only in the generated test config) and unbound-R2 servers. `npm run check:studio:no-dev-auth` guards that no release build contains that feature.
 
 ### Cloud quota values are assumptions
 
