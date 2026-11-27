@@ -98,10 +98,10 @@ pub fn run(store: &Path, site: &str, action: AssetsAction) -> Result<(), String>
         }
         AssetsAction::Rm { sha256 } => s.delete(site, &sha256).map_err(|e| e.to_string())?,
         AssetsAction::Gc => {
-            let r = s.reconcile(now);
+            let r = s.reconcile();
             println!(
-                "expired reservations: {}, partial uploads removed: {}",
-                r.expired_reservations, r.tmp_files_removed
+                "expired reservations: {}, partial uploads removed: {}, unreadable reservations removed: {}",
+                r.expired_reservations, r.tmp_files_removed, r.unreadable_reservations_removed
             );
         }
     }

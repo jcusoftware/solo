@@ -29,7 +29,9 @@ const INSPECTOR = { a: 9391, b: 9392, c: 9393 };
 const SHA = (buf) => createHash('sha256').update(buf).digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `X-Sws-Dev-Now` (dev build only) is an OFFSET in seconds from the Worker's real clock.
-const PAST_TTL = 700; // past the 600 s reservation TTL / orphan minimum age
+const TTL = 600; // reservation TTL
+const COMMIT_SAFETY = 30; // a commit is refused inside the final 30 s of a reservation
+const PAST_TTL = 1000; // past TTL + safety + the 300 s orphan margin (900 s orphan minimum age)
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 /** A distinct PNG-signed payload of exactly `len` bytes. */
@@ -384,6 +386,18 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       await a.call('DELETE', a.assetPath('ws-a', 'site-a4', SHA(buf)), { user: 1 });
     });
 
+    it('refuses a commit inside the final safety window, even though the reservation has not expired', async () => {
+      const a = api(A);
+      const buf = png(2100);
+      const edge = await a.put('ws-a', 'site-a4', buf, { headers: { 'X-Sws-Dev-Commit-Skew': String(TTL - COMMIT_SAFETY + 5) } });
+      assert.equal(edge.status, 409, edge.buf.toString());
+      assert.equal(edge.json.error, 'reservation_expired');
+      assert.equal((await a.call('GET', a.assetPath('ws-a', 'site-a4', SHA(buf)), { user: 1 })).status, 404);
+      const ok = await a.put('ws-a', 'site-a4', buf, { headers: { 'X-Sws-Dev-Commit-Skew': String(TTL - COMMIT_SAFETY - 20) } });
+      assert.equal(ok.status, 201, ok.buf.toString());
+      await a.call('DELETE', a.assetPath('ws-a', 'site-a4', SHA(buf)), { user: 1 });
+    });
+
     it('refuses an upload that would exceed the workspace cap or the per-site file count', async () => {
       const a = api(A);
       const ws = await a.put('ws-d', 'site-d4', png(100));
@@ -473,6 +487,8 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       assert.equal(l.backend, 'd1');
       assert.equal(l.r2_bound, false);
       assert.equal(l.provisional, true);
+      assert.equal(l.usage.database_has_headroom, true);
+      assert.equal('database_blob_bytes' in l.usage, false, 'the cross-tenant database total is never returned');
       assert.deepEqual(l.limits, { max_asset_bytes: MIB, max_site_bytes: 50 * MIB, max_workspace_bytes: 150 * MIB, max_site_assets: 500, max_database_blob_bytes: 400 * MIB });
       assert.deepEqual(l.generated.policy.map((p) => p.kind), ['preview', 'export']);
     });
@@ -666,6 +682,152 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       assert.ok(pages >= 3, `pages ${pages}`);
       assert.ok((await b.call('GET', b.assetPath('ws-a', 'site-a4', SHA(keep)), { user: 1 })).buf.equals(keep), 'the referenced object was kept');
       await b.call('DELETE', b.assetPath('ws-a', 'site-a4', SHA(keep)), { user: 1 });
+    });
+  });
+
+  describe('ambiguous commits, download slots and download integrity', () => {
+    /** Raw GET that keeps the status/headers and lets the caller decide how to read the body. */
+    const rawGet = (server, path, { headers = {}, signal } = {}) =>
+      fetch(`${server.base}${path}`, { headers: { 'X-Sws-Dev-User': '1', ...headers }, signal });
+    const d1Exec = (server, sql) =>
+      wr(['d1', 'execute', 'STUDIO_DB', '--local', '-c', server.cfg, '--persist-to', server.persist, '--command', sql, '--json']);
+    const objectKeyOf = (server, sha) => {
+      const out = JSON.parse(d1Exec(server, `SELECT object_key FROM assets WHERE sha256 = '${sha}'`));
+      return out[0].results[0].object_key;
+    };
+    /** Resolves whether reading the whole body fails (true) or completes (false). */
+    const bodyFails = async (res) => {
+      try {
+        await res.arrayBuffer();
+        return false;
+      } catch {
+        return true;
+      }
+    };
+
+    it('keeps a committed R2 object when the commit batch reports an error AFTER committing', async () => {
+      const b = api(B);
+      for (const body of ['streamed', 'buffered']) {
+        const buf = png(40 * 1024);
+        const sha = SHA(buf);
+        const h = { 'X-Sws-Dev-Fail-Batch-After-Commit': '1' };
+        const res =
+          body === 'streamed'
+            ? await b.put('ws-a', 'site-a4', buf, { headers: h })
+            : await b.call('PUT', b.assetPath('ws-a', 'site-a4', sha), { user: 1, headers: { 'Content-Type': 'image/png', ...h }, body: Readable.toWeb(Readable.from([buf])) });
+        assert.equal(res.status, 500, `${body}: ${res.buf.toString()}`);
+        // The row exists, so its object must NOT have been discarded: it still downloads intact ...
+        const dl = await b.call('GET', b.assetPath('ws-a', 'site-a4', sha), { user: 1 });
+        assert.equal(dl.status, 200, `${body}: ${dl.buf.toString().slice(0, 100)}`);
+        assert.ok(dl.buf.equals(buf), `${body}: intact`);
+        // ... and survives an old-enough orphan sweep (it is referenced).
+        await b.reconcile('ws-a', 'site-a4', { now: PAST_TTL });
+        assert.ok((await b.call('GET', b.assetPath('ws-a', 'site-a4', sha), { user: 1 })).buf.equals(buf), `${body}: survives the sweep`);
+        await b.call('DELETE', b.assetPath('ws-a', 'site-a4', sha), { user: 1 });
+      }
+    });
+
+    it('answers download_busy at the slot limit and reclaims leaked slots after the deadline', async () => {
+      const a = api(A);
+      const buf = png(1000);
+      const sha = SHA(buf);
+      assert.equal((await a.put('ws-a', 'site-a1', buf)).status, 201);
+      const path = a.assetPath('ws-a', 'site-a1', sha);
+      const clear = () => rawGet(A, path, { headers: { 'X-Sws-Dev-Now': '500' } }).then((r) => r.arrayBuffer());
+      try {
+        // 16 requests leak their slot (dev hook), filling the isolate's table.
+        for (let i = 0; i < 16; i++) {
+          const r = await a.call('GET', path, { user: 1, headers: { 'X-Sws-Dev-Hold-Slot': '1' } });
+          assert.equal(r.status, 200, r.buf.toString());
+        }
+        const busy = await a.call('GET', path, { user: 1 });
+        assert.equal(busy.status, 503, busy.buf.toString());
+        assert.equal(busy.json.error, 'download_busy');
+        assert.equal(busy.headers.get('retry-after'), '1');
+        // Just inside the 120 s deadline they still count; past it they are free again.
+        assert.equal((await a.call('GET', path, { user: 1, now: 100 })).status, 503);
+        const after = await a.call('GET', path, { user: 1, now: 130 });
+        assert.equal(after.status, 200, after.buf.toString());
+        assert.ok(after.buf.equals(buf));
+      } finally {
+        await clear();
+      }
+      assert.equal((await a.call('GET', path, { user: 1 })).status, 200, 'the table is clean afterwards');
+      await a.call('DELETE', path, { user: 1 });
+    });
+
+    it('releases download slots when clients abort mid-stream (20 aborts, then 16 concurrent downloads)', async () => {
+      for (const [server, size] of [[A, MIB], [B, 5 * MIB]]) {
+        const x = api(server);
+        const buf = png(size);
+        const sha = SHA(buf);
+        assert.equal((await x.put('ws-a', 'site-a3', buf)).status, 201);
+        const path = x.assetPath('ws-a', 'site-a3', sha);
+        for (let i = 0; i < 20; i++) {
+          const ctl = new AbortController();
+          const res = await rawGet(server, path, { signal: ctl.signal });
+          assert.equal(res.status, 200);
+          const reader = res.body.getReader();
+          const first = await reader.read();
+          assert.ok(first.value?.length > 0);
+          ctl.abort();
+          await reader.cancel().catch(() => {});
+        }
+        await sleep(500);
+        const all = await Promise.all(Array.from({ length: 16 }, () => x.call('GET', path, { user: 1 })));
+        assert.deepEqual(all.map((r) => r.status), Array(16).fill(200), `${server.key}: ${all.map((r) => r.status)}`);
+        assert.ok(all.every((r) => r.buf.equals(buf)));
+        await x.call('DELETE', path, { user: 1 });
+      }
+    });
+
+    it('never sets Content-Length on a download (the body is verified only at its end)', async () => {
+      for (const server of [A, B]) {
+        const x = api(server);
+        const buf = png(3000);
+        assert.equal((await x.put('ws-a', 'site-a3', buf)).status, 201);
+        const res = await rawGet(server, x.assetPath('ws-a', 'site-a3', SHA(buf)));
+        assert.equal(res.status, 200);
+        assert.equal(res.headers.get('content-length'), null, server.key);
+        assert.ok(Buffer.from(await res.arrayBuffer()).equals(buf));
+        await x.call('DELETE', x.assetPath('ws-a', 'site-a3', SHA(buf)), { user: 1 });
+      }
+    });
+
+    it('fails the transfer when a D1 chunk is replaced by same-size different bytes', async () => {
+      const a = api(A);
+      const buf = png(600 * 1024); // chunks of 256 KiB, 256 KiB, 88 KiB
+      const sha = SHA(buf);
+      assert.equal((await a.put('ws-a', 'site-a3', buf)).status, 201);
+      const path = a.assetPath('ws-a', 'site-a3', sha);
+      assert.ok((await rawGet(A, path).then((r) => r.arrayBuffer())).byteLength === buf.length, 'intact first');
+      for (const seq of [1, 0]) {
+        d1Exec(A, `UPDATE blob_chunks SET data = randomblob(byte_size) WHERE workspace_id = 'ws-a' AND seq = ${seq} AND blob_id = (SELECT id FROM assets WHERE workspace_id = 'ws-a' AND sha256 = '${sha}')`);
+        const res = await rawGet(A, path);
+        assert.equal(res.status, 200, `chunk ${seq}: the first chunk is read before answering`);
+        assert.equal(res.headers.get('content-length'), null);
+        assert.equal(await bodyFails(res), true, `chunk ${seq}: a corrupted body must not complete cleanly`);
+      }
+      await a.call('DELETE', path, { user: 1 });
+    });
+
+    it('fails the transfer when an R2 object is overwritten with same-size different bytes', async () => {
+      const b = api(B);
+      const buf = png(200 * 1024);
+      const sha = SHA(buf);
+      assert.equal((await b.put('ws-a', 'site-a3', buf)).status, 201);
+      const key = objectKeyOf(B, sha);
+      assert.match(key, new RegExp(`^ws-a/site-a3/${sha}/`));
+      const evil = png(buf.length);
+      const file = join(STATE, 'tampered.bin');
+      writeFileSync(file, evil);
+      wr(['r2', 'object', 'put', `sws-studio-assets-test-media/${key}`, '--file', file, '--local', '-c', B.cfg, '--persist-to', B.persist]);
+      const path = b.assetPath('ws-a', 'site-a3', sha);
+      const res = await rawGet(B, path);
+      assert.equal(res.status, 200, 'sizes match, so the head is accepted');
+      assert.equal(res.headers.get('content-length'), null);
+      assert.equal(await bodyFails(res), true, 'a tampered object must not complete cleanly');
+      await b.call('DELETE', path, { user: 1 });
     });
   });
 

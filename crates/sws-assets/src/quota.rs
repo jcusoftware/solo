@@ -55,10 +55,45 @@ pub fn plan_upload(
     }
 }
 
-/// May this isolate start another streamed download? A hard slot count, since each
-/// download holds at most one chunk/stream window.
-pub fn admit_download(current: u32, max: u32) -> bool {
-    current < max
+/// Download admission for one isolate: a hard slot count (each download holds at most
+/// one chunk/stream window) where every slot records when it was admitted. A slot
+/// older than `deadline_secs` counts as free, so a response stream the runtime drops
+/// without cancelling it (its release never runs) cannot leak a slot forever.
+#[derive(Debug, Default)]
+pub struct DownloadSlots {
+    slots: Vec<(u64, u64)>,
+    next_id: u64,
+}
+
+impl DownloadSlots {
+    pub const fn new() -> Self {
+        Self {
+            slots: Vec::new(),
+            next_id: 0,
+        }
+    }
+
+    /// Admit a download at `now_secs`: its slot id, or `None` when `max` live slots
+    /// are held. Slots admitted at or before `now_secs - deadline_secs` are dropped.
+    pub fn admit(&mut self, now_secs: u64, max: u32, deadline_secs: u64) -> Option<u64> {
+        self.slots
+            .retain(|&(_, at)| now_secs.saturating_sub(at) < deadline_secs);
+        if self.slots.len() >= max as usize {
+            return None;
+        }
+        self.next_id += 1;
+        self.slots.push((self.next_id, now_secs));
+        Some(self.next_id)
+    }
+
+    /// Release a slot (a no-op if it already expired and was reclaimed).
+    pub fn release(&mut self, id: u64) {
+        self.slots.retain(|&(i, _)| i != id);
+    }
+
+    pub fn held(&self) -> usize {
+        self.slots.len()
+    }
 }
 
 /// Counts bytes as they arrive; the error names which promise was broken.
@@ -163,6 +198,12 @@ pub fn diagnose(usage: &Usage, request: u64, limits: &AssetLimits) -> AssetError
     }
 }
 
+/// Is there room in the shared database for one more maximum-size asset? The only
+/// view of the cross-tenant database total that is safe to hand to a caller.
+pub fn has_database_headroom(usage: &Usage, limits: &AssetLimits) -> bool {
+    usage.database_bytes.saturating_add(limits.max_asset_bytes) <= limits.max_database_bytes
+}
+
 /// Would a reservation of `request` bytes fit? Mirrors the SQL `WHERE` clause.
 pub fn fits(usage: &Usage, request: u64, limits: &AssetLimits) -> bool {
     usage.site_assets < limits.max_site_assets
@@ -262,10 +303,45 @@ mod tests {
     }
 
     #[test]
-    fn download_slots_are_a_hard_count() {
-        use crate::limits::MAX_INFLIGHT_DOWNLOADS as M;
-        assert!(admit_download(0, M) && admit_download(M - 1, M));
-        assert!(!admit_download(M, M) && !admit_download(M + 1, M));
+    fn database_headroom_is_a_boolean_for_one_more_maximum_asset() {
+        let l = CARDLESS_D1;
+        let mut u = Usage::default();
+        assert!(has_database_headroom(&u, &l));
+        u.database_bytes = l.max_database_bytes - l.max_asset_bytes;
+        assert!(has_database_headroom(&u, &l));
+        u.database_bytes += 1;
+        assert!(!has_database_headroom(&u, &l));
+        u.database_bytes = u64::MAX;
+        assert!(has_database_headroom(&u, &crate::limits::R2_OPT_IN));
+    }
+
+    #[test]
+    fn download_slots_are_a_hard_count_and_release() {
+        use crate::limits::{DOWNLOAD_SLOT_DEADLINE_SECS as D, MAX_INFLIGHT_DOWNLOADS as M};
+        let mut s = DownloadSlots::new();
+        let ids: Vec<u64> = (0..M).map(|_| s.admit(100, M, D).unwrap()).collect();
+        assert_eq!(s.admit(100, M, D), None, "full");
+        s.release(ids[3]);
+        assert_eq!(s.held(), M as usize - 1);
+        assert!(s.admit(100, M, D).is_some());
+        assert_eq!(s.admit(100, M, D), None);
+    }
+
+    #[test]
+    fn leaked_download_slots_expire_after_the_deadline() {
+        use crate::limits::{DOWNLOAD_SLOT_DEADLINE_SECS as D, MAX_INFLIGHT_DOWNLOADS as M};
+        let mut s = DownloadSlots::new();
+        let ids: Vec<u64> = (0..M).map(|_| s.admit(100, M, D).unwrap()).collect();
+        // Never released (the stream was dropped without cancel): still held just before ...
+        assert_eq!(s.admit(100 + D - 1, M, D), None);
+        // ... and reclaimed at the deadline.
+        let fresh = s.admit(100 + D, M, D).expect("expired slots are free");
+        assert_eq!(s.held(), 1);
+        // A late release of an expired id never frees someone else's slot.
+        s.release(ids[0]);
+        assert_eq!(s.held(), 1);
+        s.release(fresh);
+        assert_eq!(s.held(), 0);
     }
 
     #[test]

@@ -18,10 +18,14 @@
 //!   processes or store handles can never over-commit.
 //!
 //! The commit re-reads the clock and refuses (`reservation_expired`) when the
-//! reservation has lapsed, exactly like the D1/R2 commit statement, so bytes are never
-//! committed after the quota stopped counting them. Reconciliation only removes
-//! temp files whose mtime is at least [`RESERVATION_TTL_SECS`] old, so it can never
-//! remove a live upload's file. `get` re-hashes the file and fails closed on tampering.
+//! reservation has lapsed or will lapse within [`COMMIT_SAFETY_SECS`], exactly like
+//! the D1/R2 commit statement, so bytes are never committed after the quota stopped
+//! counting them. Reconciliation reads the same injectable clock (never a caller's
+//! "now") and only removes temp files, and unreadable reservation files, whose mtime
+//! is at least [`ORPHAN_MIN_AGE_SECS`] old, so it can never remove a live upload's
+//! file. The temp file is `fsync`ed before it is renamed into place. A re-upload of
+//! bytes whose committed file was truncated or tampered with REPAIRS it (the verified
+//! temp file replaces it); `get` re-hashes the file and fails closed on tampering.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -32,8 +36,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::AssetError;
 use crate::hash::{StreamHasher, sha256_hex};
-use crate::limits::{AssetLimits, RESERVATION_TTL_SECS};
+use crate::limits::{AssetLimits, COMMIT_SAFETY_SECS, RESERVATION_TTL_SECS};
 use crate::quota::{StreamCounter, Usage, diagnose, fits, plan_upload};
+use crate::reconcile::ORPHAN_MIN_AGE_SECS;
 use crate::validate::{
     ContentKind, check_declared_vs_sniffed, declared_kind, is_id, is_sha256, local_file_name,
 };
@@ -99,7 +104,8 @@ pub struct Stored {
     pub sha256: String,
     pub byte_size: u64,
     pub kind: ContentKind,
-    /// False when identical bytes were already stored (no extra space used).
+    /// False when identical, intact bytes were already stored (no extra space used).
+    /// True for a new file, and for a repair that replaced a damaged one.
     pub created: bool,
 }
 
@@ -114,6 +120,8 @@ pub struct Entry {
 pub struct ReconcileReport {
     pub expired_reservations: usize,
     pub tmp_files_removed: usize,
+    /// Empty or unparsable `.res` files older than the orphan age.
+    pub unreadable_reservations_removed: usize,
 }
 
 fn io(_: std::io::Error) -> AssetError {
@@ -331,6 +339,8 @@ impl LocalAssetStore {
                 file.write_all(&buf[..n]).map_err(io)?;
             }
             file.flush().map_err(io)?;
+            // Durable BEFORE it can be renamed into place under its final name.
+            file.sync_all().map_err(io)?;
             let size = counter.finish()?;
             check_declared_vs_sniffed(kind, &head)?;
             let sha = hasher.finish_hex();
@@ -352,14 +362,15 @@ impl LocalAssetStore {
         let committed = (|| {
             let _g = self.lock()?;
             let res_path = self.res_dir().join(format!("{rid}.res"));
-            let alive = self
-                .read_reservations()
-                .iter()
-                .any(|(_, r)| r.id == rid && r.expires_at > (self.clock)());
+            let alive = self.read_reservations().iter().any(|(_, r)| {
+                r.id == rid && r.expires_at > (self.clock)().saturating_add(COMMIT_SAFETY_SECS)
+            });
             if !alive {
                 return Err(AssetError::ReservationExpired);
             }
-            let created = !dest.exists();
+            // An existing file is kept only if it is intact (right length and hash).
+            // A truncated or tampered one is replaced by the verified temp file.
+            let created = !Self::is_intact(&dest, size, &sha);
             if created {
                 fs::rename(&tmp, &dest).map_err(io)?;
             }
@@ -383,6 +394,12 @@ impl LocalAssetStore {
                 Err(e)
             }
         }
+    }
+
+    /// Does `path` exist with exactly `size` bytes hashing to `sha`?
+    fn is_intact(path: &Path, size: u64, sha: &str) -> bool {
+        fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
+            && fs::read(path).is_ok_and(|b| sha256_hex(&b) == sha)
     }
 
     fn find(&self, site: &str, sha256: &str) -> Result<(PathBuf, ContentKind), AssetError> {
@@ -424,16 +441,41 @@ impl LocalAssetStore {
         Ok(v)
     }
 
-    /// Drop expired reservations and temp files older than [`RESERVATION_TTL_SECS`]
-    /// by mtime. A younger temp file may belong to a live upload and is never touched.
-    pub fn reconcile(&self, now: u64) -> ReconcileReport {
+    /// Drop expired reservations, unreadable reservation files and temp files older
+    /// than [`ORPHAN_MIN_AGE_SECS`] by mtime, judged against the store's own clock. A
+    /// younger file may belong to a live upload and is never touched.
+    pub fn reconcile(&self) -> ReconcileReport {
+        let now = (self.clock)();
         let mut report = ReconcileReport::default();
         let Ok(_g) = self.lock() else {
             return report;
         };
-        for (path, r) in self.read_reservations() {
+        let old_enough = |path: &Path| {
+            let mtime = fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            // Unknown age is treated as young (kept).
+            mtime.is_some_and(|m| now.saturating_sub(m) >= ORPHAN_MIN_AGE_SECS)
+        };
+        let parsed = self.read_reservations();
+        for (path, r) in &parsed {
             if r.expires_at <= now && fs::remove_file(path).is_ok() {
                 report.expired_reservations += 1;
+            }
+        }
+        if let Ok(rd) = fs::read_dir(self.res_dir()) {
+            for e in rd.flatten() {
+                let path = e.path();
+                let is_res = path.extension().is_some_and(|x| x == "res");
+                if is_res
+                    && !parsed.iter().any(|(p, _)| *p == path)
+                    && old_enough(&path)
+                    && fs::remove_file(&path).is_ok()
+                {
+                    report.unreadable_reservations_removed += 1;
+                }
             }
         }
         let Ok(rd) = fs::read_dir(&self.root) else {
@@ -451,15 +493,7 @@ impl LocalAssetStore {
                 if !(name.starts_with(".up-") && name.ends_with(".tmp")) {
                     continue;
                 }
-                let mtime = f
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs());
-                // Unknown age is treated as young (kept).
-                let old = mtime.is_some_and(|m| now.saturating_sub(m) >= RESERVATION_TTL_SECS);
-                if old && fs::remove_file(f.path()).is_ok() {
+                if old_enough(&f.path()) && fs::remove_file(f.path()).is_ok() {
                     report.tmp_files_removed += 1;
                 }
             }
@@ -594,7 +628,7 @@ mod tests {
         );
         // Nothing leaked: no reservations, no tmp files, zero usage.
         assert_eq!(s.usage("s", NOW), Usage::default());
-        assert_eq!(s.reconcile(NOW), ReconcileReport::default());
+        assert_eq!(s.reconcile(), ReconcileReport::default());
         let leftovers = fs::read_dir(dir.join("s")).map(|r| r.count()).unwrap_or(0);
         assert_eq!(leftovers, 0);
         let _ = fs::remove_dir_all(dir);
@@ -641,43 +675,143 @@ mod tests {
         );
         let u = s.usage("a", NOW);
         assert_eq!(u.site_bytes, 10 * KIB);
-        assert_eq!(s.reconcile(NOW), ReconcileReport::default());
+        assert_eq!(s.reconcile(), ReconcileReport::default());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    fn clocked(dir: &Path, limits: AssetLimits) -> (LocalAssetStore, Arc<AtomicU64>) {
+        let clock = Arc::new(AtomicU64::new(NOW));
+        let c = Arc::clone(&clock);
+        let s = LocalAssetStore::open(dir, limits)
+            .unwrap()
+            .with_clock(move || c.load(Ordering::SeqCst));
+        (s, clock)
     }
 
     #[test]
     fn reconcile_sweeps_stale_reservations_and_tmp_files() {
         let dir = tmpdir("rec");
-        let s = store(&dir, small());
+        let (s, clock) = clocked(&dir, small());
         s.reserve("a", 2 * KIB, NOW).unwrap();
         fs::create_dir_all(dir.join("a")).unwrap();
-        fs::write(dir.join("a").join(".up-young.tmp"), b"partial").unwrap();
+        let young = dir.join("a").join(".up-young.tmp");
+        fs::write(&young, b"partial").unwrap();
         let old = dir.join("a").join(".up-old.tmp");
         fs::write(&old, b"orphan").unwrap();
-        set_mtime(&old, NOW - RESERVATION_TTL_SECS - 1);
-        set_mtime(&dir.join("a").join(".up-young.tmp"), NOW);
-        // Only the temp file older than the TTL is removed; the young one may be live.
+        set_mtime(&old, NOW - ORPHAN_MIN_AGE_SECS);
+        set_mtime(&young, NOW - ORPHAN_MIN_AGE_SECS + 1);
+        // Only the temp file past the orphan age is removed; the young one may be live.
         assert_eq!(
-            s.reconcile(NOW),
+            s.reconcile(),
             ReconcileReport {
-                expired_reservations: 0,
-                tmp_files_removed: 1
+                tmp_files_removed: 1,
+                ..Default::default()
             }
         );
-        assert!(dir.join("a").join(".up-young.tmp").exists());
+        assert!(young.exists());
         assert_eq!(s.usage("a", NOW).site_bytes, 2 * KIB);
         // Past the TTL the reservation stops counting even before the sweep ...
-        let later = NOW + RESERVATION_TTL_SECS + 1;
-        assert_eq!(s.usage("a", later), Usage::default());
-        // ... and the sweep removes it and its tmp file.
+        clock.store(NOW + RESERVATION_TTL_SECS + 1, Ordering::SeqCst);
+        assert_eq!(s.usage("a", (s.clock)()), Usage::default());
+        // ... and the sweep (judging by the store's own clock) removes it and, once
+        // old enough, its tmp file.
         assert_eq!(
-            s.reconcile(later),
+            s.reconcile(),
             ReconcileReport {
                 expired_reservations: 1,
-                tmp_files_removed: 1
+                tmp_files_removed: 1,
+                ..Default::default()
             }
         );
-        assert!(!dir.join("a").join(".up-young.tmp").exists());
+        assert!(!young.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reconcile_removes_old_unreadable_reservation_files_only() {
+        let dir = tmpdir("badres");
+        let (s, _clock) = clocked(&dir, small());
+        let live = s.reserve("a", KIB, NOW).unwrap();
+        let res = dir.join(".res");
+        for (name, body) in [("empty.res", ""), ("junk.res", "not a reservation")] {
+            fs::write(res.join(name), body).unwrap();
+            set_mtime(&res.join(name), NOW - ORPHAN_MIN_AGE_SECS);
+        }
+        fs::write(res.join("young-empty.res"), "").unwrap();
+        set_mtime(&res.join("young-empty.res"), NOW - ORPHAN_MIN_AGE_SECS + 1);
+        assert_eq!(
+            s.reconcile(),
+            ReconcileReport {
+                unreadable_reservations_removed: 2,
+                ..Default::default()
+            }
+        );
+        assert!(res.join("young-empty.res").exists(), "may be mid-write");
+        assert!(res.join(format!("{live}.res")).exists(), "live one kept");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reconcile_uses_the_store_clock_not_a_callers_now() {
+        let dir = tmpdir("recclock");
+        let (s, clock) = clocked(&dir, small());
+        fs::create_dir_all(dir.join("a")).unwrap();
+        let tmp = dir.join("a").join(".up-x.tmp");
+        fs::write(&tmp, b"x").unwrap();
+        set_mtime(&tmp, NOW);
+        assert_eq!(s.reconcile().tmp_files_removed, 0);
+        clock.store(NOW + ORPHAN_MIN_AGE_SECS, Ordering::SeqCst);
+        assert_eq!(s.reconcile().tmp_files_removed, 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_reupload_repairs_a_truncated_or_tampered_committed_file() {
+        let dir = tmpdir("repair");
+        let s = store(&dir, CARDLESS_D1);
+        let data = png(600, 9);
+        let st = put(&s, "s", &data, None).unwrap();
+        let path = dir.join("s").join(format!("{}.png", st.sha256));
+        // Intact: a duplicate upload is a no-op.
+        assert!(!put(&s, "s", &data, None).unwrap().created);
+        for damage in [data[..100].to_vec(), {
+            let mut v = data.clone();
+            v[300] ^= 0xFF;
+            v
+        }] {
+            fs::write(&path, damage).unwrap();
+            assert_eq!(s.get("s", &st.sha256), Err(AssetError::StoreFailed));
+            assert!(put(&s, "s", &data, None).unwrap().created, "repaired");
+            assert_eq!(s.get("s", &st.sha256).unwrap().1, data);
+            assert!(!put(&s, "s", &data, None).unwrap().created);
+        }
+        assert_eq!(s.list("s").unwrap().len(), 1);
+        let leftovers = fs::read_dir(dir.join("s")).unwrap().count();
+        assert_eq!(leftovers, 1, "no temp file left behind");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_inside_the_final_safety_window_is_refused() {
+        let dir = tmpdir("safety");
+        let (s, clock) = clocked(&dir, small());
+        let mut r = SlowReader {
+            data: Cursor::new(png(100, 1)),
+            clock: Arc::clone(&clock),
+            // Still before expiry, but within COMMIT_SAFETY_SECS of it.
+            jump_to: NOW + RESERVATION_TTL_SECS - COMMIT_SAFETY_SECS,
+        };
+        assert_eq!(
+            s.put("s", PNG, None, Some("100"), &mut r, NOW),
+            Err(AssetError::ReservationExpired)
+        );
+        let mut ok = SlowReader {
+            data: Cursor::new(png(100, 2)),
+            clock: Arc::clone(&clock),
+            jump_to: NOW + RESERVATION_TTL_SECS - COMMIT_SAFETY_SECS - 1,
+        };
+        clock.store(NOW, Ordering::SeqCst);
+        assert!(s.put("s", PNG, None, Some("100"), &mut ok, NOW).is_ok());
         let _ = fs::remove_dir_all(dir);
     }
 

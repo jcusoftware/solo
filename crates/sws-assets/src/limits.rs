@@ -17,12 +17,24 @@ pub const MAX_PAGES_PER_SITE: u32 = 20;
 /// A reservation that is not committed or released within this window stops
 /// counting against quota and is swept by reconciliation.
 pub const RESERVATION_TTL_SECS: u64 = 600;
+/// A commit is refused unless the reservation is still live this many seconds AFTER
+/// the commit clock read: the commit statement binds `commit_now + COMMIT_SAFETY_SECS`,
+/// so clock skew or a slow commit batch can never land a row at the TTL boundary.
+pub const COMMIT_SAFETY_SECS: u64 = 30;
+/// Extra age, beyond the reservation TTL, before an unreferenced object is swept.
+/// Together with [`COMMIT_SAFETY_SECS`] this is the margin between "last moment a
+/// commit can succeed" and "first moment the sweep may delete its object".
+pub const ORPHAN_SAFETY_SECS: u64 = 300;
 /// Isolate memory guard. A Worker isolate (assumed 128 MB limit) admits at most this
 /// many bytes of upload working memory at once, where each upload is charged
 /// [`crate::quota::upload_memory_cost`] (its buffered copies, not just the body
 /// size). Further uploads get `503 upload_busy` + `Retry-After` BEFORE any
 /// reservation is written.
 pub const MAX_INFLIGHT_UPLOAD_BYTES: u64 = 12 * MIB;
+/// A download slot older than this is treated as free again. A response stream that
+/// is dropped without being cancelled (so its slot's `Drop` never runs) can therefore
+/// leak a slot for at most this long.
+pub const DOWNLOAD_SLOT_DEADLINE_SECS: u64 = 120;
 /// Same guard for downloads: concurrent in-flight downloads on one isolate. Each holds
 /// at most one [`CHUNK_BYTES`] chunk (D1) or a bounded stream window (R2), so
 /// `MAX_INFLIGHT_DOWNLOADS * CHUNK_BYTES` (4 MiB) bounds their working memory.
@@ -149,6 +161,17 @@ mod tests {
     fn chunks_stay_far_below_the_assumed_row_limit() {
         assert!((CHUNK_BYTES as u64) * 4 <= D1_ROW_LIMIT_ASSUMED_BYTES);
         assert!((256 * KIB..=512 * KIB).contains(&(CHUNK_BYTES as u64)));
+    }
+
+    #[test]
+    fn orphan_sweep_has_a_margin_after_the_last_possible_commit() {
+        use crate::reconcile::ORPHAN_MIN_AGE_SECS;
+        // A commit needs expires_at > commit_now + COMMIT_SAFETY_SECS, so the latest
+        // commit happens before TTL - SAFETY; the sweep waits TTL + ORPHAN_SAFETY.
+        const {
+            assert!(ORPHAN_MIN_AGE_SECS > RESERVATION_TTL_SECS + COMMIT_SAFETY_SECS);
+            assert!(COMMIT_SAFETY_SECS < RESERVATION_TTL_SECS);
+        }
     }
 
     #[test]

@@ -165,6 +165,13 @@ describe('studio asset store migration + SQL', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM assets').get().n, 0);
   });
 
+  it('commit liveness is strict at the bound deadline (the Worker binds commit_now + the safety margin)', () => {
+    seed();
+    reserve('ws-a', 'site-1', 'edge', 100);
+    assert.equal(commit('ws-a', 'site-1', 1, 100, 'edge', NOW, 'd1', EXP), 0, 'deadline == expiry is refused');
+    assert.equal(commit('ws-a', 'site-1', 1, 100, 'edge', NOW, 'd1', '2026-11-27T00:09:59Z'), 1, 'one second inside is accepted');
+  });
+
   it('liveness uses the COMMIT-time clock, not the request start: a slow upload is refused and stores nothing', () => {
     seed();
     reserve('ws-a', 'site-1', 'slow', 1000);
@@ -212,10 +219,10 @@ describe('studio asset store migration + SQL', () => {
     chunk('ws-a', 1, 0, new Uint8Array([1, 2, 3, 4]));
     assert.equal(get('CHUNK_GET', 'ws-b', 'a1', 0), undefined);
     assert.deepEqual([...get('CHUNK_GET', 'ws-a', 'a1', 0).data], [1, 2, 3, 4]);
-    assert.equal(run('ASSET_DELETE', 'ws-b', 'site-1', sha(1)).changes, 0);
+    assert.equal(run('ASSET_DELETE', 'ws-b', 'site-1', sha(1), null).changes, 0);
     assert.equal(get('CHUNK_GET', 'ws-a', 'a1', 0) !== undefined, true, 'another workspace cannot delete it');
     // The AFTER DELETE trigger removes the chunks in the same statement.
-    run('ASSET_DELETE', 'ws-a', 'site-1', sha(1));
+    run('ASSET_DELETE', 'ws-a', 'site-1', sha(1), null);
     assert.equal(get('CHUNK_GET', 'ws-a', 'a1', 0), undefined);
     assert.equal(get('USAGE', 'ws-a', 'site-1', NOW).site_stored, 0);
   });
@@ -287,7 +294,9 @@ describe('studio asset store migration + SQL', () => {
       assert.equal(commit('ws-a', 'site-1', 1, 100, 'u1', NOW, 'r2'), 1);
       assert.equal(get('ASSET_GET', 'ws-a', 'site-1', sha(1)).object_key, keyed('u1'));
       // Delete: the row goes and its key is tombstoned in the same statement.
-      assert.equal(run('ASSET_DELETE', 'ws-a', 'site-1', sha(1)).changes, 1);
+      assert.equal(run('ASSET_DELETE', 'ws-a', 'site-1', sha(1), keyed('other')).changes, 0, 'a stale key matches nothing');
+      assert.equal(run('ASSET_DELETE', 'ws-a', 'site-1', sha(1), null).changes, 0, 'an R2 row is not a D1 row');
+      assert.equal(run('ASSET_DELETE', 'ws-a', 'site-1', sha(1), keyed('u1')).changes, 1);
       assert.deepEqual(db.prepare(Q.TOMBSTONES_LIST.sql).all('ws-a', 10).map((r) => r.object_key), [keyed('u1')]);
       // Re-upload (it raced the delete): a NEW key, so deleting u1's object cannot touch it.
       reserve('ws-a', 'site-1', 'u2', MIB);

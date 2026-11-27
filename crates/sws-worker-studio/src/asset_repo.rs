@@ -10,7 +10,8 @@
 //! of them fits, and there is no counter that can drift.
 
 use sws_assets::limits::{
-    AssetLimits, GeneratedKind, MAX_DATABASE_BLOB_BYTES, MAX_WORKSPACE_GENERATED_BYTES,
+    AssetLimits, COMMIT_SAFETY_SECS, GeneratedKind, MAX_DATABASE_BLOB_BYTES,
+    MAX_WORKSPACE_GENERATED_BYTES,
 };
 use sws_assets::time::utc_text;
 
@@ -50,7 +51,9 @@ AND (SELECT COALESCE(SUM(byte_size), 0) FROM assets WHERE storage_backend = 'd1'
  + (SELECT COALESCE(SUM(byte_size), 0) FROM asset_reservations WHERE expires_at > ?5) + ?4 <= ?10";
 
 /// ?1 workspace, ?2 site, ?3 now. Stored and reserved usage, for diagnostics after a
-/// refused reservation and for the usage listing.
+/// refused reservation and for the usage listing. `database_blob_bytes` is a
+/// cross-tenant aggregate: the Worker uses it to decide a refusal and to derive a
+/// headroom boolean, and never returns the number to a caller.
 pub const USAGE: &str = "SELECT \
 (SELECT COALESCE(SUM(byte_size), 0) FROM assets WHERE workspace_id = ?1 AND site_id = ?2) AS site_stored, \
 (SELECT COALESCE(SUM(byte_size), 0) FROM asset_reservations \
@@ -77,10 +80,12 @@ pub const RESERVATION_DELETE: &str =
 
 /// ?1 workspace, ?2 site, ?3 asset id, ?4 sha256, ?5 actual bytes, ?6 content type,
 /// ?7 backend, ?8 created_at (request start), ?9 reservation id, ?10 R2 object key
-/// (NULL for D1), ?11 commit time. Inserts only while the reservation is live AT
-/// COMMIT TIME (`?11`, a clock read immediately before the commit batch, never the
-/// request-start time in `?8`) and large enough; an existing (workspace, site, sha256)
-/// is left untouched.
+/// (NULL for D1), ?11 commit deadline. Inserts only while the reservation outlives
+/// `?11`, which the builder sets to a clock read immediately before the commit batch
+/// PLUS [`COMMIT_SAFETY_SECS`] (never the request-start time in `?8`): a commit inside
+/// the final safety window is refused, which is what lets the orphan sweep keep a
+/// margin. The reservation must also be large enough; an existing
+/// (workspace, site, sha256) is left untouched.
 pub const ASSET_COMMIT: &str = "INSERT INTO assets \
 (workspace_id, site_id, id, sha256, byte_size, content_type, storage_backend, created_at, object_key) \
 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10 \
@@ -111,10 +116,13 @@ pub const CHUNK_GET: &str =
 pub const CHUNK_COUNT: &str = "SELECT COUNT(*) AS chunks, COALESCE(SUM(byte_size), 0) AS bytes \
 FROM blob_chunks WHERE workspace_id = ?1 AND blob_id = ?2";
 
-/// ?1 workspace, ?2 site, ?3 sha256. The `trg_assets_after_delete` trigger removes the
-/// asset's chunks and tombstones its R2 key in the same transaction.
-pub const ASSET_DELETE: &str =
-    "DELETE FROM assets WHERE workspace_id = ?1 AND site_id = ?2 AND sha256 = ?3";
+/// ?1 workspace, ?2 site, ?3 sha256, ?4 the R2 object key of the row that was read
+/// (NULL for D1). Matching the key makes the delete exact: if the row was replaced
+/// between the read and this statement, nothing is deleted and no object is removed.
+/// The `trg_assets_after_delete` trigger removes the asset's chunks and tombstones its
+/// R2 key in the same transaction.
+pub const ASSET_DELETE: &str = "DELETE FROM assets WHERE workspace_id = ?1 AND site_id = ?2 \
+AND sha256 = ?3 AND object_key IS ?4";
 
 // --- Reconciliation ----------------------------------------------------------
 
@@ -172,9 +180,10 @@ AND (SELECT COALESCE(SUM(byte_size), 0) FROM assets WHERE storage_backend = 'd1'
  + (SELECT COALESCE(SUM(byte_size), 0) FROM asset_reservations WHERE expires_at > ?6) + ?5 <= ?11";
 
 /// ?1 workspace, ?2 site, ?3 artifact id, ?4 kind, ?5 sha256, ?6 bytes, ?7 backend,
-/// ?8 created_at, ?9 expires_at, ?10 reservation id, ?11 commit time, ?12 retention
-/// seconds for this kind. Commits only while the reservation is live AT COMMIT TIME
-/// (`?11`, read immediately before the commit batch) and only with an `expires_at`
+/// ?8 created_at, ?9 expires_at, ?10 reservation id, ?11 commit deadline, ?12 retention
+/// seconds for this kind. Commits only while the reservation outlives `?11` (the
+/// builder binds a clock read immediately before the commit batch plus
+/// [`COMMIT_SAFETY_SECS`], like [`ASSET_COMMIT`]) and only with an `expires_at`
 /// within `?12` seconds of `created_at`; [`generated_commit`] clamps it first.
 pub const GENERATED_COMMIT: &str = "INSERT INTO generated_artifacts \
 (workspace_id, site_id, id, kind, sha256, byte_size, storage_backend, created_at, expires_at) \
@@ -296,7 +305,7 @@ pub fn asset_commit(
     created_at: &str,
     reservation_id: &str,
     object_key: Option<&str>,
-    commit_now: &str,
+    commit_now: u64,
 ) -> Statement {
     Statement {
         sql: ASSET_COMMIT,
@@ -311,7 +320,7 @@ pub fn asset_commit(
             t(created_at),
             t(reservation_id),
             object_key.map_or(Param::Null, t),
-            t(commit_now),
+            t(&utc_text(commit_now.saturating_add(COMMIT_SAFETY_SECS))),
         ],
     }
 }
@@ -336,10 +345,10 @@ pub fn chunk_get(ws: &str, blob_id: &str, seq: u32) -> Statement {
     }
 }
 
-pub fn asset_delete(ws: &str, site: &str, sha256: &str) -> Statement {
+pub fn asset_delete(ws: &str, site: &str, sha256: &str, object_key: Option<&str>) -> Statement {
     Statement {
         sql: ASSET_DELETE,
-        params: vec![t(ws), t(site), t(sha256)],
+        params: vec![t(ws), t(site), t(sha256), object_key.map_or(Param::Null, t)],
     }
 }
 
@@ -412,10 +421,11 @@ pub fn reserve_generated(
     }
 }
 
-/// Commit a generated artifact. `expires_at` is clamped to `created_at` + the kind's
-/// retention, so a caller can never keep an artifact longer than policy allows (the
-/// SQL refuses it as well). `commit_now` MUST be a clock read immediately before the
-/// commit batch, not the request-start time.
+/// Commit a generated artifact. `expires_at` is clamped into
+/// `created_at + 1 ..= created_at + retention`: a caller can never keep an artifact
+/// longer than policy allows (the SQL refuses it as well) and a past or equal expiry
+/// can never violate the `expires_at > created_at` CHECK. `commit_now` MUST be a
+/// clock read immediately before the commit batch, not the request-start time.
 #[allow(clippy::too_many_arguments)]
 pub fn generated_commit(
     ws: &str,
@@ -430,7 +440,9 @@ pub fn generated_commit(
     commit_now: u64,
 ) -> Statement {
     let retention = kind.policy().retention_secs;
-    let expires_at = requested_expires_at.min(created_at.saturating_add(retention));
+    let expires_at = requested_expires_at
+        .min(created_at.saturating_add(retention))
+        .max(created_at.saturating_add(1));
     Statement {
         sql: GENERATED_COMMIT,
         params: vec![
@@ -444,7 +456,7 @@ pub fn generated_commit(
             t(&utc_text(created_at)),
             t(&utc_text(expires_at)),
             t(reservation_id),
-            t(&utc_text(commit_now)),
+            t(&utc_text(commit_now.saturating_add(COMMIT_SAFETY_SECS))),
             int(retention),
         ],
     }
@@ -508,22 +520,10 @@ mod tests {
             usage("w", "s", "n"),
             reservation_release("w", "s", "r"),
             reservation_delete("w", "r"),
-            asset_commit(
-                "w",
-                "s",
-                "a",
-                "h",
-                1,
-                "image/png",
-                "d1",
-                "n",
-                "r",
-                None,
-                "n",
-            ),
+            asset_commit("w", "s", "a", "h", 1, "image/png", "d1", "n", "r", None, 0),
             chunk_insert("w", "a", 0, &[1, 2]),
             chunk_get("w", "a", 0),
-            asset_delete("w", "s", "h"),
+            asset_delete("w", "s", "h", None),
             reservations_sweep("w", "n", 10),
             chunks_orphan_sweep("w", 10),
             assets_incomplete_sweep("w", "s", 10),
@@ -554,6 +554,74 @@ mod tests {
                 .find(|n| s.sql.contains(&format!("?{n}")))
                 .unwrap();
             assert_eq!(s.params.len(), max, "{}", s.sql);
+        }
+    }
+
+    #[test]
+    fn commits_bind_the_deadline_with_the_safety_margin() {
+        let now = 1_795_737_600;
+        let st = asset_commit(
+            "w",
+            "s",
+            "a",
+            "h",
+            1,
+            "image/png",
+            "d1",
+            "n",
+            "r",
+            None,
+            now,
+        );
+        assert_eq!(
+            st.params[10],
+            Param::Text(utc_text(now + COMMIT_SAFETY_SECS))
+        );
+        let g = generated_commit(
+            "w",
+            "s",
+            "g",
+            GeneratedKind::Preview,
+            "h",
+            1,
+            now,
+            now + 5,
+            "r",
+            now,
+        );
+        assert_eq!(
+            g.params[10],
+            Param::Text(utc_text(now + COMMIT_SAFETY_SECS))
+        );
+    }
+
+    #[test]
+    fn asset_delete_binds_the_exact_object_key() {
+        assert!(ASSET_DELETE.contains("object_key IS ?4"));
+        assert_eq!(asset_delete("w", "s", "h", None).params[3], Param::Null);
+        assert_eq!(
+            asset_delete("w", "s", "h", Some("k")).params[3],
+            Param::Text("k".into())
+        );
+    }
+
+    #[test]
+    fn generated_commit_never_expires_at_or_before_creation() {
+        let created = 1_795_737_600;
+        for requested in [0, created - 100, created] {
+            let st = generated_commit(
+                "w",
+                "s",
+                "g",
+                GeneratedKind::Preview,
+                "h",
+                1,
+                created,
+                requested,
+                "r",
+                created,
+            );
+            assert_eq!(st.params[8], Param::Text(utc_text(created + 1)));
         }
     }
 

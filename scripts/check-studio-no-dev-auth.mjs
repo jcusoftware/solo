@@ -19,7 +19,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const FEATURE = 'insecure-dev-auth';
-const WASM_MARKERS = ['X-Sws-Dev-User', 'X-Sws-Dev-Now', 'X-Sws-Dev-Commit-Skew', 'X-Sws-Dev-Batch', 'X-Sws-Dev-Fail-Put', FEATURE];
+const WASM_MARKERS = ['X-Sws-Dev-User', 'X-Sws-Dev-Now', 'X-Sws-Dev-Commit-Skew', 'X-Sws-Dev-Batch', 'X-Sws-Dev-Fail-Put', 'X-Sws-Dev-Fail-Batch-After-Commit', 'X-Sws-Dev-Hold-Slot', FEATURE];
 const CONFIGS = ['wrangler.studio.jsonc', 'deploy/cloudflare/wrangler.studio.example.jsonc'];
 
 export function check(root, { requireWasm = false } = {}) {

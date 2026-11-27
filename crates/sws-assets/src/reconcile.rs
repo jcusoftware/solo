@@ -6,12 +6,23 @@ use crate::limits::GeneratedPolicy;
 use crate::validate::is_r2_object_name;
 
 /// Objects younger than this are never swept: an upload that put its object but has
-/// not committed the metadata yet is still in flight. Equal to the reservation TTL.
-/// This is safe because the commit statement is evaluated against a clock read
-/// immediately before the commit batch and only succeeds while the reservation is
-/// unexpired; the reservation is created before the object is written, so an object
-/// at least this old belongs to a reservation that can no longer commit.
-pub const ORPHAN_MIN_AGE_SECS: u64 = crate::limits::RESERVATION_TTL_SECS;
+/// not committed the metadata yet may still be in flight. It is the reservation TTL
+/// plus [`crate::limits::ORPHAN_SAFETY_SECS`].
+///
+/// Why this is safe: the reservation is created before the object is written, and the
+/// commit statement only succeeds while `expires_at > commit_now + COMMIT_SAFETY_SECS`
+/// (a clock read immediately before the commit batch). So the last instant a commit can
+/// succeed is `COMMIT_SAFETY_SECS` before the reservation expires, and an object at
+/// least `RESERVATION_TTL_SECS + ORPHAN_SAFETY_SECS` old belongs to a reservation that
+/// stopped being able to commit at least `ORPHAN_SAFETY_SECS + COMMIT_SAFETY_SECS`
+/// seconds ago. That margin absorbs clock differences between the Worker's reads and
+/// the object's `uploaded` timestamp, and the duration of the commit batch itself.
+pub const ORPHAN_MIN_AGE_SECS: u64 =
+    crate::limits::RESERVATION_TTL_SECS + crate::limits::ORPHAN_SAFETY_SECS;
+
+const _: () = assert!(
+    ORPHAN_MIN_AGE_SECS > crate::limits::RESERVATION_TTL_SECS + crate::limits::COMMIT_SAFETY_SECS
+);
 
 /// Should the R2 object `key` (listed under `prefix` = `ws/site/`) be deleted?
 /// True for an object no asset row references (`referenced` = some

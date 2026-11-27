@@ -27,12 +27,12 @@ use sws_assets::chunk;
 use sws_assets::error::AssetError;
 use sws_assets::hash::{StreamHasher, asset_row_id, sha256_hex};
 use sws_assets::limits::{
-    GeneratedKind, MAX_INFLIGHT_DOWNLOADS, MAX_INFLIGHT_UPLOAD_BYTES, RECONCILE_BATCH,
-    RESERVATION_TTL_SECS,
+    DOWNLOAD_SLOT_DEADLINE_SECS, GeneratedKind, MAX_INFLIGHT_DOWNLOADS, MAX_INFLIGHT_UPLOAD_BYTES,
+    RECONCILE_BATCH, RESERVATION_TTL_SECS,
 };
 use sws_assets::quota::{
-    StreamCounter, UploadMode, UploadPlan, Usage, admit_download, admit_inflight, diagnose,
-    plan_upload, upload_memory_cost,
+    DownloadSlots, StreamCounter, UploadMode, UploadPlan, Usage, admit_inflight, diagnose,
+    has_database_headroom, plan_upload, upload_memory_cost,
 };
 use sws_assets::reconcile::object_is_orphan;
 use sws_assets::time::utc_text;
@@ -103,14 +103,19 @@ fn busy(e: AssetError) -> Result<Response> {
 /// a request without waiting: `X-Sws-Dev-Now` is an OFFSET in seconds from the real
 /// clock (applied to both reads), `X-Sws-Dev-Commit-Skew` adds seconds to the commit
 /// read only (simulating a slow body), `X-Sws-Dev-Batch` shrinks the reconcile batch
-/// and `X-Sws-Dev-Fail-Put` makes the R2 put fail. The release build neither reads nor
-/// embeds these names (checked by `scripts/check-studio-no-dev-auth.mjs`).
+/// `X-Sws-Dev-Fail-Put` makes the R2 put fail, `X-Sws-Dev-Fail-Batch-After-Commit`
+/// makes the commit batch report an error AFTER it committed (the ambiguous-outcome
+/// case) and `X-Sws-Dev-Hold-Slot` leaks the download slot of that request (so a test
+/// can fill the table and watch the deadline reclaim it). The release build neither
+/// reads nor embeds these names (checked by `scripts/check-studio-no-dev-auth.mjs`).
 #[derive(Clone, Copy, Default)]
 struct Clock {
     offset: i64,
     commit_skew: i64,
     batch: Option<u32>,
     fail_put: bool,
+    fail_batch_after_commit: bool,
+    hold_slot: bool,
 }
 
 impl Clock {
@@ -130,6 +135,8 @@ impl Clock {
                 .and_then(|n| u32::try_from(n).ok())
                 .filter(|n| *n > 0),
             fail_put: num("X-Sws-Dev-Fail-Put").is_some(),
+            fail_batch_after_commit: num("X-Sws-Dev-Fail-Batch-After-Commit").is_some(),
+            hold_slot: num("X-Sws-Dev-Hold-Slot").is_some(),
         }
     }
 
@@ -166,28 +173,34 @@ fn new_reservation_id() -> String {
 thread_local! {
     /// Working-memory bytes charged to uploads currently in flight in this isolate.
     static INFLIGHT: Cell<u64> = const { Cell::new(0) };
-    /// Downloads currently streaming from this isolate.
-    static DOWNLOADS: Cell<u32> = const { Cell::new(0) };
+    /// Download slots held by this isolate, each stamped with its admit time.
+    static DOWNLOADS: RefCell<DownloadSlots> = const { RefCell::new(DownloadSlots::new()) };
 }
 
 /// Holds a download slot for as long as the response stream lives (it is moved into the
-/// stream, so a cancelled or finished response releases it on drop).
-struct DownloadSlot;
+/// stream, so a cancelled or finished response releases it on drop). If the runtime
+/// drops the stream WITHOUT ever running this `Drop`, the slot still stops counting
+/// [`DOWNLOAD_SLOT_DEADLINE_SECS`] after it was admitted (see [`DownloadSlots`]); a
+/// download legitimately slower than that merely lets one extra download in.
+struct DownloadSlot(u64);
 
 impl DownloadSlot {
-    fn admit() -> Option<Self> {
-        DOWNLOADS.with(|c| {
-            admit_download(c.get(), MAX_INFLIGHT_DOWNLOADS).then(|| {
-                c.set(c.get() + 1);
-                DownloadSlot
-            })
+    fn admit(now_secs: u64) -> Option<Self> {
+        DOWNLOADS.with(|d| {
+            d.borrow_mut()
+                .admit(
+                    now_secs,
+                    MAX_INFLIGHT_DOWNLOADS,
+                    DOWNLOAD_SLOT_DEADLINE_SECS,
+                )
+                .map(DownloadSlot)
         })
     }
 }
 
 impl Drop for DownloadSlot {
     fn drop(&mut self) {
-        DOWNLOADS.with(|c| c.set(c.get().saturating_sub(1)));
+        DOWNLOADS.with(|d| d.borrow_mut().release(self.0));
     }
 }
 
@@ -312,7 +325,7 @@ pub async fn handle(mut req: Request, env: &Env, route: AssetRoute) -> Result<Re
                 };
                 upload(&mut req, up).await
             }
-            "GET" => download(env, &db, ws, site, sha).await,
+            "GET" => download(env, &db, ws, site, sha, clock).await,
             _ => delete(env, &db, ws, site, sha).await,
         },
     }
@@ -625,7 +638,7 @@ async fn receive_and_store(
     }
     // A FRESH clock read, immediately before the commit batch: the commit statement
     // refuses a reservation that expired while the body was being received.
-    let commit_now = utc_text(u.clock.commit());
+    let commit_now = u.clock.commit();
     let mut stmts = vec![q::asset_commit(
         u.ws,
         u.site,
@@ -637,17 +650,34 @@ async fn receive_and_store(
         now_text,
         rid,
         object_key.as_deref(),
-        &commit_now,
+        commit_now,
     )];
     stmts.extend(chunk_stmts);
     stmts.push(q::reservation_delete(u.ws, rid));
 
     // One atomic batch: asset row + chunks + reservation release.
-    let changes = match d1::batch(u.db, &stmts).await {
+    let outcome = match d1::batch(u.db, &stmts).await {
+        // Dev-build fault: report an error although the batch committed.
+        Ok(_) if u.clock.fail_batch_after_commit => Err(worker::Error::RustError(
+            "injected batch error after commit".into(),
+        )),
+        other => other,
+    };
+    let changes = match outcome {
         Ok(c) => c,
         Err(e) => {
+            // The outcome is AMBIGUOUS: the batch may have committed even though the
+            // call failed (a lost response). Discard our object only when a re-read
+            // proves no row references it; if the re-read also fails keep it, and
+            // the age-gated orphan sweep removes it later if it was never committed.
             if let (Some(b), Some(k)) = (bucket, object_key.as_deref()) {
-                discard_object(b, k).await;
+                match d1::first(u.db, &q::asset_object_referenced(u.ws, k)).await {
+                    Ok(None) => discard_object(b, k).await,
+                    Ok(Some(_)) => {
+                        console_error!("commit batch errored but the row exists; object kept")
+                    }
+                    Err(re) => console_error!("commit outcome unknown ({re}); object kept"),
+                }
             }
             return Err(e);
         }
@@ -701,16 +731,19 @@ async fn read_usage(db: &D1Database, ws: &str, site: &str, now: &str) -> Result<
     })
 }
 
-fn usage_json(u: &Usage, l: &sws_assets::limits::AssetLimits) -> Value {
+/// The caller's own usage plus a headroom boolean for the shared database. The
+/// database-wide byte total spans every tenant, so it is never returned.
+fn usage_value(u: &Usage, l: &sws_assets::limits::AssetLimits) -> Value {
     json!({
-        "usage": {
-            "site_bytes": u.site_bytes,
-            "site_assets": u.site_assets,
-            "workspace_bytes": u.workspace_bytes,
-            "database_blob_bytes": u.database_bytes,
-        },
-        "limits": limits_json(l),
+        "site_bytes": u.site_bytes,
+        "site_assets": u.site_assets,
+        "workspace_bytes": u.workspace_bytes,
+        "database_has_headroom": has_database_headroom(u, l),
     })
+}
+
+fn usage_json(u: &Usage, l: &sws_assets::limits::AssetLimits) -> Value {
+    json!({ "usage": usage_value(u, l), "limits": limits_json(l) })
 }
 
 #[derive(Deserialize)]
@@ -785,9 +818,23 @@ fn d1_chunks(
     })
 }
 
-async fn download(env: &Env, db: &D1Database, ws: &str, site: &str, sha: &str) -> Result<Response> {
-    let Some(slot) = DownloadSlot::admit() else {
+async fn download(
+    env: &Env,
+    db: &D1Database,
+    ws: &str,
+    site: &str,
+    sha: &str,
+    clock: Clock,
+) -> Result<Response> {
+    let Some(slot) = DownloadSlot::admit(clock.start()) else {
         return busy(AssetError::DownloadBusy);
+    };
+    let slot = if clock.hold_slot {
+        // Dev-build fault: never release this slot (the deadline reclaims it).
+        std::mem::forget(slot);
+        return json_resp(ok_json(200, json!({ "ok": true, "held": true })));
+    } else {
+        slot
     };
     let Some(row) = d1::first(db, &q::asset_get(ws, site, sha)).await? else {
         return err(AssetError::AssetNotFound);
@@ -852,15 +899,15 @@ async fn delete(env: &Env, db: &D1Database, ws: &str, site: &str, sha: &str) -> 
     let Some(row) = d1::first(db, &q::asset_get(ws, site, sha)).await? else {
         return err(AssetError::AssetNotFound);
     };
+    let key = row.get("object_key").and_then(Value::as_str);
     // The trigger removes the chunks and tombstones the R2 key in this same statement.
-    if d1::run(db, &q::asset_delete(ws, site, sha)).await? == 0 {
+    // The delete is EXACT: it binds the key that was read, so a row replaced since then
+    // is left alone (and its object is never removed below).
+    if d1::run(db, &q::asset_delete(ws, site, sha, key)).await? == 0 {
         return err(AssetError::AssetNotFound);
     }
     // Only THIS row's own key is removed; a concurrent re-upload writes a different key.
-    if let (Some(bucket), Some(key)) = (
-        r2_bucket(env),
-        row.get("object_key").and_then(Value::as_str),
-    ) {
+    if let (Some(bucket), Some(key)) = (r2_bucket(env), key) {
         match bucket.delete(key.to_string()).await {
             Ok(()) => {
                 if let Err(e) = d1::run(db, &q::tombstone_clear(ws, key)).await {
@@ -915,12 +962,7 @@ async fn list(env: &Env, db: &D1Database, ws: &str, site: &str, now: u64) -> Res
             "backend_error": backend_error,
             "r2_bound": bucket.is_some(),
             "limits": limits_json(&limits),
-            "usage": {
-                "site_bytes": usage.site_bytes,
-                "site_assets": usage.site_assets,
-                "workspace_bytes": usage.workspace_bytes,
-                "database_blob_bytes": usage.database_bytes,
-            },
+            "usage": usage_value(&usage, &limits),
             "assets": assets,
             "generated": { "usage": generated, "policy": gen_policy },
             "provisional": true,
@@ -977,6 +1019,10 @@ async fn reconcile(
     let mut next_cursor: Option<String> = None;
     if let Some(bucket) = r2_bucket(env) {
         // Objects of deleted assets/sites/workspaces whose own delete did not finish.
+        // This drains only the tombstones of THIS workspace and only when somebody
+        // calls reconcile here; tombstones left by deleting a whole workspace (or the
+        // last site, after which no site route authorises a reconcile) and prefixes
+        // under a deleted site need an operator-level drain job (#64 / #66).
         for row in d1::all(db, &q::tombstones_list(ws, batch)).await? {
             if let Some(key) = row.get("object_key").and_then(Value::as_str) {
                 bucket.delete(key.to_string()).await?;
