@@ -194,9 +194,12 @@ jobs:
       - name: Studio Worker live smoke (separate dev server, own local D1 state)
         run: |
           npm run studio:db:migrate:local
-          # Own session/process group, so exactly this server tree can be stopped by PID.
-          setsid nohup npm run studio:dev > studio-dev.log 2>&1 &
+          # Job control gives the background job its own process group whose id is $!,
+          # so exactly this server tree (npm, wrangler, workerd) can be stopped by PGID.
+          set -m
+          nohup npm run studio:dev > studio-dev.log 2>&1 &
           studio_pid=$!
+          set +m
           ready=0
           for i in $(seq 1 90); do
             if curl -fsS http://127.0.0.1:8788/api/health; then ready=1; break; fi
