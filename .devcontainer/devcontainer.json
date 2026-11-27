@@ -10,7 +10,7 @@
 	"remoteEnv": {
 		"PATH": "${containerEnv:HOME}/.cargo/bin:/usr/local/cargo/bin:${containerEnv:PATH}"
 	},
-	"postCreateCommand": "bash -lc 'rustup target add wasm32-unknown-unknown && rustup component add clippy && cargo install worker-build@^0.9 --locked && cargo install cargo-deny --locked && export NVM_DIR=\"${NVM_DIR:-/usr/local/share/nvm}\" && [ -s \"$HOME/.nvm/nvm.sh\" ] && NVM_DIR=\"$HOME/.nvm\"; if [ -s \"$NVM_DIR/nvm.sh\" ]; then . \"$NVM_DIR/nvm.sh\" && nvm install --lts && nvm use --lts; fi && (command -v pnpm >/dev/null 2>&1 || (corepack enable && corepack prepare pnpm@latest --activate) || npm install -g pnpm) && npx playwright install --with-deps chromium'",
+	"postCreateCommand": "bash -lc 'rustup toolchain install 1.100.0 --profile minimal -c clippy -t wasm32-unknown-unknown && cargo install worker-build@0.9.0 --locked && cargo install cargo-deny --locked && export NVM_DIR=\"${NVM_DIR:-/usr/local/share/nvm}\" && [ -s \"$HOME/.nvm/nvm.sh\" ] && NVM_DIR=\"$HOME/.nvm\"; if [ -s \"$NVM_DIR/nvm.sh\" ]; then . \"$NVM_DIR/nvm.sh\" && nvm install --lts && nvm use --lts; fi && (command -v pnpm >/dev/null 2>&1 || (corepack enable && corepack prepare pnpm@latest --activate) || npm install -g pnpm) && npx playwright install --with-deps chromium'",
 	"forwardPorts": [8787],
 	"portsAttributes": {
 		"8787": {

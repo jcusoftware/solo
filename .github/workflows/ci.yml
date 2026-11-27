@@ -21,8 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -43,8 +44,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Run solo export and execute the emitted crate's test module
@@ -56,8 +58,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       # The wasm-bindgen CLI version must match the wasm-bindgen crate in
@@ -77,8 +80,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -94,14 +98,42 @@ jobs:
       - name: npm run verify (contributor-safe subset; agents/devvit gates run via verify:full in the studio checkout)
         run: npm run verify
 
+  wasm-dev:
+    name: wasm dev build (cached, target features)
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          targets: wasm32-unknown-unknown
+      # Rust-input-keyed cache: dev Wasm artifacts are separate from the release build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install worker-build (exact pin from wasm-toolchain.json)
+        run: cargo install worker-build@0.9.0 --locked
+      - name: Cache worker-build downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/worker-build
+          key: worker-build-${{ runner.os }}-${{ hashFiles('wasm-toolchain.json', 'Cargo.lock') }}
+      - name: Dev Wasm build + target-feature check
+        run: npm run build:wasm:dev
+
   web:
     name: web (render, ABC lint, header parity, a11y, lighthouse)
     needs: rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
@@ -121,10 +153,22 @@ jobs:
         run: npm run check:headers && npm run sites:check:headers
       - name: Node unit tests
         run: npm run test:unit
-      - name: Install worker-build
-        run: cargo install worker-build@^0.9 --locked
-      - name: Build Worker
-        run: npm run build
+      - name: Install worker-build (exact pin from wasm-toolchain.json)
+        run: cargo install worker-build@0.9.0 --locked
+      - name: Cache worker-build downloads (Binaryen wasm-opt, wasm-bindgen, esbuild)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/worker-build
+          key: worker-build-${{ runner.os }}-${{ hashFiles('wasm-toolchain.json', 'Cargo.lock') }}
+      - name: Pinned tools match wasm-toolchain.json (rustc, worker-build)
+        run: npm run check:toolchain:installed
+      - name: Build Worker (size-optimized release; verifies Binaryen pin and Wasm target features)
+        run: npm run build:wasm:release
+      - name: Frontend-only edits must not re-run Cargo (second build is a no-op)
+        run: |
+          out=$(npm run build:wasm:release)
+          echo "$out"
+          echo "$out" | grep -q 'skipping Cargo'
       - name: Local D1 migrations
         run: npx wrangler d1 migrations apply DB --local
       - name: Start wrangler dev

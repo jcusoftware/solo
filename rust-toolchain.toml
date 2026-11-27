@@ -1,0 +1,8 @@
+# Pinned Rust toolchain (single source for the Rust channel; see docs/WASM_TOOLCHAIN.md).
+# CI and the devcontainer must use the same version: `npm run check:toolchain`
+# fails on any drift. Bump deliberately, together with wasm-toolchain.json.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy"]
+targets = ["wasm32-unknown-unknown"]
