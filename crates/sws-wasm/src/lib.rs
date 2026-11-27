@@ -19,8 +19,22 @@
 //! - `check_contrast(fg, bg) -> Result<f64, JsValue>`: WCAG 2.x contrast
 //!   ratio for a `#RRGGBB` pair.
 //!
+//! - `upgrade_stable_ids(ir_json) -> Result<String, JsValue>`: the explicit,
+//!   deterministic stable-ID upgrade (`sws_ir::edit::upgrade_json`); returns
+//!   `{ document, report, dropped_paths }` where `document` is the canonical
+//!   JSON text of the upgraded IR.
+//! - `apply_command_batch(ir_json, batch_json) -> Result<String, JsValue>`: the
+//!   canonical editor reducer (`sws_ir::edit::apply_batch_json`); returns
+//!   `{ document, transaction, dropped_paths }`. Atomic: on error nothing is
+//!   returned and the caller keeps its document.
+//! - `apply_undo(ir_json, transaction_json) -> Result<String, JsValue>`: undo a
+//!   recorded transaction (the `transaction` returned by `apply_command_batch`)
+//!   in restore mode (`sws_ir::edit::apply_undo_json`); same output shape. Plain
+//!   `apply_command_batch` of `transaction.inverse` cannot restore values the
+//!   forward grammar rejects (for example an empty font stack); use this.
+//!
 //! Every export maps its host-side `Err(String)` to a `JsValue` string so
-//! callers get a plain message.
+//! callers get a plain message (`"<code>: <message>"` for editor errors).
 
 use std::collections::BTreeMap;
 
@@ -167,6 +181,47 @@ pub fn validate_css_inner(css_text: &str) -> Result<String, String> {
         .map_err(|err| format!("failed to serialize CSS validation output: {err}"))
 }
 
+/// Run the explicit stable-ID upgrade (same reducer code the CLI uses).
+///
+/// Returns `{ document, report, dropped_paths }`; `document` is the canonical
+/// pretty JSON text of the upgraded IR. Sources whose unsupported fields would
+/// be dropped are refused (`lossy_document`).
+pub fn upgrade_stable_ids_inner(ir_json: &str) -> Result<String, String> {
+    let out = sws_ir::edit::upgrade_json(ir_json, sws_ir::edit::EditOptions::default())
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&out).map_err(|err| format!("failed to serialize upgrade output: {err}"))
+}
+
+/// Apply one serialized command batch atomically through the canonical reducer.
+///
+/// Returns `{ document, transaction, dropped_paths }`; `transaction.inverse`
+/// is the exact undo batch body and `transaction.touched` the conflict fields.
+pub fn apply_command_batch_inner(ir_json: &str, batch_json: &str) -> Result<String, String> {
+    let out = sws_ir::edit::apply_batch_json(
+        ir_json,
+        batch_json,
+        sws_ir::edit::EditOptions::default(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&out).map_err(|err| format!("failed to serialize edit output: {err}"))
+}
+
+/// Undo one recorded transaction through the restore-mode reducer.
+///
+/// `transaction_json` is the `transaction` object returned by
+/// [`apply_command_batch_inner`]; it is cross-checked against `ir_json` (the
+/// document that edit produced). Returns `{ document, transaction,
+/// dropped_paths }` like [`apply_command_batch_inner`].
+pub fn apply_undo_inner(ir_json: &str, transaction_json: &str) -> Result<String, String> {
+    let out = sws_ir::edit::apply_undo_json(
+        ir_json,
+        transaction_json,
+        sws_ir::edit::EditOptions::default(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&out).map_err(|err| format!("failed to serialize edit output: {err}"))
+}
+
 /// Wasm export for [`compile_site_inner`].
 #[wasm_bindgen]
 pub fn compile_site(ir_json: &str) -> Result<String, JsValue> {
@@ -195,6 +250,24 @@ pub fn validate_css(css_text: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn check_contrast(fg: &str, bg: &str) -> Result<f64, JsValue> {
     check_contrast_inner(fg, bg).map_err(|msg| JsValue::from_str(&msg))
+}
+
+/// Wasm export for [`upgrade_stable_ids_inner`].
+#[wasm_bindgen]
+pub fn upgrade_stable_ids(ir_json: &str) -> Result<String, JsValue> {
+    upgrade_stable_ids_inner(ir_json).map_err(|msg| JsValue::from_str(&msg))
+}
+
+/// Wasm export for [`apply_command_batch_inner`].
+#[wasm_bindgen]
+pub fn apply_command_batch(ir_json: &str, batch_json: &str) -> Result<String, JsValue> {
+    apply_command_batch_inner(ir_json, batch_json).map_err(|msg| JsValue::from_str(&msg))
+}
+
+/// Wasm export for [`apply_undo_inner`].
+#[wasm_bindgen]
+pub fn apply_undo(ir_json: &str, transaction_json: &str) -> Result<String, JsValue> {
+    apply_undo_inner(ir_json, transaction_json).map_err(|msg| JsValue::from_str(&msg))
 }
 
 #[cfg(test)]
@@ -338,12 +411,14 @@ mod tests {
             .find(|n| matches!(n, sws_ir::Node::Element { tag, .. } if tag == "main"))
         {
             children.push(sws_ir::Node::Element {
+                uid: None,
                 id: None,
                 tag: "h3".to_string(),
                 attrs: BTreeMap::new(),
                 classes: Vec::new(),
                 style_refs: Vec::new(),
                 children: vec![sws_ir::Node::Text {
+                    uid: None,
                     value: "Skipped Heading".to_string(),
                 }],
             });
@@ -465,5 +540,35 @@ mod tests {
         assert!(diagnostics[0]["message"]
             .as_str()
             .is_some_and(|m| m.contains("CSS parse error")));
+    }
+
+    #[test]
+    fn upgrade_and_apply_batch_share_the_native_reducer() {
+        let ir = valid_minimal_ir_json();
+        let upgraded: Value =
+            serde_json::from_str(&upgrade_stable_ids_inner(&ir).expect("upgrade")).unwrap();
+        let document = upgraded["document"].as_str().expect("document text");
+        assert!(upgraded["report"]["assigned"].as_array().unwrap().len() > 3);
+        let again: Value =
+            serde_json::from_str(&upgrade_stable_ids_inner(document).unwrap()).unwrap();
+        assert_eq!(again["document"], upgraded["document"], "idempotent");
+
+        let batch = json!({
+            "version": 1,
+            "commands": [{ "op": "set_color_token", "key": "ink", "hex": "#000000" }]
+        })
+        .to_string();
+        let edited: Value =
+            serde_json::from_str(&apply_command_batch_inner(document, &batch).expect("apply"))
+                .unwrap();
+        let edited_doc = edited["document"].as_str().unwrap();
+        assert!(edited_doc.contains("#000000"));
+        let transaction = edited["transaction"].to_string();
+        let restored: Value =
+            serde_json::from_str(&apply_undo_inner(edited_doc, &transaction).unwrap()).unwrap();
+        assert_eq!(restored["document"].as_str().unwrap(), document);
+
+        let err = apply_command_batch_inner(&ir, &batch).unwrap_err();
+        assert!(err.starts_with("not_upgraded:"), "{err}");
     }
 }

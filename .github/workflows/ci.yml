@@ -73,6 +73,8 @@ jobs:
           node-version: 22
       - name: Build wasm module and execute every export (smoke.mjs)
         run: crates/sws-wasm/run-smoke.sh
+      - name: Editing gate (edit/undo/redo/save/reopen, native vs Wasm bytes)
+        run: npm run gate:editing
 
   verify:
     name: verify (npm fast gate)

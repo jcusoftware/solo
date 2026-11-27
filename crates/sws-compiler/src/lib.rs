@@ -563,6 +563,7 @@ mod tests {
 
     fn elem(tag: &str, attrs: BTreeMap<String, String>, children: Vec<Node>) -> Node {
         Node::Element {
+            uid: None,
             id: None,
             tag: tag.to_string(),
             attrs,
@@ -574,6 +575,7 @@ mod tests {
 
     fn text(val: &str) -> Node {
         Node::Text {
+            uid: None,
             value: val.to_string(),
         }
     }
@@ -593,6 +595,7 @@ mod tests {
             scripts: Vec::new(),
             body: vec![
                 Node::Element {
+                    uid: None,
                     id: None,
                     tag: "a".to_string(),
                     attrs: BTreeMap::from([("href".to_string(), "#main".to_string())]),
@@ -699,6 +702,7 @@ mod tests {
                     vec![
                         elem("h2", BTreeMap::new(), vec![text("{{heading}}")]),
                         Node::SlotRef {
+                            uid: None,
                             name: "default".to_string(),
                             fallback: vec![text("Fallback")],
                         },
@@ -717,6 +721,7 @@ mod tests {
         });
         doc.pages[0].body = vec![
             Node::Element {
+                uid: None,
                 id: None,
                 tag: "a".to_string(),
                 attrs: BTreeMap::from([("href".to_string(), "#main".to_string())]),
@@ -734,16 +739,19 @@ mod tests {
                 vec![
                     elem("h1", BTreeMap::new(), vec![text("Acme")]),
                     Node::ComponentInstance {
+                        uid: None,
                         component: "card".to_string(),
                         props: BTreeMap::from([("heading".to_string(), json!("Services"))]),
                         slots: BTreeMap::from([(
                             "default".to_string(),
                             vec![Node::Conditional {
+                                uid: None,
                                 expr: "show_extra".to_string(),
                                 then_nodes: vec![elem(
                                     "ul",
                                     BTreeMap::new(),
                                     vec![Node::Loop {
+                                        uid: None,
                                         item_var: "it".to_string(),
                                         collection_expr: "items".to_string(),
                                         body: vec![elem(
@@ -1032,12 +1040,14 @@ mod tests {
             )]),
             slots: Vec::new(),
             template: vec![Node::Element {
+                uid: None,
                 id: None,
                 tag: "p".to_string(),
                 attrs: BTreeMap::new(),
                 classes: vec!["contributed-card".to_string()],
                 style_refs: Vec::new(),
                 children: vec![Node::Text {
+                    uid: None,
                     value: "{{title}}".to_string(),
                 }],
             }],
@@ -1096,6 +1106,7 @@ mod tests {
                 .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
             {
                 children.push(Node::ComponentInstance {
+                    uid: None,
                     component: "contributed-card".to_string(),
                     props: BTreeMap::from([("title".to_string(), json!("From Plugin"))]),
                     slots: BTreeMap::new(),
@@ -1431,6 +1442,7 @@ mod tests {
             .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
         {
             children.push(Node::Loop {
+                uid: None,
                 item_var: "it".to_string(),
                 collection_expr: "missing_items".to_string(),
                 body: vec![elem("li", BTreeMap::new(), vec![text("{{it}}")])],
@@ -1468,6 +1480,7 @@ mod tests {
             .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
         {
             children.push(Node::Loop {
+                uid: None,
                 item_var: "it".to_string(),
                 collection_expr: "not_an_array".to_string(),
                 body: vec![elem("li", BTreeMap::new(), vec![text("{{it}}")])],
@@ -1545,11 +1558,13 @@ mod tests {
                 let next = format!("c{}", i + 1);
                 vec![
                     Node::ComponentInstance {
+                        uid: None,
                         component: next.clone(),
                         props: BTreeMap::new(),
                         slots: BTreeMap::new(),
                     },
                     Node::ComponentInstance {
+                        uid: None,
                         component: next,
                         props: BTreeMap::new(),
                         slots: BTreeMap::new(),
@@ -1572,6 +1587,7 @@ mod tests {
             .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
         {
             children.push(Node::ComponentInstance {
+                uid: None,
                 component: "c0".to_string(),
                 props: BTreeMap::new(),
                 slots: BTreeMap::new(),
@@ -1618,10 +1634,12 @@ mod tests {
                 slots: vec!["default".to_string()],
                 template: vec![
                     Node::SlotRef {
+                        uid: None,
                         name: "default".to_string(),
                         fallback: Vec::new(),
                     },
                     Node::SlotRef {
+                        uid: None,
                         name: "default".to_string(),
                         fallback: Vec::new(),
                     },
@@ -1631,6 +1649,7 @@ mod tests {
         let mut nested = vec![text("leaf")];
         for _ in 0..25 {
             nested = vec![Node::ComponentInstance {
+                uid: None,
                 component: "dup".to_string(),
                 props: BTreeMap::new(),
                 slots: BTreeMap::from([("default".to_string(), nested)]),
@@ -1663,6 +1682,7 @@ mod tests {
                 vec![text("{{x}}")]
             } else {
                 vec![Node::ComponentInstance {
+                    uid: None,
                     component: format!("s{}", i + 1),
                     props: BTreeMap::from([("x".to_string(), json!("{{x}}{{x}}"))]),
                     slots: BTreeMap::new(),
@@ -1684,6 +1704,7 @@ mod tests {
             .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
         {
             children.push(Node::ComponentInstance {
+                uid: None,
                 component: "s0".to_string(),
                 props: BTreeMap::new(),
                 slots: BTreeMap::new(),
@@ -1709,6 +1730,7 @@ mod tests {
             .find(|n| matches!(n, Node::Element { tag, .. } if tag == "main"))
         {
             children.push(Node::Loop {
+                uid: None,
                 item_var: "it".to_string(),
                 collection_expr: "many".to_string(),
                 body: Vec::new(),
@@ -1850,5 +1872,45 @@ mod tests {
             compile_site(&doc, None, &CompileOptions::default()).is_ok(),
             "img with alt=\"\" must pass"
         );
+    }
+
+    #[test]
+    fn uid_is_never_rendered_so_upgraded_documents_compile_identically() {
+        let legacy: SiteDocument = serde_json::from_value(json!({
+            "slug": "uid-render", "name": "Uid Render", "base_url": "https://uid.example",
+            "tokens": { "colors": { "ink": "#111111", "paper": "#FFFFFF" } },
+            "components": { "card": { "name": "card", "slots": ["default"], "template": [
+                { "type": "element", "tag": "section", "classes": ["card"], "children": [
+                    { "type": "slot_ref", "name": "default",
+                      "fallback": [{ "type": "text", "value": "fallback" }] } ] } ] } },
+            "pages": [{
+                "id": "home", "route": { "kind": "static", "path": "/" }, "title": "Home",
+                "body": [
+                    { "type": "element", "tag": "a", "classes": ["skip-link"],
+                      "attrs": { "href": "#main" }, "children": [{ "type": "text", "value": "Skip" }] },
+                    { "type": "element", "tag": "header", "children": [
+                        { "type": "element", "tag": "h1", "children": [{ "type": "text", "value": "Hi" }] } ] },
+                    { "type": "element", "tag": "main", "attrs": { "id": "main", "tabindex": "-1" }, "children": [
+                        { "type": "component_instance", "component": "card",
+                          "slots": { "default": [{ "type": "text", "value": "in card" }] } },
+                        { "type": "conditional", "expr": "true",
+                          "then_nodes": [{ "type": "text", "value": "yes" }], "else_nodes": [] }
+                    ] },
+                    { "type": "element", "tag": "footer", "children": [{ "type": "text", "value": "(c)" }] }
+                ]
+            }]
+        }))
+        .expect("fixture");
+        let (upgraded, report) = sws_ir::edit::assign_stable_ids(&legacy).expect("upgrade");
+        assert!(!report.assigned.is_empty());
+        let options = CompileOptions::default();
+        let before = compile_site(&legacy, None, &options).expect("legacy compiles");
+        let after = compile_site(&upgraded, None, &options).expect("upgraded compiles");
+        assert_eq!(before.files, after.files, "uid must not change any output byte");
+        for text in after.files.values() {
+            for assigned in &report.assigned {
+                assert!(!text.contains(&assigned.uid), "uid {} leaked", assigned.uid);
+            }
+        }
     }
 }

@@ -317,6 +317,9 @@ pub struct ScriptRef {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
     Element {
+        /// Stable editor identity; never rendered, unique across the document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<String>,
         #[serde(default)]
         id: Option<String>,
         tag: String,
@@ -330,14 +333,23 @@ pub enum Node {
         children: Vec<Node>,
     },
     Text {
+        /// Stable editor identity; never rendered, unique across the document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<String>,
         value: String,
     },
     SlotRef {
+        /// Stable editor identity; never rendered, unique across the document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<String>,
         name: String,
         #[serde(default)]
         fallback: Vec<Node>,
     },
     ComponentInstance {
+        /// Stable editor identity; never rendered, unique across the document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<String>,
         component: String,
         #[serde(default)]
         props: BTreeMap<String, Value>,
@@ -345,6 +357,9 @@ pub enum Node {
         slots: BTreeMap<String, Vec<Node>>,
     },
     Conditional {
+        /// Stable editor identity; never rendered, unique across the document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<String>,
         expr: String,
         #[serde(default)]
         then_nodes: Vec<Node>,
@@ -352,6 +367,9 @@ pub enum Node {
         else_nodes: Vec<Node>,
     },
     Loop {
+        /// Stable editor identity; never rendered, unique across the document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<String>,
         item_var: String,
         collection_expr: String,
         #[serde(default)]
