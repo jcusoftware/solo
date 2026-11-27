@@ -32,6 +32,10 @@
 			"database_id": "<YOUR_D1_DATABASE_ID>"
 		}
 	],
+	// Rate limit for GET /api/bookings/slots (20 requests per tenant/client IP per minute
+	// per Cloudflare location). Without it, the endpoint fails closed with 503.
+	// namespace_id must be unique per Cloudflare account; pick one no other Worker uses.
+	"ratelimits": [{ "name": "BOOKING_SLOTS_LIMIT", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }],
 	"vars": {
 		"BUILD_VERSION": "0.1.0",
 		// Cloudflare Turnstile always-pass TEST site key (dev only).

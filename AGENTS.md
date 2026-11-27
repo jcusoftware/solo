@@ -6,7 +6,7 @@ This repository is the open-source Solo (Solo Website System, SWS) workspace. Th
 
 | Path | Zone | Contents | License |
 | --- | --- | --- | --- |
-| `crates/`, `core/` | A (public) | Reusable SWS core engine (`sws-ir`, `sws-css`, `sws-compiler`, `sws-plugin`, `sws-security`, `sws-cli`, `sws-wasm`, `sws-worker-site`, `sws-worker-studio`), D1 migrations, tenant-agnostic tools (`core/tools`), rendered demo output (`core/public`) | `MIT OR Apache-2.0` |
+| `crates/`, `core/` | A (public) | Reusable SWS core engine (`sws-ir`, `sws-css`, `sws-compiler`, `sws-plugin`, `sws-security`, `sws-cli`, `sws-wasm`, `sws-worker-site`, `sws-worker-studio`), D1 migrations (`crates/sws-worker-site/migrations/`, `crates/sws-worker-studio/migrations/`), tenant-agnostic tools (`core/tools`), rendered demo output (`core/public`) | `MIT OR Apache-2.0` |
 | `packs/hospitality/` | A (public) | Open-source reference hospitality pack (schema, crate, VA ABC lint, and fictional `packs/hospitality/demo/venue.json`) | `MIT OR Apache-2.0` |
 | `sites/` | A (public) | Static landing (`sws-landing`) and docs (`sws-docs`) generator and output | `MIT OR Apache-2.0` |
 | `integrations/` | A (public, tracked) | Standalone integrations (Devvit subreddit release bot) | Per-package: `integrations/devvit-release-bot` is `BSD-3-Clause` |
