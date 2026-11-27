@@ -34,6 +34,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { parseRustConst } from '../core/tools/check-headers.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CFG = 'wrangler.studio-sessions.jsonc';
@@ -50,6 +51,11 @@ const FAST = ['--var', 'SESSION_PRESENCE_TTL_MS:1500', '--var', 'SESSION_AUTHZ_R
 // Always passed: the runtime fence of the dev-auth build, and the origin this server is reached on.
 const BASE_VARS = ['--var', 'SWS_INSECURE_DEV_AUTH:1', '--var', `STUDIO_PUBLIC_ORIGIN:http://127.0.0.1:${PORT}`];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The `studio` security-header profile (#180), read from the Rust source of truth.
+const STUDIO_HEADERS = parseRustConst(readFileSync(join(ROOT, 'crates/sws-security/src/headers.rs'), 'utf8'), 'STUDIO_HEADERS');
+const assertStudioHeaders = (get, label) => {
+  for (const [k, v] of STUDIO_HEADERS) assert.equal(get(k.toLowerCase()), v, `studio profile ${k} on ${label}`);
+};
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 let opCounter = 0;
 const opId = (tag) => `op-${tag}-${String(++opCounter).padStart(5, '0')}`;
@@ -339,6 +345,7 @@ async function phase1() {
     assert.equal((await plain.json()).error, 'upgrade_required');
     assert.equal(plain.headers.get('cache-control'), 'no-store');
     assert.ok(plain.headers.get('strict-transport-security'));
+    assertStudioHeaders((k) => plain.headers.get(k), 'the 426');
     const post = await fetch(`${HTTP}/api/sites/ws-a/s-auth/session`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
     assert.equal(post.status, 405);
     const p = '/api/sites/ws-a/s-auth/session';
@@ -347,6 +354,7 @@ async function phase1() {
     assert.equal(JSON.parse(noAuth.body).error, 'unauthenticated');
     assert.equal(noAuth.headers['cache-control'], 'no-store');
     assert.ok(noAuth.headers['x-frame-options'], 'security headers on the error response');
+    assertStudioHeaders((k) => noAuth.headers[k], 'the 401');
     assert.equal((await upgrade(p, 'abc')).status, 401);
     assert.equal((await upgrade(p, 4)).status, 403, 'a user of another workspace');
     assert.equal((await upgrade(p, 999)).status, 403, 'an unknown user');
@@ -656,6 +664,7 @@ async function phase1() {
     assert.equal(JSON.parse(evil.body).error, 'forbidden_origin');
     assert.equal(evil.headers['cache-control'], 'no-store');
     assert.ok(evil.headers['x-frame-options'] && evil.headers['strict-transport-security'], 'security headers on the refusal');
+    assertStudioHeaders((k) => evil.headers[k], 'the forbidden_origin refusal');
     // The Origin check runs BEFORE authenticate: an unauthenticated cross-origin request is 403, not 401.
     assert.equal((await rawGet(p, { ...UPGRADE, Origin: 'https://evil.example' })).status, 403);
     assert.equal((await rawGet(p, { ...UPGRADE, 'X-Sws-Dev-User': '1', Origin: 'null' })).status, 403);
