@@ -1,7 +1,10 @@
 // Local/dev Wrangler config for the optional Studio Worker (sws-worker-studio).
 // Deliberately SEPARATE from ./wrangler.jsonc (the visitor Worker): different
 // Worker name, build output, D1 binding/database, and local state directory
-// (`--persist-to .wrangler/studio-state` in the npm scripts), so nothing is shared.
+// (`--persist-to .wrangler/studio-state` in the npm scripts). The local D1
+// placeholder id below is also distinct from the visitor Worker's, because local
+// D1 state is keyed by `database_id`: even a direct `wrangler ... --local -c
+// wrangler.studio.jsonc` without `--persist-to` cannot touch the visitor's local DB.
 // Production template: deploy/cloudflare/wrangler.studio.example.jsonc.
 // Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
 {
@@ -21,7 +24,7 @@
 			"database_name": "sws-studio-db",
 			"migrations_dir": "crates/sws-worker-studio/migrations",
 			// Local placeholder ID; replace with your `wrangler d1 create` output before deploying.
-			"database_id": "00000000-0000-0000-0000-000000000000"
+			"database_id": "00000000-0000-0000-0000-000000000061"
 		}
 	],
 	// Non-secret vars only. Secrets (SESSION_SIGNING_KEY, GITHUB_OAUTH_CLIENT_SECRET, ...)

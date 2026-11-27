@@ -8,7 +8,7 @@ SWS core is industry-agnostic and accessible by construction (**WCAG 2.2 AA**). 
 
 | Tool | Install / Setup |
 | --- | --- |
-| Node.js LTS (via nvm) | `nvm use --lts` (Node >= 20 LTS) |
+| Node.js LTS (via nvm) | `nvm use --lts` (Node >= 22.13; 22 LTS or newer) |
 | pnpm | `corepack enable && corepack prepare pnpm@latest --activate` (used across target monorepo workspaces) |
 | Rust stable + wasm target | `rustup target add wasm32-unknown-unknown` (on Arch, the `rust` package ships the target without rustup) |
 | `worker-build` | `cargo install worker-build@^0.9 --locked` (or `npm run setup:rust`) |
@@ -57,7 +57,7 @@ npm run check:headers:live   # static "/" vs Worker "/api/health" header parity
 npm run lhci                 # Lighthouse CI (accessibility must be 1.0)
 ```
 
-`npm run verify:full` additionally runs the agent tests and the Devvit bot tests (`verify:full (studio)`). **Node >= 23.6 is required for `verify:full`'s devvit tests**, which run `.ts` sources directly via `node --test` (unflagged type stripping); `npm run verify` itself works on Node >= 20.
+`npm run verify:full` additionally runs the agent tests and the Devvit bot tests (`verify:full (studio)`). **Node >= 23.6 is required for `verify:full`'s devvit tests**, which run `.ts` sources directly via `node --test` (unflagged type stripping); `npm run verify` itself needs Node >= 22.13 (`node:sqlite` for the Studio registry test).
 
 CI (`.github/workflows/ci.yml`) runs the verification suite on every push and PR.
 

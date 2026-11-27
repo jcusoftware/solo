@@ -12,12 +12,14 @@
 //!
 //! Configuration is separate from the visitor Worker: its own Wrangler config
 //! (`wrangler.studio.jsonc`), its own `STUDIO_DB` binding and database. All
-//! responses pass through [`sws_security::headers::with_security_headers`] and
-//! carry `Cache-Control: no-store`.
+//! responses are decided by the host-testable [`respond`] layer, which applies
+//! [`sws_security::headers::SECURITY_HEADERS`] and `Cache-Control: no-store`;
+//! the wasm glue below only adapts `worker` types to it.
 
 pub mod bounds;
 pub mod model;
 pub mod repo;
+pub mod respond;
 pub mod routes;
 
 #[cfg(target_arch = "wasm32")]
@@ -28,12 +30,11 @@ mod wasm {
     use futures_util::StreamExt;
     use worker::{Context, Env, Request, Response, Result, console_error, event};
 
-    use sws_security::headers::{API_CACHE_CONTROL, with_security_headers};
-    use sws_security::response::error_body;
-    use sws_security::worker_utils::{json_response, var};
+    use sws_security::headers::with_security_headers;
+    use sws_security::worker_utils::var;
 
-    use crate::bounds::{self, BodyLimiter, Reject};
-    use crate::routes::{Route, health_body, route};
+    use crate::bounds::{self, BodyLimiter};
+    use crate::respond::{self, RequestFacts, Resp};
 
     #[event(start)]
     fn start() {
@@ -47,73 +48,65 @@ mod wasm {
             Ok(r) => r,
             Err(e) => {
                 console_error!("unhandled error: {e}");
-                json_response(500, &error_body("internal_error"))?
+                respond::internal_error()
             }
         };
-        with_security_headers(resp)
+        // Idempotent (`set`): the pure layer already carries the same headers.
+        with_security_headers(to_response(resp)?)
     }
 
-    fn reject_response(r: Reject) -> Result<Response> {
-        let resp = json_response(r.status(), &error_body(r.code()))?;
-        if r == Reject::MethodNotAllowed {
-            resp.headers().set("Allow", bounds::ALLOW_HEADER)?;
+    fn to_response(r: Resp) -> Result<Response> {
+        let resp = match &r.body {
+            Some(body) => Response::from_bytes(serde_json::to_vec(body)?)?,
+            None => Response::empty()?,
+        }
+        .with_status(r.status);
+        for (k, v) in &r.headers {
+            resp.headers().set(k, v)?;
         }
         Ok(resp)
     }
 
-    async fn handle(mut req: Request, env: &Env) -> Result<Response> {
+    async fn handle(mut req: Request, env: &Env) -> Result<Resp> {
         let method = req.method().to_string();
         let url = req.url()?;
-        let url_len = url.path().len() + url.query().map_or(0, |q| q.len() + 1);
+        let path = url.path().to_string();
+        let url_len = path.len() + url.query().map_or(0, |q| q.len() + 1);
         let headers = req.headers();
         let content_length = headers.get("Content-Length")?;
         let transfer_encoding = headers.get("Transfer-Encoding")?;
         let content_type = headers.get("Content-Type")?;
-
-        if let Err(r) = bounds::check_request(
-            &method,
+        let facts = RequestFacts {
+            method: &method,
+            path: &path,
             url_len,
-            content_length.as_deref(),
-            transfer_encoding.as_deref(),
-            content_type.as_deref(),
-        ) {
-            return reject_response(r);
+            content_length: content_length.as_deref(),
+            transfer_encoding: transfer_encoding.as_deref(),
+            content_type: content_type.as_deref(),
+        };
+
+        if let Err(r) = respond::precheck(&facts) {
+            return Ok(r);
         }
 
-        // Do not trust the header: count the bytes actually streamed. No route
-        // accepts a body yet, so the body is drained under the cap and dropped.
-        if let Some(declared) = content_length
-            .as_deref()
-            .and_then(|v| v.trim().parse().ok())
-            && declared > 0
-        {
-            let mut limiter = BodyLimiter::new(declared);
-            let mut stream = req.stream()?;
+        // Do not trust headers: count the bytes actually streamed, for every
+        // method. No route accepts a body yet, so any body is drained under the
+        // cap and dropped; `respond` turns an unexpected one into 400/413.
+        let mut seen = 0usize;
+        if let Ok(mut stream) = req.stream() {
+            let mut limiter =
+                BodyLimiter::new(bounds::drain_limit(&method, content_length.as_deref()));
             while let Some(chunk) = stream.next().await {
-                if let Err(r) = limiter.push(chunk?.len()) {
-                    return reject_response(r);
+                let n = chunk?.len();
+                seen = seen.saturating_add(n);
+                if limiter.push(n).is_err() {
+                    break;
                 }
             }
         }
 
-        match route(&method, url.path()) {
-            Route::Health => {
-                let version = var(env, "STUDIO_VERSION")
-                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-                json_response(200, &health_body(&version))
-            }
-            Route::HealthHead => {
-                let resp = Response::empty()?.with_status(200);
-                resp.headers().set("Content-Type", "application/json")?;
-                resp.headers().set("Cache-Control", API_CACHE_CONTROL)?;
-                Ok(resp)
-            }
-            Route::MethodNotAllowed(allow) => {
-                let resp = json_response(405, &error_body("method_not_allowed"))?;
-                resp.headers().set("Allow", allow)?;
-                Ok(resp)
-            }
-            Route::NotFound => json_response(404, &error_body("not_found")),
-        }
+        let version =
+            var(env, "STUDIO_VERSION").unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        Ok(respond::respond(&facts, seen, &version))
     }
 }

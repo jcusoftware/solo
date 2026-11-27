@@ -166,9 +166,124 @@ describe('studio registry migration', () => {
       () => run('TOKEN_INSERT', 'ws-a', 'tok-long', 1, H2, 'edit', '', '2026-08-02T00:00:00Z', '2026-12-27T00:00:00Z', '2026-08-01T00:00:00Z'),
       /CHECK/,
     );
+    // A 7-day publish token created on day 85 of the chain stays inside both caps.
     assert.doesNotThrow(() =>
-      run('TOKEN_INSERT', 'ws-a', 'tok-ok', 1, H2, 'publish', '', '2026-08-02T00:00:00Z', '2026-10-30T00:00:00Z', '2026-08-01T00:00:00Z'),
+      run('TOKEN_INSERT', 'ws-a', 'tok-ok', 1, H2, 'publish', '', '2026-10-25T00:00:00Z', '2026-10-30T00:00:00Z', '2026-08-01T00:00:00Z'),
     );
+  });
+
+  const tokenAt = (id, hash, scope, createdAt, expiresAt, chainAt) =>
+    run('TOKEN_INSERT', 'ws-a', id, 1, hash, scope, '', createdAt, expiresAt, chainAt);
+
+  it('rejects invalid or non-canonical timestamps on every *_at column', () => {
+    seed();
+    const bad = [
+      '0000-00-00T00:00:00Z',
+      '2026-02-30T00:00:00Z',
+      '2026-11-27 00:00:00Z',
+      '2026-11-27T00:00:00+01:00',
+      '2026-11-27T00:00:00.000Z',
+      'xxxxxxxxxxxxxxxxxxxx',
+      '',
+    ];
+    for (const ts of bad) {
+      assert.throws(() => tokenAt('tok-bad', H2, 'edit', ts, '2026-12-01T00:00:00Z', NOW), /CHECK/, `created_at ${ts}`);
+      assert.throws(() => tokenAt('tok-bad', H2, 'edit', NOW, ts, NOW), /CHECK/, `expires_at ${ts}`);
+      assert.throws(() => tokenAt('tok-bad', H2, 'edit', NOW, '2026-12-01T00:00:00Z', ts), /CHECK/, `chain_started_at ${ts}`);
+      assert.throws(() => db.prepare("INSERT INTO workspaces (id, name, created_at) VALUES ('ws-x', 'X', ?)").run(ts), /CHECK/, `workspaces ${ts}`);
+      assert.throws(() => db.prepare("INSERT INTO sites (workspace_id, id, slug, name, created_at) VALUES ('ws-a', 'site-x', 'x', 'X', ?)").run(ts), /CHECK/, `sites ${ts}`);
+      assert.throws(() => db.prepare("UPDATE users SET updated_at = ? WHERE id = 1").run(ts), /CHECK/, `users.updated_at ${ts}`);
+      assert.throws(() => db.prepare("UPDATE deployments SET finished_at = ? WHERE id = 'dep-a1'").run(ts), /CHECK/, `finished_at ${ts}`);
+      assert.throws(() => db.prepare("UPDATE api_tokens SET last_used_at = ? WHERE id = 'tok-a1'").run(ts), /CHECK/, `last_used_at ${ts}`);
+      assert.throws(() => db.prepare("UPDATE api_tokens SET revoked_at = ? WHERE id = 'tok-a1'").run(ts), /CHECK/, `revoked_at ${ts}`);
+    }
+    // NULL is only accepted where the column is nullable.
+    assert.throws(() => db.prepare('UPDATE api_tokens SET expires_at = NULL WHERE id = ?').run('tok-a1'), /NOT NULL/);
+    assert.doesNotThrow(() => db.prepare("UPDATE deployments SET finished_at = NULL WHERE id = 'dep-a1'").run());
+    assert.doesNotThrow(() => db.prepare("UPDATE deployments SET finished_at = ? WHERE id = 'dep-a1'").run(NOW));
+  });
+
+  it('an invalid chain_started_at cannot bypass the 90-day cap', () => {
+    seed();
+    // strftime(..., '+90 days') over this value is NULL; it must be rejected outright.
+    assert.throws(
+      () => tokenAt('tok-bypass', H2, 'edit', NOW, '2026-12-01T00:00:00Z', '0000-00-00T00:00:00Z'),
+      /CHECK/,
+    );
+    assert.throws(
+      () => tokenAt('tok-bypass', H2, 'edit', NOW, '2099-12-01T00:00:00Z', '2026-11-27 00:00:00Z'),
+      /CHECK/,
+    );
+    // A valid chain still caps expiry at +90 days, exactly.
+    assert.throws(
+      () => tokenAt('tok-over', H2, 'edit', '2026-10-29T00:00:00Z', '2026-10-31T00:00:00Z', '2026-08-01T00:00:00Z'),
+      /CHECK/,
+    );
+    assert.doesNotThrow(() =>
+      tokenAt('tok-edge', H2, 'edit', '2026-10-29T00:00:00Z', '2026-10-30T00:00:00Z', '2026-08-01T00:00:00Z'),
+    );
+    // Renewal cannot be backdated past its own chain start.
+    assert.throws(() => tokenAt('tok-back', 'c'.repeat(64), 'edit', '2026-07-31T00:00:00Z', '2026-08-02T00:00:00Z', '2026-08-01T00:00:00Z'), /CHECK/);
+  });
+
+  it('enforces the per-scope token lifetimes from #60', () => {
+    seed();
+    const c = '2026-11-01T00:00:00Z';
+    const cases = [
+      ['edit', '2026-12-01T00:00:00Z', '2026-12-01T00:00:01Z'],
+      ['publish', '2026-11-08T00:00:00Z', '2026-11-08T00:00:01Z'],
+      ['activate', '2026-11-02T00:00:00Z', '2026-11-02T00:00:01Z'],
+    ];
+    cases.forEach(([scope, ok, over], i) => {
+      const h = String(i).repeat(64);
+      const h2 = String(i + 5).repeat(64);
+      assert.doesNotThrow(() => tokenAt(`tok-ok-${scope}`, h, scope, c, ok, c), `${scope} at cap`);
+      assert.throws(() => tokenAt(`tok-over-${scope}`, h2, scope, c, over, c), /CHECK/, `${scope} over cap`);
+    });
+  });
+
+  it('indexes active tokens by user for the per-user active count', () => {
+    seed();
+    const idx = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name = 'idx_api_tokens_user_active'").get();
+    assert.match(idx.sql, /\(user_id\) WHERE revoked_at IS NULL/);
+    const plan = db
+      .prepare('EXPLAIN QUERY PLAN SELECT count(*) FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL')
+      .all(1)
+      .map((r) => r.detail)
+      .join(' ');
+    assert.match(plan, /idx_api_tokens_user_active/);
+  });
+
+  it('rejects slugs with a trailing hyphen (and other bad shapes)', () => {
+    seed();
+    for (const slug of ['bad-', '-bad', 'Bad', 'bad_slug', 'a--', '-']) {
+      assert.throws(() => run('SITE_INSERT', 'ws-a', 'site-s', slug, 'S'), /CHECK/, slug);
+    }
+    for (const slug of ['a', 'a-b', 'a--b', '9-lives']) {
+      assert.doesNotThrow(() => run('SITE_INSERT', 'ws-a', `site-${slug}`, slug, 'S'), slug);
+    }
+  });
+
+  it('workspace and site deletion cascade even with deployments present', () => {
+    seed();
+    const count = (t) => db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n;
+    assert.equal(count('deployments'), 1);
+    assert.doesNotThrow(() => db.exec("DELETE FROM sites WHERE id = 'site-a1'"));
+    for (const t of ['deployments', 'site_revisions', 'assets']) assert.equal(count(t), 0, t);
+    seed();
+    assert.doesNotThrow(() => db.exec("DELETE FROM workspaces WHERE id = 'ws-a'"));
+    for (const t of ['deployments', 'site_revisions', 'assets', 'sites', 'memberships', 'api_tokens']) {
+      assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t} WHERE workspace_id = 'ws-a'`).get().n, 0, t);
+    }
+    // Other workspaces are untouched.
+    assert.equal(count('sites'), 1);
+  });
+
+  it('a deployed revision still cannot be deleted directly (NO ACTION FK)', () => {
+    seed();
+    assert.throws(() => db.exec("DELETE FROM site_revisions WHERE id = 'rev-a1'"), /FOREIGN KEY/);
+    db.exec("DELETE FROM deployments WHERE id = 'dep-a1'");
+    assert.doesNotThrow(() => db.exec("DELETE FROM site_revisions WHERE id = 'rev-a1'"));
   });
 
   it('allocates immutable, increasing revision numbers per site', () => {

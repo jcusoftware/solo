@@ -124,6 +124,19 @@ pub fn check_request(
     Ok(())
 }
 
+/// Byte cap for draining the request body stream. Body methods drain up to
+/// their declared (already validated) length; bodyless methods (GET, HEAD,
+/// DELETE) drain up to [`MAX_BODY_BYTES`] and any byte at all is then a 400.
+pub fn drain_limit(method: &str, content_length: Option<&str>) -> usize {
+    if is_body_method(method) {
+        content_length
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .map_or(MAX_BODY_BYTES, |n| n.min(MAX_BODY_BYTES))
+    } else {
+        MAX_BODY_BYTES
+    }
+}
+
 /// Counts bytes as they are streamed so a lying `Content-Length` cannot
 /// smuggle more than the declared (and capped) amount.
 #[derive(Debug)]
@@ -283,6 +296,15 @@ mod tests {
         let mut sat = BodyLimiter::new(10);
         assert_eq!(sat.push(usize::MAX), Err(Reject::PayloadTooLarge));
         assert_eq!(sat.push(usize::MAX), Err(Reject::PayloadTooLarge));
+    }
+
+    #[test]
+    fn drain_limits() {
+        assert_eq!(drain_limit("POST", Some("10")), 10);
+        assert_eq!(drain_limit("POST", Some("99999999")), MAX_BODY_BYTES);
+        assert_eq!(drain_limit("POST", None), MAX_BODY_BYTES);
+        assert_eq!(drain_limit("GET", None), MAX_BODY_BYTES);
+        assert_eq!(drain_limit("DELETE", Some("5")), MAX_BODY_BYTES);
     }
 
     #[test]

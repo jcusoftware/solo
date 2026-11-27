@@ -6,7 +6,7 @@
   "license": "MIT OR Apache-2.0",
   "description": "Solo Website System (SWS): Cloudflare-native, Rust-powered open-source visual website builder.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "render": "cargo run -q -p sws-cli --features pack-hospitality -- build packs/hospitality/demo/venue.json core/public",
@@ -27,6 +27,7 @@
     "studio:build": "node scripts/build-wasm.mjs --profile release --crate crates/sws-worker-studio",
     "studio:dev": "wrangler dev -c wrangler.studio.jsonc --persist-to .wrangler/studio-state --port 8788",
     "studio:db:migrate:local": "wrangler d1 migrations apply STUDIO_DB --local -c wrangler.studio.jsonc --persist-to .wrangler/studio-state",
+    "studio:check:live": "node scripts/check-studio-live.mjs",
     "test:studio": "node --test tests/unit/studio-registry.test.mjs",
     "build": "npm run build:wasm:release",
     "build:wasm:dev": "node scripts/build-wasm.mjs --profile dev",

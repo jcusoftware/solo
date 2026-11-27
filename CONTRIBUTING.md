@@ -32,7 +32,7 @@ Open the repository in a compatible editor (VS Code / Dev Containers CLI) using 
 ### Option B: Local Workstation
 
 1. **Node.js LTS & pnpm**
-   Use `nvm` to select the active Node.js LTS release and enable `pnpm`:
+   Use `nvm` to select the active Node.js LTS release (Node >= 22.13 is required) and enable `pnpm`:
    ```bash
    export NVM_DIR="$HOME/.nvm"
    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"

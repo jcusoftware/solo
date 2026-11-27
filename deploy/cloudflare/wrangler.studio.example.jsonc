@@ -41,11 +41,11 @@
 	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
 	// or in `.dev.vars` for local `wrangler dev`:
 	//   GITHUB_OAUTH_CLIENT_SECRET  secret; GitHub OAuth App client secret (consumed by #65)
-	//   SESSION_SIGNING_KEY         required; signing key for Studio auth sessions (#65)
-	//   TURNSTILE_SECRET_KEY        required; API returns 503 if missing unless DEV_MODE="true"
+	//   SESSION_SIGNING_KEY         (future, #65) signing key for Studio auth sessions; not read by the current scaffold
+	//   TURNSTILE_SECRET_KEY        (future, #65) not read by the current scaffold; no route uses it yet
 	//   CLOUDFLARE_DEPLOY_API_TOKEN opt-in (#64); required only for remote publish jobs
-	// Optional local-only var (in `.dev.vars`):
-	//   DEV_MODE="true"
+	// Future (#65), not read by the current scaffold: a local-only DEV_MODE="true" in `.dev.vars`
+	// to relax Turnstile verification. Do not rely on it until that issue ships.
 	"observability": {
 		"enabled": true
 	}
