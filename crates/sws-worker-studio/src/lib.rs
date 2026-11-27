@@ -19,7 +19,8 @@
 //! Configuration is separate from the visitor Worker: its own Wrangler config
 //! (`wrangler.studio.jsonc`), its own `STUDIO_DB` binding and database. All
 //! responses are decided by the host-testable [`respond`] layer, which applies
-//! [`sws_security::headers::SECURITY_HEADERS`] and `Cache-Control: no-store`;
+//! the `studio` security-header profile
+//! ([`sws_security::headers::STUDIO_HEADERS`]) and `Cache-Control: no-store`;
 //! the wasm glue below only adapts `worker` types to it.
 
 pub mod asset_repo;
@@ -47,7 +48,7 @@ mod wasm {
     use futures_util::StreamExt;
     use worker::{Context, Env, Request, Response, Result, console_error, event};
 
-    use sws_security::headers::with_security_headers;
+    use sws_security::headers::{HeaderProfile, with_profile_headers};
     use sws_security::worker_utils::var;
 
     use crate::bounds::{self, BodyLimiter};
@@ -85,7 +86,7 @@ mod wasm {
                     to_response(respond::internal_error())?
                 }
             };
-            return with_security_headers(resp);
+            return with_profile_headers(resp, HeaderProfile::Studio, None);
         }
         // Authentication, token and membership routes (#65) read small JSON or
         // form bodies and answer HTML/redirects, so they are decided before `handle`.
@@ -114,8 +115,8 @@ mod wasm {
         };
         match resp {
             Outcome::Raw(r) => Ok(r),
-            // Idempotent (`set`): the pure layer already carries the same headers.
-            Outcome::Local(r) => with_security_headers(to_response(r)?),
+            // Idempotent: the pure layer already carries the same `studio` headers.
+            Outcome::Local(r) => with_profile_headers(to_response(r)?, HeaderProfile::Studio, None),
         }
     }
 

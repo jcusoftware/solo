@@ -148,8 +148,9 @@ pub fn ok_json(status: u16, body: Value) -> Resp {
 }
 
 /// Headers for an asset download. User bytes are only ever served as an allowlisted
-/// non-HTML type, as an attachment, with `nosniff` and the Studio CSP (all from
-/// `SECURITY_HEADERS`) and `no-store`.
+/// non-HTML type, as an attachment, with `nosniff`, the Studio CSP and
+/// `Cross-Origin-Resource-Policy: same-origin` (all from the `studio` profile,
+/// `STUDIO_HEADERS`) and `no-store`.
 pub fn download_resp(kind: ContentKind, sha256: &str) -> Resp {
     let mut r = Resp::new(
         200,
@@ -179,7 +180,7 @@ pub fn limits_json(l: &AssetLimits) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sws_security::headers::SECURITY_HEADERS;
+    use sws_security::headers::{HeaderProfile, STUDIO_HEADERS};
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -263,7 +264,7 @@ mod tests {
         assert_eq!(body["error"], "r2_not_configured");
         assert!(body["message"].as_str().unwrap().contains("MEDIA_BUCKET"));
         assert_eq!(r.header("Cache-Control"), Some("no-store"));
-        for (k, v) in SECURITY_HEADERS {
+        for (k, v) in STUDIO_HEADERS {
             assert_eq!(r.header(k), Some(*v), "{k}");
         }
         let r = error_resp(
@@ -294,6 +295,25 @@ mod tests {
         for k in ContentKind::ALL {
             assert!(!k.mime().contains("html") && !k.mime().contains("svg"));
         }
+    }
+
+    #[test]
+    fn downloads_carry_exactly_the_studio_profile_plus_attachment_headers() {
+        let r = download_resp(ContentKind::Png, SHA);
+        let mut want: Vec<(String, String)> = vec![
+            ("Cache-Control".into(), "no-store".into()),
+            (
+                "Content-Disposition".into(),
+                format!("attachment; filename=\"{SHA}.png\""),
+            ),
+        ];
+        want.extend(HeaderProfile::Studio.resolve(None));
+        want.push(("Content-Type".into(), "image/png".into()));
+        assert_eq!(r.headers, want);
+        assert_eq!(
+            r.header("Content-Security-Policy"),
+            Some("default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        );
     }
 
     #[test]

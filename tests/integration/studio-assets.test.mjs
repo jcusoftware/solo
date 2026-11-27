@@ -18,10 +18,11 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { resolve, join } from 'node:path';
+import { parseRustConst } from '../../core/tools/check-headers.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
 const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
@@ -30,6 +31,8 @@ const CRATE = join(ROOT, 'crates', 'sws-worker-studio');
 const MIB = 1024 * 1024;
 const PORTS = { a: 8791, b: 8792, c: 8793 };
 const INSPECTOR = { a: 9391, b: 9392, c: 9393 };
+// The `studio` security-header profile (#180), read from the Rust source of truth.
+const STUDIO_HEADERS = parseRustConst(readFileSync(join(ROOT, 'crates/sws-security/src/headers.rs'), 'utf8'), 'STUDIO_HEADERS');
 const SHA = (buf) => createHash('sha256').update(buf).digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `X-Sws-Dev-Now` (dev build only) is an OFFSET in seconds from the Worker's real clock.
@@ -349,6 +352,7 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
       assert.equal(dl.headers.get('cache-control'), 'no-store');
       assert.match(dl.headers.get('content-disposition'), /^attachment;/);
       assert.match(dl.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+      for (const [k, v] of STUDIO_HEADERS) assert.equal(dl.headers.get(k), v, `studio profile ${k} on a download`);
       const again = await a.put('ws-a', 'site-a1', buf);
       assert.equal(again.status, 200);
       assert.equal(again.json.created, false);
