@@ -9,12 +9,16 @@
 // and the Wasm target features of the artifacts.
 //
 // Usage: node scripts/build-wasm.mjs --profile dev|release [--force] [--crate crates/sws-worker-site]
-//                                    [--features insecure-dev-auth]
-// Stamp: target/wasm-build/<crate-name>[+<features>]-stamp.json, one per Worker crate and
-// feature set so switching Workers or features does not force rebuilds (gitignored with
-// target/). A build with `--features` goes to its OWN output directory
-// (`crates/<crate>/build-<features>/`, gitignored) so a test-only feature build can never
-// overwrite or be mistaken for the default `build/` that `wrangler dev`/deploy use.
+//                                    [--features a,b] [--out-dir build-name]
+// A build with Cargo features always goes to its OWN output directory so a test-only
+// feature build can never overwrite or be mistaken for the default `build/` that
+// `wrangler dev`/deploy use: `--out-dir` names it explicitly (it must start with
+// `build-`; gitignored as `crates/*/build-*/`), else it defaults to
+// `build-<features>` (e.g. `build-insecure-dev-auth`).
+// Stamp: target/wasm-build/<crate-name>-stamp.json for the default `build/`, else
+// target/wasm-build/<crate-name>-<out-dir>-stamp.json: one per Worker crate and output
+// directory so switching Workers, features or outputs does not force rebuilds
+// (gitignored with target/). The features and profile are part of the stamp.
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -58,7 +62,7 @@ export function inputHash(root, crateDir, features = '') {
   for (const f of ROOT_INPUTS) if (existsSync(join(root, f))) files.push(join(root, f));
   for (const dir of crateClosure(root, crateDir)) walk(dir, files);
   const h = createHash('sha256');
-  h.update(`features=${features}\0`);
+  if (features) h.update(`features=${features}\0`);
   for (const f of files) {
     h.update(relative(root, f)).update('\0').update(readFileSync(f)).update('\0');
   }
@@ -74,30 +78,40 @@ function main(argv) {
   let force = false;
   let crateDir = 'crates/sws-worker-site';
   let features = '';
+  let outDir = '';
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--profile') profile = argv[++i];
+    else if (argv[i] === '--features') features = argv[++i] ?? '';
+    else if (argv[i] === '--out-dir') outDir = argv[++i] ?? '';
     else if (argv[i] === '--force') force = true;
     else if (argv[i] === '--crate') crateDir = argv[++i];
-    else if (argv[i] === '--features') features = argv[++i] ?? '';
     else {
       console.error(`unknown argument ${argv[i]}`);
       return 2;
     }
   }
   if (!['dev', 'release'].includes(profile)) {
-    console.error('usage: build-wasm.mjs --profile dev|release [--force] [--crate dir] [--features list]');
+    console.error('usage: build-wasm.mjs --profile dev|release [--force] [--crate dir] [--features a,b] [--out-dir build-name]');
+    return 2;
+  }
+  if (!/^[a-z0-9_,-]*$/.test(features)) {
+    console.error(`invalid --features ${JSON.stringify(features)} (only [a-z0-9_,-])`);
+    return 2;
+  }
+  if (!outDir) outDir = features ? `build-${features.replaceAll(/[^a-z0-9]+/g, '-')}` : 'build';
+  if (!/^build(?:-[A-Za-z0-9_-]+)?$/.test(outDir)) {
+    console.error(`invalid --out-dir ${JSON.stringify(outDir)} (must be build or build-<name>, [A-Za-z0-9_-])`);
+    return 2;
+  }
+  if (features && outDir === 'build') {
+    console.error('--features requires a separate --out-dir (never overwrite the default build/)');
     return 2;
   }
 
   const crateAbs = resolve(ROOT, crateDir);
-  if (features && !/^[a-z0-9_,-]+$/.test(features)) {
-    console.error(`invalid --features ${JSON.stringify(features)}`);
-    return 2;
-  }
-  const tag = features.replaceAll(/[^a-z0-9]+/g, '-');
-  const outDirName = features ? `build-${tag}` : 'build';
-  const outputs = [join(crateAbs, outDirName, 'index.js'), join(crateAbs, outDirName, 'index_bg.wasm')];
-  const stampPath = join(ROOT, 'target', 'wasm-build', `${basename(crateAbs)}${features ? `+${tag}` : ''}-stamp.json`);
+  const outputs = [join(crateAbs, outDir, 'index.js'), join(crateAbs, outDir, 'index_bg.wasm')];
+  const stampName = outDir === 'build' ? `${basename(crateAbs)}-stamp.json` : `${basename(crateAbs)}-${outDir}-stamp.json`;
+  const stampPath = join(ROOT, 'target', 'wasm-build', stampName);
   const hash = inputHash(ROOT, crateDir, features);
 
   if (!force && existsSync(stampPath) && outputs.every(existsSync)) {
@@ -108,8 +122,10 @@ function main(argv) {
     }
   }
 
+  // worker-build [OPTIONS] [PATH] [EXTRA_OPTIONS]...: extras go to `cargo build`.
   const args = [profile === 'release' ? '--release' : '--dev'];
-  if (features) args.push('--out-dir', outDirName, '.', '--features', features);
+  if (outDir !== 'build') args.push('--out-dir', outDir);
+  if (features) args.push('.', '--features', features);
   const build = spawnSync('worker-build', args, {
     cwd: crateAbs,
     stdio: 'inherit',

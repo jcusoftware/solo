@@ -86,7 +86,7 @@ jobs:
       - name: Build Studio Worker (size-optimized release; verifies Binaryen pin and Wasm target features)
         run: npm run studio:build
       - name: Release Studio Worker must not contain the test-only dev-auth hook
-        run: npm run check:studio:no-dev-auth
+        run: npm run check:studio:release -- --require-artifact
       - name: Detect sws-cli crate
         id: detect
         run: |

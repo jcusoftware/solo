@@ -49,7 +49,7 @@ test('release verify runs cargo deny like ci rust', () => {
 });
 
 test('release verify builds the Studio Worker and checks it for the dev-auth hook like ci web', () => {
-  for (const cmd of ['npm run studio:build', 'npm run check:studio:no-dev-auth']) {
+  for (const cmd of ['npm run studio:build', 'npm run check:studio:release -- --require-artifact']) {
     assert.ok(commands(ciWeb, cmd).length === 1, `ci web should run ${cmd}`);
     assert.ok(commands(verify, cmd).length === 1, `release verify must run ${cmd}`);
   }

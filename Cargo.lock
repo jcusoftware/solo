@@ -835,6 +835,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sws-assets",
+ "sws-ir",
  "sws-security",
  "worker",
 ]

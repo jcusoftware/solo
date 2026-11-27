@@ -43,7 +43,7 @@ so the exact `worker-build` pin plus the recorded Binaryen number is the contrac
 Both go through `scripts/build-wasm.mjs`, which hashes only the Rust inputs (root
 `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `wasm-toolchain.json`, the Worker crate
 and its transitive `path` dependencies) and stores the hash and profile in
-`target/wasm-build/<crate>-stamp.json` (one stamp per Worker crate). If the stamp matches and the artifacts exist, it prints
+`target/wasm-build/<crate>-stamp.json` (one stamp per Worker crate; a `--features` build goes to its own `build-*` output directory, named by `--out-dir` or defaulting to `build-<features>`, with its own `<crate>-<out-dir>-stamp.json`, so it never overwrites the default `build/`). If the stamp matches and the artifacts exist, it prints
 `skipping Cargo` and exits: edits to static assets, `sites/`, `core/public`, JS, CSS or
 HTML do not run Cargo or `worker-build`. `wrangler.jsonc` `build.command` uses the same
 script (release profile), so `npm run dev` no longer rebuilds on every start. Use

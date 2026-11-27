@@ -21,7 +21,15 @@
 			"database_id": "<YOUR_STUDIO_D1_DATABASE_ID>"
 		}
 	],
-	// Cardless default: D1 + vars only. Opt-in/later bindings (add them only when the
+	// Per-site command sessions (#62): one SQLite-backed, hibernating Durable Object per
+	// site (class SiteSession, id derived from workspace_id/site_id). SQLite-backed classes
+	// are available on the Workers Free plan, so this keeps the cardless default. Never change
+	// the class name or reuse a migration tag after deploying: add a new migration instead.
+	"durable_objects": {
+		"bindings": [{ "name": "SITE_SESSION", "class_name": "SiteSession" }]
+	},
+	"migrations": [{ "tag": "v1-site-session", "new_sqlite_classes": ["SiteSession"] }],
+	// Cardless default: D1 + Durable Objects + vars only. Opt-in/later bindings (add them only when the
 	// owning issue ships and you accept any billing implications):
 	//   R2 media          (#63, OPT-IN, may require a payment method on your Cloudflare account):
 	//                            "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "sws-studio-media" }]
@@ -35,8 +43,6 @@
 	// set your own Cloudflare usage notifications. See docs/ARCHITECTURE.md, "Studio asset storage".
 	//   Queues publish    (#64): "queues": { "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "sws-studio-publish" }],
 	//                            "consumers": [{ "queue": "sws-studio-publish", "max_retries": 3, "dead_letter_queue": "sws-studio-publish-dlq" }] }
-	//   Durable Objects   (#62): "durable_objects": { "bindings": [{ "name": "PROJECT_ROOM", "class_name": "ProjectRoom" }] }
-	//                            plus a "migrations" entry with "new_sqlite_classes": ["ProjectRoom"]
 	"vars": {
 		"STUDIO_VERSION": "0.2.0-dev",
 		"STUDIO_PUBLIC_ORIGIN": "https://studio.sws.example",
@@ -44,7 +50,16 @@
 		// GitHub OAuth App client id (public, non-secret); consumed by #65.
 		"GITHUB_OAUTH_CLIENT_ID": "<YOUR_GITHUB_OAUTH_CLIENT_ID>",
 		// Cloudflare Turnstile always-pass TEST site key (dev only). Replace in production.
-		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA"
+		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+		// Optional session tuning (#62), clamped by the Worker; defaults shown.
+		// Membership is re-read from D1 before every edit; a socket not verified for twice
+		// SESSION_AUTHZ_RECHECK_MS (cap 30000 ms, so 60 s) is sent nothing. The idle sweep alarm
+		// (default 60000 ms, clamped to max(1000, SESSION_AUTHZ_RECHECK_MS)..60000) only closes idle
+		// removed members (within that plus one D1 read) and is kept long so the object can
+		// hibernate. Presence entries expire after the TTL.
+		"SESSION_AUTHZ_RECHECK_MS": "15000",
+		"SESSION_IDLE_SWEEP_MS": "60000",
+		"SESSION_PRESENCE_TTL_MS": "30000"
 	},
 	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
 	// or in `.dev.vars` for local `wrangler dev`:

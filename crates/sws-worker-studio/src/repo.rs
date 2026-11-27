@@ -55,6 +55,11 @@ pub const MEMBERSHIP_INSERT: &str =
 pub const MEMBERSHIP_GET: &str =
     "SELECT user_id, role FROM memberships WHERE workspace_id = ?1 AND user_id = ?2";
 
+/// The workspace's earliest-id owner (the author a checkpoint is re-attributed
+/// to when its original author can no longer be referenced).
+pub const MEMBERSHIP_OWNER: &str = "SELECT user_id, role FROM memberships \
+WHERE workspace_id = ?1 AND role = 'owner' ORDER BY user_id LIMIT 1";
+
 pub const SITE_INSERT: &str =
     "INSERT INTO sites (workspace_id, id, slug, name) VALUES (?1, ?2, ?3, ?4)";
 pub const SITE_GET: &str =
@@ -87,6 +92,15 @@ pub const REVISION_CHECKPOINT: &str = "INSERT INTO site_revisions \
 VALUES (?1, ?2, ?3, \
 (SELECT COALESCE(MAX(revision), 0) + 1 FROM site_revisions WHERE workspace_id = ?1 AND site_id = ?2), \
 ?4, ?5, ?6)";
+/// Retry-safe form used by the session layer (#62): the caller supplies a
+/// deterministic id, so repeating the insert after an ambiguous failure (D1
+/// timeout, object eviction) changes nothing. Only an `id` conflict is ignored;
+/// every CHECK / foreign key still fails loudly.
+pub const REVISION_CHECKPOINT_IDEMPOTENT: &str = "INSERT INTO site_revisions \
+(workspace_id, site_id, id, revision, ir_sha256, byte_size, created_by) \
+VALUES (?1, ?2, ?3, \
+(SELECT COALESCE(MAX(revision), 0) + 1 FROM site_revisions WHERE workspace_id = ?1 AND site_id = ?2), \
+?4, ?5, ?6) ON CONFLICT (id) DO NOTHING";
 pub const REVISION_GET: &str = "SELECT id, revision, ir_sha256, byte_size, created_by, created_at \
 FROM site_revisions WHERE workspace_id = ?1 AND site_id = ?2 AND id = ?3";
 pub const REVISION_LATEST: &str = "SELECT id, revision, ir_sha256, byte_size, created_by, created_at \
@@ -111,6 +125,7 @@ pub const ALL: &[(&str, &str, bool)] = &[
     ("USER_BY_GITHUB_ID", USER_BY_GITHUB_ID, false),
     ("MEMBERSHIP_INSERT", MEMBERSHIP_INSERT, true),
     ("MEMBERSHIP_GET", MEMBERSHIP_GET, true),
+    ("MEMBERSHIP_OWNER", MEMBERSHIP_OWNER, true),
     ("SITE_INSERT", SITE_INSERT, true),
     ("SITE_GET", SITE_GET, true),
     ("SITE_BY_SLUG", SITE_BY_SLUG, true),
@@ -122,6 +137,11 @@ pub const ALL: &[(&str, &str, bool)] = &[
     ("ASSET_BY_SHA256", ASSET_BY_SHA256, true),
     ("ASSET_LIST", ASSET_LIST, true),
     ("REVISION_CHECKPOINT", REVISION_CHECKPOINT, true),
+    (
+        "REVISION_CHECKPOINT_IDEMPOTENT",
+        REVISION_CHECKPOINT_IDEMPOTENT,
+        true,
+    ),
     ("REVISION_GET", REVISION_GET, true),
     ("REVISION_LATEST", REVISION_LATEST, true),
     ("DEPLOYMENT_INSERT", DEPLOYMENT_INSERT, true),
@@ -143,6 +163,13 @@ pub fn membership_get(workspace_id: &str, user_id: i64) -> Statement {
     Statement {
         sql: MEMBERSHIP_GET,
         params: vec![t(workspace_id), Param::Int(user_id)],
+    }
+}
+
+pub fn membership_owner(workspace_id: &str) -> Statement {
+    Statement {
+        sql: MEMBERSHIP_OWNER,
+        params: vec![t(workspace_id)],
     }
 }
 
@@ -192,6 +219,29 @@ pub fn asset_list(workspace_id: &str, site_id: &str, max: i64) -> Statement {
     Statement {
         sql: ASSET_LIST,
         params: vec![t(workspace_id), t(site_id), limit(max)],
+    }
+}
+
+/// Statement for the D1 side of a session checkpoint (see
+/// [`REVISION_CHECKPOINT_IDEMPOTENT`]). One call writes at most one row.
+pub fn revision_checkpoint_idempotent(
+    workspace_id: &str,
+    site_id: &str,
+    revision_id: &str,
+    ir_sha256: &str,
+    byte_size: i64,
+    created_by: i64,
+) -> Statement {
+    Statement {
+        sql: REVISION_CHECKPOINT_IDEMPOTENT,
+        params: vec![
+            t(workspace_id),
+            t(site_id),
+            t(revision_id),
+            t(ir_sha256),
+            Param::Int(byte_size),
+            Param::Int(created_by),
+        ],
     }
 }
 
@@ -269,6 +319,7 @@ mod tests {
         let ws = "ws-a";
         let stmts = [
             membership_get(ws, 1),
+            membership_owner(ws),
             site_get(ws, "s"),
             site_by_slug(ws, "s"),
             site_list(ws, 10),
@@ -277,6 +328,7 @@ mod tests {
             asset_by_sha256(ws, "s", "h"),
             asset_list(ws, "s", 10),
             revision_get(ws, "s", "r"),
+            revision_checkpoint_idempotent(ws, "s", "r", "h", 1, 1),
             revision_latest(ws, "s"),
             deployment_get(ws, "s", "d"),
             deployment_list(ws, "s", 10),

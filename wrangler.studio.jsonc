@@ -27,6 +27,13 @@
 			"database_id": "00000000-0000-0000-0000-000000000061"
 		}
 	],
+	// Per-site command sessions (#62): one SQLite-backed, hibernating Durable Object per
+	// site. Free-plan compatible (SQLite-backed classes only). The route
+	// /api/sites/{workspace_id}/{site_id}/session answers 401 until real auth (#65) lands.
+	"durable_objects": {
+		"bindings": [{ "name": "SITE_SESSION", "class_name": "SiteSession" }]
+	},
+	"migrations": [{ "tag": "v1-site-session", "new_sqlite_classes": ["SiteSession"] }],
 	// Non-secret vars only. Secrets (SESSION_SIGNING_KEY, GITHUB_OAUTH_CLIENT_SECRET, ...)
 	// belong in `.dev.vars` locally or `wrangler secret put` in production (#65).
 	"vars": {

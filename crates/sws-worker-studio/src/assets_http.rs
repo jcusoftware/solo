@@ -107,7 +107,9 @@ fn busy(e: AssetError) -> Result<Response> {
 /// makes the commit batch report an error AFTER it committed (the ambiguous-outcome
 /// case) and `X-Sws-Dev-Hold-Slot` leaks the download slot of that request (so a test
 /// can fill the table and watch the deadline reclaim it). The release build neither
-/// reads nor embeds these names (checked by `scripts/check-studio-no-dev-auth.mjs`).
+/// reads nor embeds these names (checked by `scripts/check-studio-release.mjs`), and even
+/// the test build honours them only behind the runtime fence
+/// ([`crate::session::devfence`]: `SWS_INSECURE_DEV_AUTH=1` AND a loopback `Host`).
 #[derive(Clone, Copy, Default)]
 struct Clock {
     offset: i64,
@@ -120,7 +122,10 @@ struct Clock {
 
 impl Clock {
     #[cfg(feature = "insecure-dev-auth")]
-    fn from_request(req: &Request) -> Self {
+    fn from_request(req: &Request, env: &Env) -> Self {
+        if !crate::session::entry::dev_fence_open(req, env) {
+            return Self::default();
+        }
         let num = |name: &str| {
             req.headers()
                 .get(name)
@@ -141,7 +146,7 @@ impl Clock {
     }
 
     #[cfg(not(feature = "insecure-dev-auth"))]
-    fn from_request(_req: &Request) -> Self {
+    fn from_request(_req: &Request, _env: &Env) -> Self {
         Self::default()
     }
 
@@ -224,16 +229,20 @@ impl Drop for Inflight {
     }
 }
 
-/// The dev-auth header is only ever read by the `insecure-dev-auth` test build; the
-/// release build neither reads it nor embeds its name (checked by
-/// `scripts/check-studio-no-dev-auth.mjs`).
+/// The dev-auth header is only ever read by the `insecure-dev-auth` test build, and
+/// there only behind the same runtime fence as the session route
+/// ([`crate::session::entry::dev_fence_open`]); the release build neither reads it nor
+/// embeds its name (checked by `scripts/check-studio-release.mjs`).
 #[cfg(feature = "insecure-dev-auth")]
-fn dev_user_header(headers: &worker::Headers) -> Result<Option<String>> {
-    headers.get(auth::DEV_USER_HEADER)
+fn dev_user_header(req: &Request, env: &Env) -> Result<Option<String>> {
+    if !crate::session::entry::dev_fence_open(req, env) {
+        return Ok(None);
+    }
+    req.headers().get(auth::DEV_USER_HEADER)
 }
 
 #[cfg(not(feature = "insecure-dev-auth"))]
-fn dev_user_header(_headers: &worker::Headers) -> Result<Option<String>> {
+fn dev_user_header(_req: &Request, _env: &Env) -> Result<Option<String>> {
     Ok(None)
 }
 
@@ -261,7 +270,7 @@ pub async fn handle(mut req: Request, env: &Env, route: AssetRoute) -> Result<Re
     let content_length = headers.get("Content-Length")?;
     let transfer_encoding = headers.get("Transfer-Encoding")?;
     let content_type = headers.get("Content-Type")?;
-    let dev_user = dev_user_header(headers)?;
+    let dev_user = dev_user_header(&req, env)?;
 
     // Framing. Uploads have their own, larger bound (checked in `upload`); every
     // other asset route keeps the standard 64 KiB JSON/no-body rules.
@@ -306,7 +315,7 @@ pub async fn handle(mut req: Request, env: &Env, route: AssetRoute) -> Result<Re
         return err(AssetError::SiteNotFound);
     }
 
-    let clock = Clock::from_request(&req);
+    let clock = Clock::from_request(&req, env);
     match &route {
         AssetRoute::List { .. } => list(env, &db, ws, site, clock.start()).await,
         AssetRoute::Reconcile { .. } => reconcile(env, &db, ws, site, clock, cursor).await,

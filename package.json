@@ -28,9 +28,10 @@
     "studio:dev": "wrangler dev -c wrangler.studio.jsonc --persist-to .wrangler/studio-state --port 8788",
     "studio:db:migrate:local": "wrangler d1 migrations apply STUDIO_DB --local -c wrangler.studio.jsonc --persist-to .wrangler/studio-state",
     "studio:check:live": "node scripts/check-studio-live.mjs",
-    "test:studio": "node --test tests/unit/studio-registry.test.mjs tests/unit/studio-assets.test.mjs tests/unit/studio-no-dev-auth.test.mjs",
+    "test:studio": "node --test tests/unit/studio-registry.test.mjs tests/unit/studio-session-sql.test.mjs tests/unit/studio-release-guard.test.mjs tests/unit/studio-assets.test.mjs",
     "test:studio:assets": "node --test --test-timeout=300000 tests/integration/studio-assets.test.mjs",
-    "check:studio:no-dev-auth": "node scripts/check-studio-no-dev-auth.mjs --require-wasm",
+    "test:studio:sessions": "node scripts/test-studio-sessions.mjs",
+    "check:studio:release": "node scripts/check-studio-release.mjs",
     "build": "npm run build:wasm:release",
     "build:wasm:dev": "node scripts/build-wasm.mjs --profile dev",
     "build:wasm:release": "node scripts/build-wasm.mjs --profile release",
@@ -49,8 +50,8 @@
     "test:a11y": "playwright test",
     "test:checkout": "npm run build && playwright test --config playwright.checkout.config.mjs",
     "lhci": "lhci autorun",
-    "verify": "npm run render:check && npm run codegen:check && npm run sites:check && npm run lint:abc && npm run lint:abc:fixture-negative && npm run check:headers && npm run sites:check:headers && npm run check:toolchain && npm run test:unit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check",
-    "verify:full": "npm run render:check && npm run codegen:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run check:toolchain && npm run test:unit && npm run test:agents && npm run bootstrap:devvit && npm run test:devvit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check"
+    "verify": "npm run render:check && npm run codegen:check && npm run sites:check && npm run lint:abc && npm run lint:abc:fixture-negative && npm run check:headers && npm run sites:check:headers && npm run check:toolchain && npm run check:studio:release && npm run test:unit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check",
+    "verify:full": "npm run render:check && npm run codegen:check && npm run sites:check && npm run lint:abc && npm run check:headers && npm run sites:check:headers && npm run check:toolchain && npm run check:studio:release && npm run test:unit && npm run test:agents && npm run bootstrap:devvit && npm run test:devvit && cargo test --workspace --locked && cargo test -p sws-cli --features pack-hospitality --locked && npm run lint:clippy && cargo deny check"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
