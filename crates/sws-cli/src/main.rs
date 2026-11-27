@@ -70,7 +70,7 @@ enum Command {
         #[arg(long, default_value_t = preview::DEFAULT_PREVIEW_PORT)]
         port: u16,
     },
-    /// Editor reducer entry points: eject, assign stable IDs, apply a command batch.
+    /// Editor reducer entry points: eject, assign stable IDs, apply a command batch, undo a transaction.
     Edit {
         #[command(subcommand)]
         action: EditAction,
@@ -119,6 +119,22 @@ enum EditAction {
         /// Optional destination for the transaction (forward, inverse, touched).
         #[arg(long)]
         transaction: Option<PathBuf>,
+        /// Proceed even if unsupported fields in the source would be dropped.
+        #[arg(long)]
+        allow_lossy: bool,
+    },
+    /// Undo a recorded transaction (restore mode) against the IR it produced.
+    Undo {
+        /// Site IR JSON that the transaction produced (the `apply --out` file).
+        input: PathBuf,
+        /// Transaction JSON written by `apply --transaction`.
+        transaction: PathBuf,
+        /// Destination for the restored IR.
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional destination for the undo transaction (its inverse redoes the step).
+        #[arg(long)]
+        undo_transaction: Option<PathBuf>,
         /// Proceed even if unsupported fields in the source would be dropped.
         #[arg(long)]
         allow_lossy: bool,
@@ -180,6 +196,19 @@ fn run() -> Result<ExitCode, String> {
                     &batch,
                     &out,
                     transaction.as_deref(),
+                    allow_lossy,
+                )?,
+                EditAction::Undo {
+                    input,
+                    transaction,
+                    out,
+                    undo_transaction,
+                    allow_lossy,
+                } => edit::cmd_edit_undo(
+                    &input,
+                    &transaction,
+                    &out,
+                    undo_transaction.as_deref(),
                     allow_lossy,
                 )?,
             }

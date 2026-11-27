@@ -15,8 +15,8 @@ pub mod reducer;
 mod tests;
 
 pub use api::{
-    EditOptions, EditOutput, UpgradeOutput, apply_batch_json, canonical_json, parse_batch,
-    upgrade_json,
+    EditOptions, EditOutput, UpgradeOutput, apply_batch_json, apply_undo_json, canonical_json,
+    parse_batch, parse_transaction, upgrade_json,
 };
 pub use command::{
     COMMAND_BATCH_VERSION, Command, CommandBatch, CommandError, ContainerRef, ErrorCode,
@@ -28,4 +28,4 @@ pub use ids::{
     check_editable, check_uids, is_valid_uid, next_id,
 };
 pub use lossless::{check_lossless, lossy_error, lossy_paths, lossy_value_paths, source_issues};
-pub use reducer::{apply_batch, apply_batch_in_place, apply_batch_restore};
+pub use reducer::{apply_batch, apply_batch_in_place, apply_batch_restore, apply_undo};

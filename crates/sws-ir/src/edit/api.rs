@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::command::{CommandBatch, CommandError, ErrorCode, Transaction};
 use super::ids::{UpgradeReport, assign_stable_ids};
 use super::lossless::{lossy_error, lossy_paths, lossy_value_paths, source_issues};
-use super::reducer::apply_batch;
+use super::reducer::{apply_batch, apply_undo};
 use crate::types::SiteDocument;
 
 /// Options for the JSON entry points.
@@ -106,6 +106,35 @@ pub fn parse_batch(batch_json: &str) -> Result<CommandBatch, CommandError> {
     .with_paths(paths))
 }
 
+/// Parse a recorded transaction JSON (the `transaction` of an [`EditOutput`] or
+/// the file `solo edit apply --transaction` writes) with the same strictness as
+/// [`parse_batch`].
+pub fn parse_transaction(transaction_json: &str) -> Result<Transaction, CommandError> {
+    let invalid = |e: serde_json::Error| {
+        CommandError::new(ErrorCode::InvalidJson, format!("invalid transaction: {e}"))
+    };
+    let raw: Value = serde_json::from_str(transaction_json).map_err(invalid)?;
+    let tx: Transaction = serde_json::from_str(transaction_json).map_err(invalid)?;
+    let output = serde_json::to_value(&tx).map_err(invalid)?;
+    let mut paths = lossy_value_paths(&raw, &output, &|candidate| {
+        serde_json::from_value::<Transaction>(candidate.clone())
+            .ok()
+            .and_then(|t| serde_json::to_value(t).ok())
+    });
+    paths.extend(source_issues(transaction_json));
+    if paths.is_empty() {
+        return Ok(tx);
+    }
+    Err(CommandError::new(
+        ErrorCode::InvalidJson,
+        format!(
+            "invalid transaction: {} unknown, duplicate or imprecise field(s)",
+            paths.len()
+        ),
+    )
+    .with_paths(paths))
+}
+
 /// Serialize `doc` canonically and prove the text parses again as a
 /// `SiteDocument` (the `serde_json` recursion limit is the usual reason it
 /// would not). Never returns text that cannot be reopened.
@@ -150,6 +179,25 @@ pub fn upgrade_json(ir_json: &str, options: EditOptions) -> Result<UpgradeOutput
     Ok(UpgradeOutput {
         document: checked_output(&next)?,
         report,
+        dropped_paths,
+    })
+}
+
+/// Undo a recorded transaction (restore mode, see [`apply_undo`]) against the
+/// document it produced. Same document gate and output shape as
+/// [`apply_batch_json`]; `transaction` of the output is the undo step.
+pub fn apply_undo_json(
+    ir_json: &str,
+    transaction_json: &str,
+    options: EditOptions,
+) -> Result<EditOutput, CommandError> {
+    let tx = parse_transaction(transaction_json)?;
+    let (raw, doc) = parse_source(ir_json)?;
+    let dropped_paths = lossless_gate(ir_json, &raw, &doc, options)?;
+    let (next, transaction) = apply_undo(&doc, &tx)?;
+    Ok(EditOutput {
+        document: checked_output(&next)?,
+        transaction,
         dropped_paths,
     })
 }

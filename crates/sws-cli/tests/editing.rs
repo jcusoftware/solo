@@ -795,3 +795,91 @@ fn editing_gate_pure_rust_edit_undo_redo_save_reopen_compile() {
     assert_ne!(file_map(&base_out)["styles.css"], native["styles.css"]);
     assert_eq!(fs::read(venue).unwrap(), venue_before);
 }
+
+#[test]
+fn undo_restores_an_empty_font_stack_and_refuses_a_forged_transaction() {
+    let dir = TempDir::new("undo");
+    let fixtures = legacy_fixtures(dir.path());
+    let upgraded = dir.path().join("up.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("upgrade"),
+        &fixtures[0],
+        Path::new("--out"),
+        &upgraded,
+    ]));
+    // A document holding a legacy-shaped empty heading font stack.
+    let mut doc: Value = serde_json::from_str(&fs::read_to_string(&upgraded).unwrap()).unwrap();
+    doc["tokens"]["fonts"]["heading"] = json!("");
+    let loose = dir.path().join("loose.json");
+    fs::write(&loose, serde_json::to_string_pretty(&doc).unwrap() + "\n").unwrap();
+    // Re-save canonically so byte comparison below is meaningful.
+    let base = dir.path().join("base.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("upgrade"),
+        &loose,
+        Path::new("--out"),
+        &base,
+    ]));
+
+    let batch = dir.path().join("batch.json");
+    fs::write(
+        &batch,
+        r#"{"version":1,"commands":[{"op":"set_font_token","slot":"heading","stack":"Georgia"}]}"#,
+    )
+    .unwrap();
+    let edited = dir.path().join("edited.json");
+    let tx = dir.path().join("tx.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("apply"),
+        &base,
+        &batch,
+        Path::new("--out"),
+        &edited,
+        Path::new("--transaction"),
+        &tx,
+    ]));
+
+    let restored = dir.path().join("restored.json");
+    let undo_tx = dir.path().join("undo-tx.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("undo"),
+        &edited,
+        &tx,
+        Path::new("--out"),
+        &restored,
+        Path::new("--undo-transaction"),
+        &undo_tx,
+    ]));
+    assert_eq!(
+        fs::read(&restored).unwrap(),
+        fs::read(&base).unwrap(),
+        "undo is not byte-exact"
+    );
+    assert!(undo_tx.exists());
+
+    // A forged transaction (inverse writes a field the forward edit never did)
+    // is refused and writes nothing.
+    let mut forged: Value = serde_json::from_str(&fs::read_to_string(&tx).unwrap()).unwrap();
+    forged["inverse"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"op":"set_font_token","slot":"mono","stack":" "}));
+    let forged_path = dir.path().join("forged.json");
+    fs::write(&forged_path, forged.to_string()).unwrap();
+    let nowhere = dir.path().join("nowhere.json");
+    let failed = solo(&[
+        Path::new("edit"),
+        Path::new("undo"),
+        &edited,
+        &forged_path,
+        Path::new("--out"),
+        &nowhere,
+    ]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("invalid_value"));
+    assert!(!nowhere.exists());
+}

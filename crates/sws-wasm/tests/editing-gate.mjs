@@ -42,6 +42,16 @@ function nativeApply(inputName, batch, outName, txName) {
   return { doc: read(outName), bytes: fs.readFileSync(file(outName)), tx: JSON.parse(read(txName)) };
 }
 
+// Native undo: input file + recorded transaction -> restored document text.
+function nativeUndo(inputName, tx, outName) {
+  fs.writeFileSync(file(`${outName}.tx.json`), JSON.stringify(tx));
+  cli('edit', 'undo', file(inputName), file(`${outName}.tx.json`), '--out', file(outName));
+  return { doc: read(outName), bytes: fs.readFileSync(file(outName)) };
+}
+
+// Wasm undo through the restore-mode export.
+const wasmUndo = (docText, tx) => JSON.parse(wasm.apply_undo(docText, JSON.stringify(tx)));
+
 // Wasm apply: same inputs through the Wasm export.
 function wasmApply(docText, batch) {
   const out = JSON.parse(wasm.apply_command_batch(docText, JSON.stringify(batch)));
@@ -115,25 +125,46 @@ try {
   step(`edited: token + move of ${section.uid} (native == wasm)`);
 
   // 5. Undo both, redo both (replaying the recorded transactions).
-  const undo2 = nativeApply('edit2.json', batchOf(n2.tx.inverse), 'undo2.json', 'utx2.json');
+  const undo2 = nativeUndo('edit2.json', n2.tx, 'undo2.json');
   assert.equal(undo2.doc, n1.doc, 'undo of the move is not exact');
-  const undo1 = nativeApply('undo2.json', batchOf(n1.tx.inverse), 'undo1.json', 'utx1.json');
+  const undo1 = nativeUndo('undo2.json', n1.tx, 'undo1.json');
   assert.equal(undo1.doc, base, 'undo of the token change is not exact');
   const redo1 = nativeApply('undo1.json', batchOf(n1.tx.forward), 'redo1.json', 'rtx1.json');
   assert.equal(redo1.doc, n1.doc, 'redo of the token change differs');
   const redo2 = nativeApply('redo1.json', batchOf(n2.tx.forward), 'redo2.json', 'rtx2.json');
   assert.equal(redo2.doc, n2.doc, 'redo of the move differs');
   // Same undo/redo through Wasm.
-  const wUndo = wasmApply(wasmApply(w2.doc, batchOf(w2.tx.inverse)).doc, batchOf(w1.tx.inverse));
-  assert.equal(wUndo.doc, base, 'Wasm undo differs');
+  const wUndo = wasmUndo(wasmUndo(w2.doc, w2.tx).document, w1.tx);
+  assert.equal(wUndo.document, base, 'Wasm undo differs');
+  assert.ok(Buffer.from(wUndo.document, 'utf8').equals(undo1.bytes), 'Wasm undo bytes differ from native undo');
   // Redo through Wasm: replay the recorded forward commands in order.
-  const wRedo1 = wasmApply(wUndo.doc, batchOf(w1.tx.forward));
+  const wRedo1 = wasmApply(wUndo.document, batchOf(w1.tx.forward));
   assert.equal(wRedo1.doc, n1.doc, 'Wasm redo of the token change differs');
   const wRedo2 = wasmApply(wRedo1.doc, batchOf(w2.tx.forward));
   assert.equal(wRedo2.doc, n2.doc, 'Wasm redo of the move differs');
   assert.ok(Buffer.from(wRedo2.doc, 'utf8').equals(redo2.bytes), 'Wasm redo bytes differ from native redo');
   assert.deepEqual(wRedo2.tx.forward, n2.tx.forward, 'Wasm redo replays the recorded forward commands');
   step('undo/redo exact (native and Wasm)');
+
+  // 5b. Legacy-shaped empty font stack: the forward edit succeeds, plain replay
+  //     of the inverse as a batch is refused, the restore-mode undo is exact and
+  //     native and Wasm agree byte for byte.
+  const emptyFont = JSON.parse(base);
+  emptyFont.tokens.fonts.heading = '';
+  const emptyText = JSON.stringify(emptyFont, null, 2) + '\n';
+  fs.writeFileSync(file('empty.json'), emptyText);
+  const fontBatch = batchOf([{ op: 'set_font_token', slot: 'heading', stack: 'Georgia' }]);
+  const nf = nativeApply('empty.json', fontBatch, 'font.json', 'ftx.json');
+  const wf = wasmApply(emptyText, fontBatch);
+  assert.equal(wf.doc, nf.doc, 'font edit differs native vs Wasm');
+  assert.throws(() => wasmApply(wf.doc, batchOf(wf.tx.inverse)), /invalid_value/,
+    'plain replay of an inverse holding an empty font must be refused');
+  const nfUndo = nativeUndo('font.json', nf.tx, 'font-undo.json');
+  const wfUndo = wasmUndo(wf.doc, wf.tx);
+  assert.equal(nfUndo.doc, emptyText, 'native undo of the empty font is not exact');
+  assert.equal(wfUndo.document, emptyText, 'Wasm undo of the empty font is not exact');
+  assert.ok(Buffer.from(wfUndo.document, 'utf8').equals(nfUndo.bytes), 'empty font undo bytes differ');
+  step('empty-font undo exact via restore-mode entry point (native == wasm)');
 
   // 6. Save and reopen: the saved file re-opens byte-stably (upgrade is a no-op,
   //    nothing unsupported is dropped) and still passes `solo check`.

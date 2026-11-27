@@ -1626,6 +1626,139 @@ fn legacy_shaped_doc() -> SiteDocument {
 }
 
 #[test]
+fn undo_json_restores_an_empty_font_that_plain_apply_cannot() {
+    let doc = legacy_shaped_doc();
+    let original = canonical_json(&doc);
+    let forward = json!({
+        "version": 1,
+        "commands": [{ "op": "set_font_token", "slot": "heading", "stack": "Georgia, serif" }]
+    })
+    .to_string();
+    let edited = apply_batch_json(&original, &forward, EditOptions::default()).unwrap();
+    let tx_json = serde_json::to_string(&edited.transaction).unwrap();
+
+    // Replaying the inverse as a plain (strict) batch is rejected ...
+    let inverse = json!({ "version": 1, "commands": edited.transaction.inverse }).to_string();
+    let err = apply_batch_json(&edited.document, &inverse, EditOptions::default()).unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidValue);
+
+    // ... the restore-mode entry point puts the empty stack back exactly.
+    let undone = apply_undo_json(&edited.document, &tx_json, EditOptions::default()).unwrap();
+    assert_eq!(undone.document, original);
+
+    // The undo transaction is itself replayable as a redo.
+    let redo = json!({ "version": 1, "commands": undone.transaction.inverse }).to_string();
+    let redone = apply_batch_json(&undone.document, &redo, EditOptions::default()).unwrap();
+    assert_eq!(redone.document, edited.document);
+}
+
+#[test]
+fn undo_refuses_forged_and_mismatched_transactions() {
+    let doc = legacy_shaped_doc();
+    let (next, tx) = apply_batch(
+        &doc,
+        &batch(vec![Command::SetFontToken {
+            slot: "heading".into(),
+            stack: "Georgia, serif".into(),
+        }]),
+    )
+    .unwrap();
+    apply_undo(&next, &tx).expect("genuine transaction");
+
+    // A bare grammar-invalid write dressed up as an inverse: the forward
+    // replay does not reproduce the document.
+    let mut forged = tx.clone();
+    forged.inverse = vec![Command::SetFontToken {
+        slot: "mono".into(),
+        stack: String::new(),
+    }];
+    assert_eq!(
+        apply_undo(&next, &forged).unwrap_err().code,
+        ErrorCode::InvalidValue
+    );
+
+    // Forward commands that do not produce this document.
+    let mut other = tx.clone();
+    other.forward = vec![Command::SetFontToken {
+        slot: "heading".into(),
+        stack: "Arial".into(),
+    }];
+    assert_eq!(
+        apply_undo(&next, &other).unwrap_err().code,
+        ErrorCode::InvalidValue
+    );
+
+    // An inverse that also rewrites a field the forward edit never touches
+    // cannot be replayed into the document: rejected.
+    let mut tampered = tx.clone();
+    tampered.inverse.push(Command::SetFontToken {
+        slot: "mono".into(),
+        stack: " ".into(),
+    });
+    assert_eq!(
+        apply_undo(&next, &tampered).unwrap_err().code,
+        ErrorCode::InvalidValue
+    );
+
+    // Empty forward commands / wrong document / batch caps.
+    let mut empty = tx.clone();
+    empty.forward.clear();
+    assert!(apply_undo(&next, &empty).is_err());
+    assert!(apply_undo(&doc, &tx).is_err(), "undo of the wrong document");
+    let mut huge = tx.clone();
+    huge.inverse = vec![tx.inverse[0].clone(); MAX_BATCH_COMMANDS + 1];
+    assert_eq!(
+        apply_undo(&next, &huge).unwrap_err().code,
+        ErrorCode::BatchTooLarge
+    );
+    let mut versioned = tx.clone();
+    versioned.version = 99;
+    assert_eq!(
+        apply_undo(&next, &versioned).unwrap_err().code,
+        ErrorCode::UnsupportedVersion
+    );
+
+    // Unknown transaction fields are rejected at the JSON layer.
+    let mut value = serde_json::to_value(&tx).unwrap();
+    value["extra"] = json!(1);
+    let err = apply_undo_json(
+        &canonical_json(&next),
+        &value.to_string(),
+        EditOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidJson);
+}
+
+#[test]
+fn undo_accepts_coalesced_transactions() {
+    let doc = legacy_shaped_doc();
+    let original = bytes(&doc);
+    let font = |stack: &str| Command::SetFontToken {
+        slot: "heading".into(),
+        stack: stack.into(),
+    };
+    // Compacting merge (same idempotent overwrite) and concatenating merge.
+    for second in [
+        vec![font("Arial")],
+        vec![
+            font("Arial"),
+            Command::SetColorToken {
+                key: "ink".into(),
+                hex: "#222222".into(),
+            },
+        ],
+    ] {
+        let (mid, first_tx) = apply_batch(&doc, &batch(vec![font("Georgia, serif")])).unwrap();
+        let (end, second_tx) = apply_batch(&mid, &batch(second)).unwrap();
+        assert!(first_tx.can_coalesce(&second_tx));
+        let merged = first_tx.coalesce(second_tx);
+        let (restored, _) = apply_undo(&end, &merged).unwrap();
+        assert_eq!(bytes(&restored), original);
+    }
+}
+
+#[test]
 fn inverses_restore_values_the_forward_grammar_would_not_accept() {
     let doc = legacy_shaped_doc();
     check_editable(&doc).expect("legacy-shaped values pass the editing gate");

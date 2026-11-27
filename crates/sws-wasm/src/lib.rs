@@ -27,6 +27,11 @@
 //!   canonical editor reducer (`sws_ir::edit::apply_batch_json`); returns
 //!   `{ document, transaction, dropped_paths }`. Atomic: on error nothing is
 //!   returned and the caller keeps its document.
+//! - `apply_undo(ir_json, transaction_json) -> Result<String, JsValue>`: undo a
+//!   recorded transaction (the `transaction` returned by `apply_command_batch`)
+//!   in restore mode (`sws_ir::edit::apply_undo_json`); same output shape. Plain
+//!   `apply_command_batch` of `transaction.inverse` cannot restore values the
+//!   forward grammar rejects (for example an empty font stack); use this.
 //!
 //! Every export maps its host-side `Err(String)` to a `JsValue` string so
 //! callers get a plain message (`"<code>: <message>"` for editor errors).
@@ -201,6 +206,22 @@ pub fn apply_command_batch_inner(ir_json: &str, batch_json: &str) -> Result<Stri
     serde_json::to_string(&out).map_err(|err| format!("failed to serialize edit output: {err}"))
 }
 
+/// Undo one recorded transaction through the restore-mode reducer.
+///
+/// `transaction_json` is the `transaction` object returned by
+/// [`apply_command_batch_inner`]; it is cross-checked against `ir_json` (the
+/// document that edit produced). Returns `{ document, transaction,
+/// dropped_paths }` like [`apply_command_batch_inner`].
+pub fn apply_undo_inner(ir_json: &str, transaction_json: &str) -> Result<String, String> {
+    let out = sws_ir::edit::apply_undo_json(
+        ir_json,
+        transaction_json,
+        sws_ir::edit::EditOptions::default(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&out).map_err(|err| format!("failed to serialize edit output: {err}"))
+}
+
 /// Wasm export for [`compile_site_inner`].
 #[wasm_bindgen]
 pub fn compile_site(ir_json: &str) -> Result<String, JsValue> {
@@ -241,6 +262,12 @@ pub fn upgrade_stable_ids(ir_json: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn apply_command_batch(ir_json: &str, batch_json: &str) -> Result<String, JsValue> {
     apply_command_batch_inner(ir_json, batch_json).map_err(|msg| JsValue::from_str(&msg))
+}
+
+/// Wasm export for [`apply_undo_inner`].
+#[wasm_bindgen]
+pub fn apply_undo(ir_json: &str, transaction_json: &str) -> Result<String, JsValue> {
+    apply_undo_inner(ir_json, transaction_json).map_err(|msg| JsValue::from_str(&msg))
 }
 
 #[cfg(test)]
@@ -536,14 +563,9 @@ mod tests {
                 .unwrap();
         let edited_doc = edited["document"].as_str().unwrap();
         assert!(edited_doc.contains("#000000"));
-        let inverse = json!({
-            "version": 1,
-            "commands": edited["transaction"]["inverse"].clone()
-        })
-        .to_string();
+        let transaction = edited["transaction"].to_string();
         let restored: Value =
-            serde_json::from_str(&apply_command_batch_inner(edited_doc, &inverse).unwrap())
-                .unwrap();
+            serde_json::from_str(&apply_undo_inner(edited_doc, &transaction).unwrap()).unwrap();
         assert_eq!(restored["document"].as_str().unwrap(), document);
 
         let err = apply_command_batch_inner(&ir, &batch).unwrap_err();

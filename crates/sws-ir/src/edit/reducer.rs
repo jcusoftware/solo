@@ -55,6 +55,55 @@ pub fn apply_batch_restore(
     apply_batch_with(doc, batch, Mode::Restore)
 }
 
+/// Undo a recorded [`Transaction`] against the document it produced.
+///
+/// This is the public restore-mode entry point (the Wasm `apply_undo` export
+/// and `solo edit undo` use it). Unlike [`apply_batch_restore`] it does not
+/// accept a bare batch: the whole transaction is required and cross-checked, so
+/// restore mode cannot be used to write arbitrary values.
+///
+/// 1. `tx.inverse` is replayed in restore mode on `doc` (uid freshness,
+///    container resolution, batch caps and the whole-document gate all apply).
+/// 2. `tx.forward` is replayed strictly on that result and must reproduce `doc`
+///    exactly, with the same inverse. A batch that is not the inverse of the
+///    claimed forward edit of `doc` therefore fails with `invalid_value`.
+///
+/// Returns the restored document and the undo transaction (`forward` is the
+/// replayed inverse; its `inverse` redoes the step).
+pub fn apply_undo(
+    doc: &SiteDocument,
+    tx: &Transaction,
+) -> Result<(SiteDocument, Transaction), CommandError> {
+    let batch_of = |commands: &[Command]| CommandBatch {
+        version: tx.version,
+        label: tx.label.clone(),
+        coalesce_key: tx.coalesce_key.clone(),
+        commands: commands.to_vec(),
+    };
+    let not_inverse = |detail: String| {
+        err(
+            ErrorCode::InvalidValue,
+            format!(
+                "undo refused: the transaction is not the recorded edit of this document ({detail})"
+            ),
+        )
+    };
+    let (before, undo) = apply_batch_with(doc, &batch_of(&tx.inverse), Mode::Restore)?;
+    let (replayed, forward) = apply_batch(&before, &batch_of(&tx.forward))
+        .map_err(|e| not_inverse(format!("forward replay: {e}")))?;
+    if replayed != *doc {
+        return Err(not_inverse(
+            "forward replay does not reproduce the document".into(),
+        ));
+    }
+    if forward.inverse != tx.inverse {
+        return Err(not_inverse(
+            "recorded inverse does not match the forward commands".into(),
+        ));
+    }
+    Ok((before, undo))
+}
+
 fn apply_batch_with(
     doc: &SiteDocument,
     batch: &CommandBatch,

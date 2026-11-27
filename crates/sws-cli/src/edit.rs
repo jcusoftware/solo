@@ -336,3 +336,39 @@ pub fn cmd_edit_apply(
     }
     Ok(())
 }
+
+/// Undo a recorded transaction (restore mode), writing the restored document to
+/// `out` and, optionally, the undo transaction to `undo_transaction`.
+pub fn cmd_edit_undo(
+    input: &Path,
+    transaction: &Path,
+    out: &Path,
+    undo_transaction: Option<&Path>,
+    allow_lossy: bool,
+) -> Result<(), String> {
+    let source = read(input, "input")?;
+    let transaction_json = read(transaction, "transaction")?;
+    let result = edit::apply_undo_json(&source, &transaction_json, EditOptions { allow_lossy })
+        .map_err(|e| e.to_string())?;
+    guard_target(out, &[transaction])?;
+    let mut files = Vec::new();
+    if let Some(path) = undo_transaction {
+        guard_target(path, &[input, transaction, out])?;
+        files.push((path, to_json_text(path, &result.transaction)?));
+    }
+    files.push((out, result.document.clone()));
+    write_all(&files)?;
+    println!(
+        "solo edit undo: {} command(s), {} touched field(s), wrote '{}'",
+        result.transaction.forward.len(),
+        result.transaction.touched.len(),
+        out.display()
+    );
+    if !result.dropped_paths.is_empty() {
+        println!(
+            "dropped unsupported fields (--allow-lossy): {}",
+            result.dropped_paths.join(", ")
+        );
+    }
+    Ok(())
+}
