@@ -129,8 +129,54 @@ pub enum IrPatch {
     },
 }
 
+/// True when the document carries the stable-ID marker (`metadata["sws.ir"]`),
+/// i.e. it was upgraded and every node holds a `uid`.
+fn is_marked(doc: &SiteDocument) -> bool {
+    doc.metadata.contains_key(crate::edit::MARKER_KEY)
+}
+
+/// Refusal of a legacy node-level op on a marked document, which would add or
+/// destroy nodes and so break the `uid` invariants the editor relies on.
+fn marked_refusal(op: &str) -> IrError {
+    IrError::InvalidValue {
+        field: "op".to_string(),
+        message: format!(
+            "{op} is not available on a document with stable node IDs (metadata[\"{}\"]); \
+             use an edit command batch (insert_node, remove_node, set_text, ...) instead",
+            crate::edit::MARKER_KEY
+        ),
+    }
+}
+
+fn all_nodes_have_uid(nodes: &[Node]) -> bool {
+    nodes.iter().all(|node| {
+        node.uid().is_some()
+            && crate::edit::ids::child_lists(node)
+                .into_iter()
+                .all(|(_, list)| all_nodes_have_uid(list))
+    })
+}
+
 /// Apply a single [`IrPatch`] mutation to a [`SiteDocument`].
+///
+/// Documents without the `metadata["sws.ir"]` marker behave exactly as they
+/// always did. On a marked (stable-ID) document the node-level ops that would
+/// add or destroy nodes (`set_node_text`, `insert_child_node`, `remove_node`,
+/// and `upsert_page` with nodes lacking a `uid`) are refused with an
+/// `InvalidValue` pointing at the edit command batch; every other op keeps
+/// working.
 pub fn apply_patch(doc: &mut SiteDocument, patch: &IrPatch) -> Result<(), IrError> {
+    if is_marked(doc) {
+        match patch {
+            IrPatch::SetNodeText { .. } => return Err(marked_refusal("set_node_text")),
+            IrPatch::InsertChildNode { .. } => return Err(marked_refusal("insert_child_node")),
+            IrPatch::RemoveNode { .. } => return Err(marked_refusal("remove_node")),
+            IrPatch::UpsertPage { page } if !all_nodes_have_uid(&page.body) => {
+                return Err(marked_refusal("upsert_page with nodes that lack a uid"));
+            }
+            _ => {}
+        }
+    }
     match patch {
         IrPatch::SetSiteMeta {
             name,

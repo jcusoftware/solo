@@ -4,7 +4,7 @@
 
 The canonical, pure Rust editor reducer lives in `sws_ir::edit` (`crates/sws-ir/src/edit/`). The CLI (`solo edit`), the Wasm bridge (`apply_command_batch`, `upgrade_stable_ids`), and later MCP and Studio all call the same code. Nothing in `sws_ir::edit` performs file or network I/O.
 
-Scope: **site IR only** ("ejected IR"). A hospitality `venue.json` is lowered one way with `solo edit eject`; the lowered IR is never written back over a manifest, and there are no pack-level commands.
+Scope: **site IR only** ("ejected IR"). A hospitality `venue.json` is lowered one way with `solo edit eject`; the lowered IR is never written back over a manifest (enforced: `eject` refuses an `--out` that is the same file as the input, by path, symlink or hard link, and every `solo edit` write refuses a target that already holds a pack manifest), and there are no pack-level commands.
 
 ## Stable node IDs (`uid`)
 
@@ -19,7 +19,9 @@ Scope: **site IR only** ("ejected IR"). A hospitality `venue.json` is lowered on
 - Traversal order: pages in array order; depth-first pre-order; per node `children`, `fallback`, `slots.*` (key order), `then_nodes`, `else_nodes`, `body`; then components in key order, `template` in order.
 - Candidate id: `{scope}.{label}`. `scope` is the slugified `Page.id` (`component-{name}` for templates, scope capped at 30 characters). `label` is the slug of `attrs["id"]`, else `Element.id`, else first class, else tag, else the variant name (`text`, `slot`, `instance`, `if`, `loop`). If taken, `-2`, `-3`, ... in traversal order (the first keeps the bare name). Result is truncated to 64 characters.
 - Nodes that already hold a valid, unique `uid` are kept. Later duplicates and grammar-invalid uids are reassigned (reported with reason `duplicate_uid` / `invalid_uid`).
-- Idempotent and deterministic; adds only `uid` and the marker. `UpgradeReport` lists `assigned` (`uid`, `path`, `reason`), `kept`, `marker_written`, `venue_manifest_stale`.
+- Idempotent and deterministic; changes only `uid` fields and `metadata["sws.ir"]`. The marker is set *inside* an existing `sws.ir` object (other keys of it, and every other `metadata` key, are kept); a marker that is not an object, or whose `uid_scheme` is not `1`, is refused (`unsupported_uid_scheme`). `UpgradeReport` lists `assigned` (`uid`, `path`, `reason`), `kept`, `marker_written`.
+- The core knows nothing about pack metadata. `solo edit upgrade` and `solo edit eject` print which `metadata` keys were carried over unchanged, because copies of the document kept elsewhere (for example a pack manifest copy) go stale once the IR is edited.
+- Compatibility edge: a legacy file whose node carries a non-string `"uid"` (previously an ignored unknown key) now fails to parse (`invalid_json`), because `uid` is a typed field. Remove or fix that key before upgrading.
 
 ### Editability gate (`check_editable`)
 
@@ -28,9 +30,10 @@ Editing is refused (fail closed) unless all hold:
 1. marker present with `uid_scheme == 1` (`not_upgraded` / `unsupported_uid_scheme`);
 2. every node has a `uid` (`missing_uid`: a marked document damaged by an older writer must be re-upgraded), each valid (`invalid_uid`), all unique (`duplicate_uid`);
 3. style rule ids and breakpoint ids are unique (`duplicate_id`; editing mode only, `check` and `build` are unchanged);
-4. `validate_ir` is clean (`invalid_document`).
+4. `validate_ir` is clean (`invalid_document`);
+5. the canonical JSON nests at most `MAX_EDIT_JSON_DEPTH` (127) containers deep (`invalid_document`). `serde_json` cannot parse input nested deeper than 127 containers, and one node level costs 2 (3 for component `slots`), so documents of about 62 node levels fit even though `validate_ir` allows 128. `validate_ir` itself, `build` and `check` are unchanged.
 
-The same checks run after every batch, so a batch can never produce a document the editor would refuse.
+The same checks run after every batch, so a batch can never produce a document the editor would refuse. `apply_batch_json` additionally parses its own output again and refuses (rather than returns) text that would not re-parse or round-trip.
 
 ## Command batch
 
@@ -39,7 +42,7 @@ The same checks run after every batch, so a batch can never produce a document t
 ```
 
 - `version` is the batch format version (`COMMAND_BATCH_VERSION = 1`), independent of `schema_version`. Unknown versions fail with `unsupported_version`.
-- Parsing is strict: unknown fields in the batch or a command are rejected (`invalid_json`). 1 to 1000 commands (`empty_batch`, `batch_too_large`).
+- Parsing is strict at every depth: unknown fields in the batch, in a command **and inside embedded `node`, `page` and style `rule` payloads** are rejected (`invalid_json`, `paths` lists them, for example `$.commands[0].node.chidren`). So are unknown keys holding `null`, duplicate object keys and numbers that would lose precision (integers beyond `i64`/`u64`, over-precise floats). Known optional fields may be explicit `null`. 1 to 1000 commands (`empty_batch`, `batch_too_large`).
 - Apply is atomic: all commands run on a working copy in order; on any error the input is untouched and the error carries `command_index`. The document is re-checked (gate above) before it is returned.
 
 ### Container reference
@@ -65,7 +68,11 @@ The same checks run after every batch, so a batch can never produce a document t
 | `set_text` | `uid` of a `text` node, `value` | `set_text` (previous) |
 | `set_tag` / `set_classes` / `set_style_refs` | `uid` of an element, value | same op with previous value |
 
-`set_site_meta`, the token, data and style commands validate through the existing `apply_patch` internals. The 11 legacy `IrPatch` ops and the MCP tools are unchanged (moving MCP onto the reducer is issue #68). A page-rename command is intentionally not provided.
+Only `set_site_meta`, `set_color_token`, `set_font_token`, `set_data_value` and `upsert_style_rule` go through `apply_patch` (for its validation); page, node, attr, text, tag, class, style-ref, `clear_font_token`, `remove_*` and `insert_*` commands are implemented in the reducer. Legacy `IrPatch` ops and the MCP tools behave as before on documents **without** the `sws.ir` marker (moving MCP onto the reducer is issue #68). On a **marked** document the legacy node-level ops that add or destroy nodes (`set_node_text`, `insert_child_node`, `remove_node`, and `upsert_page` with nodes that lack a `uid`) are refused with an error telling the caller to use an edit command batch, because they would drop child `uid`s or add nodes without one and leave a document the editor refuses (`missing_uid`); `set_node_attr`, `set_site_meta`, tokens, data, styles, `remove_page` and `upsert_page` with fully identified nodes keep working. A page-rename command is intentionally not provided.
+
+`set_tag` accepts the compiler's tag alphabet (ASCII letters, digits, `-`, `_`, starting with a letter), so SVG tags such as `clipPath` work.
+
+`next_id(&doc, prefix)` returns the smallest `"{prefix}-{n}"` (`n >= 1`) that is not used as a node `uid`, page id, style rule id, breakpoint id or component name. Pure and deterministic; use it to mint `uid`s for `insert_node`.
 
 Array order is author order: nothing is sorted or de-duplicated; inserts and moves land exactly at the requested index.
 
@@ -75,11 +82,13 @@ Array order is author order: nothing is sorted or de-duplicated; inserts and mov
 
 ## Transactions, undo, redo, coalescing
 
-`apply_batch(&doc, &batch)` returns the new document and a `Transaction { version, label, coalesce_key, forward, inverse, touched }`. `inverse` is the exact undo batch body, already in application order (each command's inverse, reversed), built from state read before each command, so `apply(inverse)` restores the previous document byte for byte. Transactions serialize to JSON and can be replayed.
+`apply_batch(&doc, &batch)` returns the new document and a `Transaction { version, label, coalesce_key, forward, inverse, touched }`. `inverse` is the exact undo batch body, already in application order (each command's inverse, reversed), built from state read before each command, so replaying it restores the previous document byte for byte. Transactions serialize to JSON and can be replayed.
+
+Inverses can hold values the forward grammar would not accept as *new* input (a legacy empty `heading`/`mono` font stack, a tag outside the tag alphabet, ...). Forward commands stay strictly validated; recorded inverses are replayed with `apply_batch_restore`, which skips only those new-input grammar checks and still runs the structural checks and the whole-document gate. `History::undo` uses it. `apply_batch` verifies every transaction before returning it by replaying the inverse in restore mode and requiring the original document back; a batch that could not be undone exactly is refused (`invalid_value`). Replaying `inverse` through plain `apply_batch` (the CLI and the Wasm `apply_command_batch` do) works for every value that is itself valid input, which covers documents written by this editor; for legacy-shaped values use `apply_batch_restore` or `History`.
 
 `History` wraps a document with an undo stack (default cap 200) and a redo stack. `apply` clears redo; `undo` applies `inverse`; `redo` applies `forward`. A failing step changes nothing (`history_corrupt` if a recorded transaction no longer applies).
 
-Coalescing: consecutive batches with the same non-empty `coalesce_key` merge into one undo step, unless an undo or redo happened in between. If every command of both is an idempotent overwrite (`set_*`, `upsert_style_rule`) and both touch exactly the same fields, the step compacts to the later forward commands with the earlier inverse; otherwise forward commands concatenate and inverses chain in reverse.
+Coalescing: consecutive batches with the same non-empty `coalesce_key` merge into one undo step, unless an undo or redo happened in between. If every command of both is an idempotent overwrite (`set_*`, `upsert_style_rule`) and both touch exactly the same fields, the step compacts to the later forward commands with the earlier inverse; otherwise forward commands concatenate and inverses chain in reverse. A merge that would push either list past `MAX_BATCH_COMMANDS` (1000) is not done: a new undo step starts instead, so every step can always be replayed by undo and redo.
 
 ## Touched fields (conflict addressing)
 
@@ -99,23 +108,23 @@ node:<uid>/attrs/<name> | /text | /tag | /classes | /style_refs
 
 ## Lossless save
 
-Parsing drops unknown fields (the typed model has no `deny_unknown_fields`). Before editing or upgrading, `check_lossless(original_json, &doc)` re-serializes the typed document and requires every original path to be present and equal. Otherwise the call fails with `lossy_document` listing the paths (for example `$.x_ext`, `$.pages[0].future`) and nothing is written. Allowed differences: defaults added in the output (`null` optionals), an original `null` that is absent in the output, number spelling (`1.0` vs `1`, `1e3`), object key order (maps are sorted). `data`, `metadata`, JSON-LD data and component props are preserved as typed extension containers. `--allow-lossy` (CLI) / `EditOptions { allow_lossy: true }` is the explicit, separate confirmation; the dropped paths are then printed and returned as `dropped_paths`.
+Parsing drops unknown fields (the typed model has no `deny_unknown_fields`). Before editing or upgrading, `check_lossless(original_json, &doc)` re-serializes the typed document and requires every original path to be present and equal, and a text scan (`source_issues`) reports what both parses agree on silently: duplicate object keys (`$.data.k (duplicate key)`), integers outside `i64`/`u64` and floats with more precision than an `f64` keeps (`... (number N loses precision)`). Otherwise the call fails with `lossy_document` listing the paths (for example `$.x_ext`, `$.pages[0].future`) and nothing is written. Allowed differences: defaults added in the output (`null` optionals), an original `null` of a *known* optional field that is absent in the output (an unknown key holding `null` is dropped and therefore reported), number spelling (`1.0` vs `1`, `1e3`, `0.10`), object key order (maps are sorted). `data`, `metadata`, JSON-LD data and component props are preserved as typed extension containers. `--allow-lossy` (CLI) / `EditOptions { allow_lossy: true }` is the explicit, separate confirmation; the dropped paths are then printed and returned as `dropped_paths`.
 
 ## Interfaces
 
-CLI (`solo edit`, file I/O only here; every command writes only its explicit `--out`/`--report`/`--transaction` paths):
+CLI (`solo edit`, file I/O only here; every command writes only its explicit `--out`/`--report`/`--transaction` paths). Everything is computed and serialized before any write; each file is written to a temp file in its own directory and renamed over the target, sidecars (`--transaction`, `--report`) first and `--out` last, so a failure never leaves a new `--out` without its sidecar. The only remaining window is a `rename` failing between files, which leaves the earlier files replaced and the later ones untouched (never half-written):
 
-- `solo edit eject <manifest> --out <ir.json>`: one-way lowering of a pack manifest to site IR (fails for IR that is already site IR).
+- `solo edit eject <manifest> --out <ir.json>`: one-way lowering of a pack manifest to site IR (fails for IR that is already site IR). The IR is saved *before* pack plugins merge their components and form schemas into it, so contributions are not baked into the file (`build` and `check` merge them again). It refuses an `--out` that is the manifest itself or any file holding a pack manifest.
 - `solo edit upgrade <ir.json> --out <out.json> [--report <file>] [--allow-lossy]`
 - `solo edit apply <ir.json> <batch.json> --out <out.json> [--transaction <file>] [--allow-lossy]`
 
 Wasm (`crates/sws-wasm`): `upgrade_stable_ids(ir_json)` returns `{ document, report, dropped_paths }`; `apply_command_batch(ir_json, batch_json)` returns `{ document, transaction, dropped_paths }`. `document` is the canonical JSON text (pretty, trailing newline), identical to what the CLI writes. Errors are strings `"<code>: <message> ..."`.
 
-Library: `sws_ir::edit::{apply_batch, apply_batch_in_place, apply_batch_json, upgrade_json, assign_stable_ids, check_editable, check_lossless, History, canonical_json, ...}`.
+Library: `sws_ir::edit::{apply_batch, apply_batch_restore, apply_batch_in_place, apply_batch_json, upgrade_json, assign_stable_ids, check_editable, check_lossless, next_id, History, canonical_json, ...}`.
 
 ## Editing gate
 
 Before any Studio integration, one scenario proves the reducer end to end: load the legacy fictional demo (lowered IR of `packs/hospitality/demo/venue.json`), upgrade it, change a token, move a section, undo and redo both, save and reopen, then compare production output of the same saved IR.
 
 - Pure Rust (runs in `npm run verify` via `cargo test`): `crates/sws-cli/tests/editing.rs::editing_gate_pure_rust_edit_undo_redo_save_reopen_compile`, plus the property tests in `crates/sws-ir/src/edit/tests.rs`.
-- Native vs Wasm byte comparison: `npm run gate:editing` (`crates/sws-wasm/run-editing-gate.sh` then `crates/sws-wasm/tests/editing-gate.mjs`). It needs the `wasm-bindgen` CLI whose version equals the `wasm-bindgen` crate in `Cargo.lock` (`cargo install wasm-bindgen-cli --version <lock version> --locked`) and Node 20 or newer. The same edits run natively (`solo edit`) and through Wasm and must produce identical documents and transactions; the saved IR is then compiled by `solo build` and Wasm `compile_site` and every file must match byte for byte. It compares the same file map for a saved IR (not against `solo build venue.json`, which also emits pack assets). Not part of `npm run verify`; CI runs it in the `wasm-smoke` job.
+- Native vs Wasm byte comparison: `npm run gate:editing` (`crates/sws-wasm/run-editing-gate.sh` then `crates/sws-wasm/tests/editing-gate.mjs`). It needs the `wasm-bindgen` CLI whose version equals the `wasm-bindgen` crate in `Cargo.lock` (`cargo install wasm-bindgen-cli --version <lock version> --locked`) and Node 20 or newer. The same edits run natively (`solo edit`) and through Wasm and must produce identical documents and transactions; the saved IR is then compiled by `solo build` and Wasm `compile_site` and every file must match byte for byte. It compares the same file map for a saved IR as raw bytes (not against `solo build venue.json`, which also emits pack assets), and replays redo through Wasm as well as undo. Native `solo build` merges registered plugin contributions into a site IR while Wasm `compile_site` does not; the hospitality pack contributes none today, which is what keeps the two equal. Not part of `npm run verify`; CI runs it in the `wasm-smoke` job.

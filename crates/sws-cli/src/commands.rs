@@ -314,21 +314,30 @@ pub fn parse_value_to_ir(
     raw: &Value,
     registry: &PluginRegistry,
 ) -> Result<(SiteDocument, String), String> {
-    if registry.list().iter().any(|p| p.can_transform_input(raw)) {
-        let mut doc = registry
-            .transform_input_with(None, raw)
-            .map_err(|e| format!("plugin input transformation failed: {e}"))?;
-        registry
-            .apply_to_document(&mut doc)
-            .map_err(|e| format!("plugin IR transform failed: {e}"))?;
-        return Ok((doc, "venue_manifest".to_string()));
-    }
-
-    let mut doc: SiteDocument = serde_json::from_value(raw.clone())
-        .map_err(|e| format!("failed to parse SiteDocument IR: {e}"))?;
+    let (mut doc, kind) = parse_value_to_ir_unmerged(raw, registry)?;
     registry
         .apply_to_document(&mut doc)
         .map_err(|e| format!("plugin IR transform failed: {e}"))?;
+    Ok((doc, kind))
+}
+
+/// Like [`parse_value_to_ir`] but stops before `PluginRegistry::apply_to_document`:
+/// pack-contributed components, form schemas and IR transforms are not merged
+/// in. `solo edit eject` saves this form so contributions are not baked into
+/// the saved file (every later `build`/`check` merges them again).
+pub fn parse_value_to_ir_unmerged(
+    raw: &Value,
+    registry: &PluginRegistry,
+) -> Result<(SiteDocument, String), String> {
+    if registry.list().iter().any(|p| p.can_transform_input(raw)) {
+        let doc = registry
+            .transform_input_with(None, raw)
+            .map_err(|e| format!("plugin input transformation failed: {e}"))?;
+        return Ok((doc, "venue_manifest".to_string()));
+    }
+
+    let doc: SiteDocument = serde_json::from_value(raw.clone())
+        .map_err(|e| format!("failed to parse SiteDocument IR: {e}"))?;
     Ok((doc, "site_ir".to_string()))
 }
 

@@ -346,6 +346,24 @@ impl Transaction {
         CommandBatch::new(self.inverse.clone())
     }
 
+    fn compactable_with(&self, next: &Self) -> bool {
+        self.touched == next.touched
+            && self.forward.iter().all(Command::is_overwrite)
+            && next.forward.iter().all(Command::is_overwrite)
+    }
+
+    /// True when [`Transaction::coalesce`] with `next` stays within
+    /// [`MAX_BATCH_COMMANDS`] for both the forward and the inverse list, so the
+    /// merged step can still be replayed by undo and redo.
+    #[must_use]
+    pub fn can_coalesce(&self, next: &Self) -> bool {
+        if self.compactable_with(next) {
+            return true;
+        }
+        self.forward.len() + next.forward.len() <= MAX_BATCH_COMMANDS
+            && self.inverse.len() + next.inverse.len() <= MAX_BATCH_COMMANDS
+    }
+
     /// Merge a later transaction into this one so one undo reverts both.
     ///
     /// When every command of both is an idempotent overwrite and both touch
@@ -354,10 +372,7 @@ impl Transaction {
     /// concatenated and inverses are chained in reverse.
     #[must_use]
     pub fn coalesce(mut self, next: Self) -> Self {
-        let compactable = self.touched == next.touched
-            && self.forward.iter().all(Command::is_overwrite)
-            && next.forward.iter().all(Command::is_overwrite);
-        if compactable {
+        if self.compactable_with(&next) {
             self.forward = next.forward;
         } else {
             self.forward.extend(next.forward);

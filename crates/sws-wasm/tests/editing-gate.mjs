@@ -39,7 +39,7 @@ function nativeApply(inputName, batch, outName, txName) {
   fs.writeFileSync(file(`${outName}.batch.json`), JSON.stringify(batch));
   cli('edit', 'apply', file(inputName), file(`${outName}.batch.json`), '--out', file(outName),
     '--transaction', file(txName));
-  return { doc: read(outName), tx: JSON.parse(read(txName)) };
+  return { doc: read(outName), bytes: fs.readFileSync(file(outName)), tx: JSON.parse(read(txName)) };
 }
 
 // Wasm apply: same inputs through the Wasm export.
@@ -106,6 +106,8 @@ try {
   const w2 = wasmApply(w1.doc, moveBatch);
   assert.equal(w1.doc, n1.doc, 'token edit differs native vs Wasm');
   assert.equal(w2.doc, n2.doc, 'section move differs native vs Wasm');
+  assert.ok(Buffer.from(w1.doc, 'utf8').equals(n1.bytes), 'token edit bytes differ native vs Wasm');
+  assert.ok(Buffer.from(w2.doc, 'utf8').equals(n2.bytes), 'section move bytes differ native vs Wasm');
   assert.deepEqual(w2.tx, n2.tx, 'transaction differs native vs Wasm');
   assert.notEqual(n1.doc, base);
   assert.notEqual(n2.doc, n1.doc);
@@ -124,6 +126,13 @@ try {
   // Same undo/redo through Wasm.
   const wUndo = wasmApply(wasmApply(w2.doc, batchOf(w2.tx.inverse)).doc, batchOf(w1.tx.inverse));
   assert.equal(wUndo.doc, base, 'Wasm undo differs');
+  // Redo through Wasm: replay the recorded forward commands in order.
+  const wRedo1 = wasmApply(wUndo.doc, batchOf(w1.tx.forward));
+  assert.equal(wRedo1.doc, n1.doc, 'Wasm redo of the token change differs');
+  const wRedo2 = wasmApply(wRedo1.doc, batchOf(w2.tx.forward));
+  assert.equal(wRedo2.doc, n2.doc, 'Wasm redo of the move differs');
+  assert.ok(Buffer.from(wRedo2.doc, 'utf8').equals(redo2.bytes), 'Wasm redo bytes differ from native redo');
+  assert.deepEqual(wRedo2.tx.forward, n2.tx.forward, 'Wasm redo replays the recorded forward commands');
   step('undo/redo exact (native and Wasm)');
 
   // 6. Save and reopen: the saved file re-opens byte-stably (upgrade is a no-op,
@@ -137,24 +146,27 @@ try {
 
   // 7. Compile the same saved IR natively and in Wasm; compare the file maps.
   cli('build', file('saved.json'), file('out-native'));
+  // Raw bytes on both sides: no UTF-8 decoding before comparing.
   const nativeFiles = {};
   (function walk(dir, prefix) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(path.join(dir, entry.name), rel);
-      else nativeFiles[rel] = fs.readFileSync(path.join(dir, entry.name), 'utf8');
+      else nativeFiles[rel] = fs.readFileSync(path.join(dir, entry.name));
     }
   })(file('out-native'), '');
   const wasmFiles = JSON.parse(wasm.compile_site(saved)).files;
   assert.deepEqual(Object.keys(wasmFiles).sort(), Object.keys(nativeFiles).sort(), 'file sets differ');
   for (const name of Object.keys(nativeFiles)) {
     assert.ok(
-      Buffer.from(nativeFiles[name]).equals(Buffer.from(wasmFiles[name])),
+      nativeFiles[name].equals(Buffer.from(wasmFiles[name], 'utf8')),
       `native and Wasm output differ for ${name}`,
     );
   }
-  const total = Object.values(nativeFiles).reduce((n, s) => n + Buffer.byteLength(s), 0);
-  step(`native == wasm: ${Object.keys(nativeFiles).length} files, ${total} bytes, sha256 ${sha(JSON.stringify(nativeFiles)).slice(0, 16)}`);
+  const total = Object.values(nativeFiles).reduce((n, b) => n + b.length, 0);
+  const digest = createHash('sha256');
+  for (const name of Object.keys(nativeFiles).sort()) digest.update(name).update('\0').update(nativeFiles[name]);
+  step(`native == wasm: ${Object.keys(nativeFiles).length} files, ${total} bytes, sha256 ${digest.digest('hex').slice(0, 16)}`);
 
   // 8. The edits are real and `uid` never reaches the output.
   const baseFiles = JSON.parse(wasm.compile_site(base)).files;

@@ -391,6 +391,139 @@ fn apply_reports_typed_errors_and_writes_nothing_on_failure() {
     assert_eq!(fingerprint(&upgraded), before);
 }
 
+#[test]
+fn a_failing_sidecar_write_leaves_no_new_output_behind() {
+    let dir = TempDir::new("sidecar");
+    let fixtures = legacy_fixtures(dir.path());
+    let upgraded = dir.path().join("up.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("upgrade"),
+        &fixtures[0],
+        Path::new("--out"),
+        &upgraded,
+    ]));
+    let batch = dir.path().join("batch.json");
+    fs::write(
+        &batch,
+        r#"{"version":1,"commands":[{"op":"set_data_value","key":"k","value":1}]}"#,
+    )
+    .unwrap();
+    let out = dir.path().join("out.json");
+    let missing = dir.path().join("no-such-dir").join("tx.json");
+    let failed = solo(&[
+        Path::new("edit"),
+        Path::new("apply"),
+        &upgraded,
+        &batch,
+        Path::new("--out"),
+        &out,
+        Path::new("--transaction"),
+        &missing,
+    ]);
+    assert!(!failed.status.success());
+    assert!(
+        !out.exists(),
+        "--out must not exist without its transaction"
+    );
+    let leftovers: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("solo-tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
+
+    // Success writes both, atomically, with no temp files left.
+    let tx = dir.path().join("tx.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("apply"),
+        &upgraded,
+        &batch,
+        Path::new("--out"),
+        &out,
+        Path::new("--transaction"),
+        &tx,
+    ]));
+    assert!(out.exists() && tx.exists());
+    assert!(
+        !fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().contains("solo-tmp"))
+    );
+}
+
+#[cfg(feature = "pack-hospitality")]
+#[test]
+fn eject_never_writes_over_a_venue_manifest() {
+    let dir = TempDir::new("eject-guard");
+    let venue = dir.path().join("venue.json");
+    fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packs/hospitality/demo/venue.json"
+        ),
+        &venue,
+    )
+    .expect("copy venue");
+    let before = fs::read(&venue).unwrap();
+
+    let link = dir.path().join("link.json");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&venue, &link).unwrap();
+    let hard = dir.path().join("hard.json");
+    fs::hard_link(&venue, &hard).unwrap();
+    let dotted = dir.path().join(".").join("venue.json");
+    let mut targets = vec![venue.clone(), dotted, hard];
+    if cfg!(unix) {
+        targets.push(link);
+    }
+    for target in &targets {
+        let refused = solo(&[
+            Path::new("edit"),
+            Path::new("eject"),
+            &venue,
+            Path::new("--out"),
+            target,
+        ]);
+        assert!(!refused.status.success(), "{}", target.display());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains("refusing to write"), "{stderr}");
+        assert_eq!(fs::read(&venue).unwrap(), before, "{}", target.display());
+    }
+
+    // Any other file that is a venue manifest is protected as well.
+    let other = dir.path().join("other-venue.json");
+    fs::write(&other, &before).unwrap();
+    let refused = solo(&[
+        Path::new("edit"),
+        Path::new("eject"),
+        &venue,
+        Path::new("--out"),
+        &other,
+    ]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("pack manifest"));
+    assert_eq!(fs::read(&other).unwrap(), before);
+
+    // A fresh path works, and the original is still untouched.
+    let ir = dir.path().join("ir.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("eject"),
+        &venue,
+        Path::new("--out"),
+        &ir,
+    ]));
+    assert!(ir.exists());
+    assert_eq!(fs::read(&venue).unwrap(), before);
+}
+
 #[cfg(feature = "pack-hospitality")]
 #[test]
 fn editing_gate_pure_rust_edit_undo_redo_save_reopen_compile() {

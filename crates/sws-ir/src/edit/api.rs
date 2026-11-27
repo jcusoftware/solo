@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::command::{CommandBatch, CommandError, ErrorCode, Transaction};
 use super::ids::{UpgradeReport, assign_stable_ids};
-use super::lossless::{check_lossless, lossy_paths};
+use super::lossless::{lossy_error, lossy_paths, lossy_value_paths, source_issues};
 use super::reducer::apply_batch;
 use crate::types::SiteDocument;
 
@@ -59,25 +59,69 @@ fn parse_source(ir_json: &str) -> Result<(Value, SiteDocument), CommandError> {
 }
 
 fn lossless_gate(
+    text: &str,
     raw: &Value,
     doc: &SiteDocument,
     options: EditOptions,
 ) -> Result<Vec<String>, CommandError> {
+    let mut paths = lossy_paths(raw, doc);
+    paths.extend(source_issues(text));
     if options.allow_lossy {
-        Ok(lossy_paths(raw, doc))
+        Ok(paths)
     } else {
-        check_lossless(raw, doc).map(|()| Vec::new())
+        lossy_error(paths).map(|()| Vec::new())
     }
 }
 
-/// Parse the batch JSON (strict: unknown fields are rejected).
+/// Parse the batch JSON. Strict at every depth: unknown fields anywhere,
+/// including inside embedded `Node`/`Page`/style-rule payloads, duplicate
+/// keys and numbers that would lose precision are rejected (`invalid_json`
+/// listing the paths) instead of being silently dropped.
 pub fn parse_batch(batch_json: &str) -> Result<CommandBatch, CommandError> {
-    serde_json::from_str(batch_json).map_err(|e| {
+    let invalid = |e: serde_json::Error| {
         CommandError::new(
             ErrorCode::InvalidJson,
             format!("invalid command batch: {e}"),
         )
-    })
+    };
+    let raw: Value = serde_json::from_str(batch_json).map_err(invalid)?;
+    let batch: CommandBatch = serde_json::from_str(batch_json).map_err(invalid)?;
+    let output = serde_json::to_value(&batch).map_err(invalid)?;
+    let mut paths = lossy_value_paths(&raw, &output, &|candidate| {
+        serde_json::from_value::<CommandBatch>(candidate.clone())
+            .ok()
+            .and_then(|b| serde_json::to_value(b).ok())
+    });
+    paths.extend(source_issues(batch_json));
+    if paths.is_empty() {
+        return Ok(batch);
+    }
+    Err(CommandError::new(
+        ErrorCode::InvalidJson,
+        format!(
+            "invalid command batch: {} unknown, duplicate or imprecise field(s)",
+            paths.len()
+        ),
+    )
+    .with_paths(paths))
+}
+
+/// Serialize `doc` canonically and prove the text parses again as a
+/// `SiteDocument` (the `serde_json` recursion limit is the usual reason it
+/// would not). Never returns text that cannot be reopened.
+fn checked_output(doc: &SiteDocument) -> Result<String, CommandError> {
+    let text = canonical_json(doc);
+    match serde_json::from_str::<SiteDocument>(&text) {
+        Ok(back) if back == *doc => Ok(text),
+        Ok(_) => Err(CommandError::new(
+            ErrorCode::InvalidDocument,
+            "saved document does not round-trip; refusing to write it",
+        )),
+        Err(e) => Err(CommandError::new(
+            ErrorCode::InvalidDocument,
+            format!("saved document could not be parsed again ({e}); refusing to write it"),
+        )),
+    }
 }
 
 /// Parse a document, refuse lossy sources, apply one batch atomically and
@@ -89,10 +133,10 @@ pub fn apply_batch_json(
 ) -> Result<EditOutput, CommandError> {
     let batch = parse_batch(batch_json)?;
     let (raw, doc) = parse_source(ir_json)?;
-    let dropped_paths = lossless_gate(&raw, &doc, options)?;
+    let dropped_paths = lossless_gate(ir_json, &raw, &doc, options)?;
     let (next, transaction) = apply_batch(&doc, &batch)?;
     Ok(EditOutput {
-        document: canonical_json(&next),
+        document: checked_output(&next)?,
         transaction,
         dropped_paths,
     })
@@ -101,10 +145,10 @@ pub fn apply_batch_json(
 /// Parse a document, refuse lossy sources and run the explicit stable-ID upgrade.
 pub fn upgrade_json(ir_json: &str, options: EditOptions) -> Result<UpgradeOutput, CommandError> {
     let (raw, doc) = parse_source(ir_json)?;
-    let dropped_paths = lossless_gate(&raw, &doc, options)?;
+    let dropped_paths = lossless_gate(ir_json, &raw, &doc, options)?;
     let (next, report) = assign_stable_ids(&doc)?;
     Ok(UpgradeOutput {
-        document: canonical_json(&next),
+        document: checked_output(&next)?,
         report,
         dropped_paths,
     })

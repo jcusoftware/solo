@@ -15,6 +15,21 @@ use crate::types::{Node, SiteDocument};
 
 type Applied = (Command, Vec<String>);
 
+/// How strictly command inputs are validated.
+///
+/// `Strict` is for new input (user batches, redo): every value passes the
+/// grammar checks of the legacy patch engine and the reducer. `Restore` is for
+/// replaying a recorded inverse: it must be able to put back *any* value the
+/// document already held (including legacy-shaped values such as an empty
+/// optional font stack or an SVG `clipPath` tag), so the new-input grammar
+/// checks are skipped. The structural and whole-document checks
+/// ([`check_editable`], uid freshness, container resolution) always run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Strict,
+    Restore,
+}
+
 /// Apply `batch` atomically to a copy of `doc`.
 ///
 /// On success returns the new document and the [`Transaction`] (forward
@@ -25,13 +40,33 @@ pub fn apply_batch(
     doc: &SiteDocument,
     batch: &CommandBatch,
 ) -> Result<(SiteDocument, Transaction), CommandError> {
+    apply_batch_with(doc, batch, Mode::Strict)
+}
+
+/// Apply a recorded inverse (undo) batch: like [`apply_batch`] but the
+/// new-input grammar checks are skipped so any previously held value can be
+/// restored. The whole-document gate still runs after the batch and the input
+/// is untouched on error. Use this (not [`apply_batch`]) to replay
+/// `Transaction::inverse`.
+pub fn apply_batch_restore(
+    doc: &SiteDocument,
+    batch: &CommandBatch,
+) -> Result<(SiteDocument, Transaction), CommandError> {
+    apply_batch_with(doc, batch, Mode::Restore)
+}
+
+fn apply_batch_with(
+    doc: &SiteDocument,
+    batch: &CommandBatch,
+    mode: Mode,
+) -> Result<(SiteDocument, Transaction), CommandError> {
     batch.validate()?;
     check_editable(doc)?;
     let mut work = doc.clone();
     let mut inverse = Vec::with_capacity(batch.commands.len());
     let mut touched = BTreeSet::new();
     for (idx, command) in batch.commands.iter().enumerate() {
-        let (inv, fields) = apply_command(&mut work, command).map_err(|e| e.at(idx))?;
+        let (inv, fields) = apply_command(&mut work, command, mode).map_err(|e| e.at(idx))?;
         inverse.push(inv);
         touched.extend(fields);
     }
@@ -40,6 +75,9 @@ pub fn apply_batch(
         e.message = format!("batch result is invalid: {}", e.message);
         e
     })?;
+    if mode == Mode::Strict {
+        verify_restorable(doc, &work, &inverse)?;
+    }
     Ok((
         work,
         Transaction {
@@ -51,6 +89,32 @@ pub fn apply_batch(
             touched: touched.into_iter().collect(),
         },
     ))
+}
+
+/// Safety net: replaying the recorded inverse on the result must reproduce the
+/// input document exactly. Refuses the batch otherwise, so a transaction that
+/// could not be undone is never produced.
+fn verify_restorable(
+    before: &SiteDocument,
+    after: &SiteDocument,
+    inverse: &[Command],
+) -> Result<(), CommandError> {
+    let unrestorable = |detail: String| {
+        err(
+            ErrorCode::InvalidValue,
+            format!("edit refused: it could not be undone exactly ({detail})"),
+        )
+    };
+    let mut probe = after.clone();
+    for (idx, command) in inverse.iter().enumerate() {
+        apply_command(&mut probe, command, Mode::Restore)
+            .map_err(|e| unrestorable(format!("inverse command {idx}: {e}")))?;
+    }
+    check_editable(&probe).map_err(|e| unrestorable(e.to_string()))?;
+    if probe != *before {
+        return Err(unrestorable("inverse does not reproduce the input".into()));
+    }
+    Ok(())
 }
 
 /// Like [`apply_batch`] but replaces `doc` on success (and only then).
@@ -79,7 +143,57 @@ fn from_ir(e: IrError) -> CommandError {
     }
 }
 
-fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, CommandError> {
+/// Apply one `IrPatch` through the legacy validators (`Strict`) or assign the
+/// value directly (`Restore`).
+fn patch(doc: &mut SiteDocument, mode: Mode, op: IrPatch) -> Result<(), IrError> {
+    if mode == Mode::Strict {
+        return apply_patch(doc, &op);
+    }
+    match op {
+        IrPatch::SetSiteMeta {
+            name,
+            locale,
+            base_url,
+        } => {
+            if let Some(name) = name {
+                doc.name = name;
+            }
+            if let Some(locale) = locale {
+                doc.locale = locale;
+            }
+            if let Some(base_url) = base_url {
+                doc.base_url = base_url;
+            }
+            Ok(())
+        }
+        IrPatch::SetColorToken { key, hex } => {
+            doc.tokens.colors.insert(key, hex);
+            Ok(())
+        }
+        IrPatch::SetFontToken { slot, stack } => match slot.as_str() {
+            "body" => {
+                doc.tokens.fonts.body = stack;
+                Ok(())
+            }
+            "heading" => {
+                doc.tokens.fonts.heading = Some(stack);
+                Ok(())
+            }
+            "mono" => {
+                doc.tokens.fonts.mono = Some(stack);
+                Ok(())
+            }
+            _ => Err(IrError::InvalidFontSlot { slot }),
+        },
+        other => apply_patch(doc, &other),
+    }
+}
+
+fn apply_command(
+    doc: &mut SiteDocument,
+    command: &Command,
+    mode: Mode,
+) -> Result<Applied, CommandError> {
     match command {
         Command::SetSiteMeta {
             name,
@@ -97,9 +211,10 @@ fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, C
                 locale: locale.as_ref().map(|_| doc.locale.clone()),
                 base_url: base_url.as_ref().map(|_| doc.base_url.clone()),
             };
-            apply_patch(
+            patch(
                 doc,
-                &IrPatch::SetSiteMeta {
+                mode,
+                IrPatch::SetSiteMeta {
                     name: name.clone(),
                     locale: locale.clone(),
                     base_url: base_url.clone(),
@@ -120,9 +235,10 @@ fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, C
         }
         Command::SetColorToken { key, hex } => {
             let previous = doc.tokens.colors.get(key).cloned();
-            apply_patch(
+            patch(
                 doc,
-                &IrPatch::SetColorToken {
+                mode,
+                IrPatch::SetColorToken {
                     key: key.clone(),
                     hex: hex.clone(),
                 },
@@ -166,9 +282,10 @@ fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, C
                     ));
                 }
             };
-            apply_patch(
+            patch(
                 doc,
-                &IrPatch::SetFontToken {
+                mode,
+                IrPatch::SetFontToken {
                     slot: slot.clone(),
                     stack: stack.clone(),
                 },
@@ -196,9 +313,10 @@ fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, C
         }
         Command::SetDataValue { key, value } => {
             let previous = doc.data.get(key).cloned();
-            apply_patch(
+            patch(
                 doc,
-                &IrPatch::SetDataValue {
+                mode,
+                IrPatch::SetDataValue {
                     key: key.clone(),
                     value: value.clone(),
                 },
@@ -227,7 +345,7 @@ fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, C
         }
         Command::UpsertStyleRule { rule } => {
             let previous = doc.styles.iter().find(|r| r.id == rule.id).cloned();
-            apply_patch(doc, &IrPatch::UpsertStyleRule { rule: rule.clone() }).map_err(from_ir)?;
+            patch(doc, mode, IrPatch::UpsertStyleRule { rule: rule.clone() }).map_err(from_ir)?;
             let mut touched = vec![format!("style:{}", rule.id)];
             let inverse = match previous {
                 Some(rule) => Command::UpsertStyleRule { rule },
@@ -413,7 +531,7 @@ fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, C
             ))
         }
         Command::SetAttr { uid, attr, value } => {
-            if !is_valid_attr_name(attr) {
+            if mode == Mode::Strict && !is_valid_attr_name(attr) {
                 return Err(err(
                     ErrorCode::InvalidValue,
                     format!("invalid attribute name '{attr}'"),
@@ -451,7 +569,7 @@ fn apply_command(doc: &mut SiteDocument, command: &Command) -> Result<Applied, C
             ))
         }
         Command::SetTag { uid, tag } => {
-            if !is_valid_tag(tag) {
+            if mode == Mode::Strict && !is_valid_tag(tag) {
                 return Err(err(
                     ErrorCode::InvalidValue,
                     format!("invalid element tag '{tag}'"),
@@ -546,10 +664,13 @@ fn is_valid_attr_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
 }
 
+/// Same character set the compiler accepts for element tags
+/// (`sws-compiler` `is_safe_tag_name`: ASCII alphanumerics, `-`, `_`), with a
+/// leading letter so SVG tags such as `clipPath` and `linearGradient` work.
 fn is_valid_tag(tag: &str) -> bool {
     let mut bytes = tag.bytes();
-    bytes.next().is_some_and(|b| b.is_ascii_lowercase())
-        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 fn page_node_fields(body: &[Node]) -> Vec<String> {

@@ -24,8 +24,8 @@ pub use command::{
 };
 pub use history::{DEFAULT_HISTORY_LIMIT, History};
 pub use ids::{
-    AssignedId, MARKER_KEY, UID_SCHEME, UpgradeReport, assign_stable_ids, check_editable,
-    check_uids, is_valid_uid,
+    AssignedId, MARKER_KEY, MAX_EDIT_JSON_DEPTH, UID_SCHEME, UpgradeReport, assign_stable_ids,
+    check_editable, check_uids, is_valid_uid, next_id,
 };
-pub use lossless::{check_lossless, lossy_paths};
-pub use reducer::{apply_batch, apply_batch_in_place};
+pub use lossless::{check_lossless, lossy_error, lossy_paths, lossy_value_paths, source_issues};
+pub use reducer::{apply_batch, apply_batch_in_place, apply_batch_restore};

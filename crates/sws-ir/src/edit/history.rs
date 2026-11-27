@@ -2,7 +2,7 @@
 
 use super::command::{CommandBatch, CommandError, ErrorCode, Transaction};
 use super::ids::check_editable;
-use super::reducer::apply_batch;
+use super::reducer::{apply_batch, apply_batch_restore};
 use crate::types::SiteDocument;
 
 /// Maximum undo steps retained by [`History::new`].
@@ -72,7 +72,8 @@ impl History {
 
     /// Apply a batch as a new undo step (clearing redo). A batch whose
     /// `coalesce_key` equals that of the previous step, with no undo/redo in
-    /// between, merges into that step. Returns the batch's own transaction.
+    /// between, merges into that step unless the merged step would exceed
+    /// `MAX_BATCH_COMMANDS` (then a new step starts). Returns the batch's own transaction.
     pub fn apply(&mut self, batch: &CommandBatch) -> Result<Transaction, CommandError> {
         let (next, tx) = apply_batch(&self.doc, batch)?;
         self.doc = next;
@@ -82,7 +83,7 @@ impl History {
             && self
                 .undo
                 .last()
-                .is_some_and(|top| top.coalesce_key == tx.coalesce_key);
+                .is_some_and(|top| top.coalesce_key == tx.coalesce_key && top.can_coalesce(&tx));
         if merge && let Some(top) = self.undo.pop() {
             self.undo.push(top.coalesce(tx.clone()));
         } else {
@@ -100,7 +101,7 @@ impl History {
         let Some(tx) = self.undo.pop() else {
             return Ok(None);
         };
-        match apply_batch(&self.doc, &tx.inverse_batch()) {
+        match apply_batch_restore(&self.doc, &tx.inverse_batch()) {
             Ok((next, _)) => {
                 self.doc = next;
                 self.redo.push(tx.clone());

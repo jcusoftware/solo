@@ -16,6 +16,19 @@ pub const MARKER_KEY: &str = "sws.ir";
 /// The only supported value of `metadata["sws.ir"].uid_scheme`.
 pub const UID_SCHEME: u64 = 1;
 
+/// Deepest JSON nesting (nested `{`/`[`, counted on the serialized document)
+/// an editable document may have.
+///
+/// `serde_json` refuses to parse input nested more than 127 containers deep
+/// (its fixed recursion limit is 128 and the 128th open bracket fails). The
+/// canonical writer emits one container per object or array level, and every
+/// node level costs two (`{` node, `[` child list) or three (component
+/// `slots` map) of them, so the 128-level `MAX_IR_NODE_DEPTH` of `validate_ir`
+/// admits documents that serialize fine but can never be parsed again
+/// (roughly 62 node levels). Editing refuses any result nested deeper than
+/// this constant; `validate_ir` (used by `build` and `check`) is unchanged.
+pub const MAX_EDIT_JSON_DEPTH: usize = 127;
+
 const MAX_UID_LEN: usize = 64;
 const MAX_REPORTED_PATHS: usize = 20;
 
@@ -267,7 +280,70 @@ pub fn check_editable(doc: &SiteDocument) -> Result<(), CommandError> {
                 .collect(),
         )));
     }
+    check_json_depth(doc)
+}
+
+/// Refuse documents whose canonical JSON nests deeper than
+/// [`MAX_EDIT_JSON_DEPTH`] (they could be saved but never parsed again).
+/// Runs after `validate_ir`, which bounds node recursion first.
+fn check_json_depth(doc: &SiteDocument) -> Result<(), CommandError> {
+    let too_deep = |depth: usize| {
+        CommandError::new(
+            ErrorCode::InvalidDocument,
+            format!(
+                "document nests {depth} JSON levels deep; editing allows at most \
+                 {MAX_EDIT_JSON_DEPTH} so the saved file can be parsed again"
+            ),
+        )
+    };
+    let value = serde_json::to_value(doc).map_err(|e| {
+        CommandError::new(
+            ErrorCode::InvalidDocument,
+            format!("document cannot be serialized: {e}"),
+        )
+    })?;
+    let mut max = 0;
+    let mut stack = vec![(&value, 1usize)];
+    while let Some((v, depth)) = stack.pop() {
+        match v {
+            Value::Array(items) => {
+                max = max.max(depth);
+                stack.extend(items.iter().map(|i| (i, depth + 1)));
+            }
+            Value::Object(map) => {
+                max = max.max(depth);
+                stack.extend(map.values().map(|i| (i, depth + 1)));
+            }
+            _ => {}
+        }
+    }
+    if max > MAX_EDIT_JSON_DEPTH {
+        return Err(too_deep(max));
+    }
     Ok(())
+}
+
+/// The smallest `"{prefix}-{n}"` (`n >= 1`) that is not yet used as an
+/// identifier anywhere in `doc`: node `uid`, page id, style rule id,
+/// breakpoint id or component name. Pure and deterministic; the caller owns
+/// the prefix (the result is a valid `uid` when `prefix` matches the uid
+/// grammar and is short enough).
+#[must_use]
+pub fn next_id(doc: &SiteDocument, prefix: &str) -> String {
+    let mut used: BTreeSet<&str> = BTreeSet::new();
+    for_each_node(doc, &mut |node, _| {
+        if let Some(uid) = node.uid() {
+            used.insert(uid);
+        }
+    });
+    used.extend(doc.pages.iter().map(|p| p.id.as_str()));
+    used.extend(doc.styles.iter().map(|r| r.id.as_str()));
+    used.extend(doc.breakpoints.iter().map(|b| b.id.as_str()));
+    used.extend(doc.components.keys().map(String::as_str));
+    (1usize..)
+        .map(|n| format!("{prefix}-{n}"))
+        .find(|candidate| !used.contains(candidate.as_str()))
+        .unwrap_or_else(|| format!("{prefix}-1"))
 }
 
 /// One ID assigned (or re-assigned) by the upgrade.
@@ -287,8 +363,6 @@ pub struct UpgradeReport {
     /// Nodes that already carried a valid unique `uid` and were left alone.
     pub kept: usize,
     pub marker_written: bool,
-    /// `metadata["venue_manifest"]` is present: it is a stale copy once the IR is edited.
-    pub venue_manifest_stale: bool,
 }
 
 fn slugify(input: &str) -> String {
@@ -408,19 +482,30 @@ impl Assigner {
 ///
 /// Adds `uid` to every node that lacks a valid unique one (document order:
 /// pages in array order, depth-first pre-order, then components in key order),
-/// writes `metadata["sws.ir"] = {"uid_scheme": 1}` and changes nothing else.
+/// sets `uid_scheme: 1` inside `metadata["sws.ir"]` (other keys of an existing
+/// marker object are kept) and changes nothing else.
 /// Candidate IDs are `{page-id-slug}.{label}` (`component-{name}` scope for
 /// templates), de-duplicated with `-2`, `-3`, ... in traversal order.
 pub fn assign_stable_ids(
     doc: &SiteDocument,
 ) -> Result<(SiteDocument, UpgradeReport), CommandError> {
-    if let Some(scheme) = marker_scheme(doc)
-        && scheme != Some(UID_SCHEME)
-    {
-        return Err(CommandError::new(
-            ErrorCode::UnsupportedUidScheme,
-            format!("metadata[\"{MARKER_KEY}\"].uid_scheme must be {UID_SCHEME}"),
-        ));
+    // An existing marker must be an object (other keys in it are preserved).
+    // A missing `uid_scheme` is filled in; a different scheme is refused.
+    if let Some(existing) = doc.metadata.get(MARKER_KEY) {
+        let Some(object) = existing.as_object() else {
+            return Err(CommandError::new(
+                ErrorCode::UnsupportedUidScheme,
+                format!("metadata[\"{MARKER_KEY}\"] must be an object to be upgraded"),
+            ));
+        };
+        if let Some(scheme) = object.get("uid_scheme")
+            && scheme.as_u64() != Some(UID_SCHEME)
+        {
+            return Err(CommandError::new(
+                ErrorCode::UnsupportedUidScheme,
+                format!("metadata[\"{MARKER_KEY}\"].uid_scheme must be {UID_SCHEME}"),
+            ));
+        }
     }
     let mut out = doc.clone();
 
@@ -456,16 +541,28 @@ pub fn assign_stable_ids(
         );
     }
 
-    let marker = json!({ "uid_scheme": UID_SCHEME });
-    let marker_written = out.metadata.get(MARKER_KEY) != Some(&marker);
-    out.metadata.insert(MARKER_KEY.to_string(), marker);
+    let marker_written = match out
+        .metadata
+        .get_mut(MARKER_KEY)
+        .and_then(Value::as_object_mut)
+    {
+        Some(object) => {
+            let written = object.get("uid_scheme").and_then(Value::as_u64) != Some(UID_SCHEME);
+            object.insert("uid_scheme".to_string(), json!(UID_SCHEME));
+            written
+        }
+        None => {
+            out.metadata
+                .insert(MARKER_KEY.to_string(), json!({ "uid_scheme": UID_SCHEME }));
+            true
+        }
+    };
 
     let report = UpgradeReport {
         uid_scheme: UID_SCHEME,
         assigned: assigner.assigned,
         kept: assigner.kept,
         marker_written,
-        venue_manifest_stale: out.metadata.contains_key("venue_manifest"),
     };
     Ok((out, report))
 }
