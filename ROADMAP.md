@@ -52,7 +52,7 @@ These are the decisions recorded by the Studio and Builder release issues (#54 t
 
 **Exit:** the local native/Wasm editing slice passes before Studio integration: stable IDs, explicit legacy upgrade, undo/redo, lossless save/reopen, byte-identical native and Wasm production output, schema drift check and reproducible Wasm tooling.
 
-- #54 IR compatibility and stable node ID audit (see `docs/IR_COMPATIBILITY_AUDIT.md`). The public format does not change in the audit. Valid v0.1.2 files keep building and checking without writes.
+- #54 IR compatibility and stable node ID audit. The public format does not change in the audit. Valid v0.1.2 files keep building and checking without writes.
 - #55 canonical Rust command reducer and undo/redo, with the automated legacy-demo edit, undo/redo, save, reopen and native-versus-Wasm gate.
 - #56 generated TypeScript types and Draft 2020-12 JSON Schema in `packages/@solo-website-system/ir-types`, with no JS runtime and `npm run verify` failing on drift. This is the first `packages/` content, so `packages/` lands in v0.2.0-alpha.1, not v0.3.0.
 - #57 pinned, reproducible Wasm toolchain (see `docs/WASM_TOOLCHAIN.md`). Gate 1 criteria stay intact (see ARCHITECTURE §6).
@@ -64,7 +64,7 @@ These are the decisions recorded by the Studio and Builder release issues (#54 t
 **Exit:** hibernating multi-client sessions with conservative conflict handling and revocation, bounded cardless and opt-in R2 storage, and an asynchronous publish pipeline whose default compile path is justified by Free-account evidence.
 
 - #59 time-boxed Workers Free Queue CPU spike. Server compilation is the default only if the supported workload shows repeatable headroom. Otherwise the CLI compile-and-upload path (#68) is the default. Queue wall time is not CPU time. Remote deployment needs approval.
-- #60 cardless GitHub OAuth model: self-hosted OAuth app, one bootstrapped owner, explicit collaborator invitations (see `docs/STUDIO_AUTH.md`). Magic links, passkeys and Cloudflare Access are not launch dependencies.
+- #60 cardless GitHub OAuth model: self-hosted OAuth app, one bootstrapped owner, explicit collaborator invitations. Magic links, passkeys and Cloudflare Access are not launch dependencies.
 - #61 optional wasm32 Studio Worker and D1 workspace registry, configured separately from the visitor Worker. D1 checkpoint writes do not happen on each edit.
 - #62 hibernating Durable Object command sessions. Checkpoint every 50 commands or on save/publish.
 - #63 bounded cardless, R2 and local asset stores.
@@ -140,6 +140,6 @@ The Studio and Builder design document is unavailable to this repository. The it
 2. **Provisional cardless envelope.** Up to 20 pages, 1 MiB per uploaded asset and 50 MiB of stored assets per site (#63) are provisional. Workspace-wide and preview/export budgets and retention are set only after fresh-account evidence.
 3. **Default compile path.** Server-side compilation versus CLI compile-and-upload is open until the #59 spike (it needs approved staging/Free account access).
 4. **Studio frontend layout.** The issues fix Preact and Signals for the shell (#77) and `packages/@solo-website-system/ir-types` (#56), but not the exact `apps/` directory names, the npm package list beyond `ir-types`, or the build tool.
-5. **Legacy ID and extension handling details** are decided by the #54 audit, not here.
+5. **Legacy ID and extension handling details** were settled in #54 and are implemented by #55, not decided here.
 6. **Hostnames, retention periods and revocation delay.** Studio and preview hostnames, preview/export retention, and the maximum delay for revoked sockets to stop receiving updates (#65 requires documenting and testing it) are unspecified.
 7. **Durable Object class names.** The earlier roadmap named `ProjectRoom` and `RateLimiter`. The issues describe per-site command sessions (#62) and do not name classes, so the names are open. `ProjectRoom` is no longer described as CRDT synchronization.

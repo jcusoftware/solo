@@ -324,7 +324,7 @@ The separate `v0.2 — Hospitality pack feature ports` GitHub milestone (#43, #4
 
 - `workers-rs` baseline: `worker` 0.9 (`Cargo.toml`, `Cargo.lock`) with `worker-build` 0.9. It is not downgraded.
 - The GitHub milestone names above are canonical. `sws-worker-studio` is the planned Studio Worker crate name; `sws-worker-site` remains the visitor Worker.
-- Related audits and runbooks (maintained separately): `docs/IR_COMPATIBILITY_AUDIT.md` (#54), `docs/WASM_TOOLCHAIN.md` (#57), `docs/STUDIO_AUTH.md` (#60).
+- Related runbook: `docs/WASM_TOOLCHAIN.md` (#57).
 
 ### Merge and release discipline
 
