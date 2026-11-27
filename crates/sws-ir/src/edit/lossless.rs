@@ -1,6 +1,8 @@
 //! Lossless-save check: refuse to save a typed document when the original JSON
 //! carries fields the typed model would silently drop.
 
+use std::collections::HashMap;
+
 use serde_json::Value;
 
 use super::command::{CommandError, ErrorCode};
@@ -40,7 +42,7 @@ pub fn lossy_value_paths(
     let mut ctx = Ctx {
         root: original,
         reserialize,
-        probes_left: MAX_NULL_PROBES,
+        probed: HashMap::new(),
         trail: Vec::new(),
         paths: Vec::new(),
     };
@@ -86,7 +88,6 @@ pub fn lossy_error(paths: Vec<String>) -> Result<(), CommandError> {
     .with_paths(paths))
 }
 
-const MAX_NULL_PROBES: usize = 256;
 const PROBE_MARKER: &str = "\u{1}sws-null-probe\u{1}";
 
 enum Seg {
@@ -97,7 +98,8 @@ enum Seg {
 struct Ctx<'a> {
     root: &'a Value,
     reserialize: &'a dyn Fn(&Value) -> Option<Value>,
-    probes_left: usize,
+    /// Probe verdicts memoized per key shape (see `shape_key`).
+    probed: HashMap<String, bool>,
     trail: Vec<Seg>,
     paths: Vec<String>,
 }
@@ -105,12 +107,46 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     /// True when an original `null` at the current trail is a known optional
     /// field (the typed model accepts it); false when the key is unknown (it is
-    /// dropped on save) or the probe budget is exhausted.
+    /// dropped on save). The verdict depends only on the key's shape (path with
+    /// array indices erased plus the enclosing objects' variant tags), so it is
+    /// probed once per shape and reused.
     fn null_is_known(&mut self) -> bool {
-        if self.probes_left == 0 {
-            return false;
+        let shape = self.shape_key();
+        if let Some(&known) = self.probed.get(&shape) {
+            return known;
         }
-        self.probes_left -= 1;
+        let known = self.probe();
+        self.probed.insert(shape, known);
+        known
+    }
+
+    fn shape_key(&self) -> String {
+        let mut key = String::new();
+        let mut cur = self.root;
+        for seg in &self.trail {
+            if let Value::Object(map) = cur {
+                for tag in ["op", "kind", "type"] {
+                    if let Some(Value::String(v)) = map.get(tag) {
+                        key.push_str(&format!("{{{tag}={v}}}"));
+                    }
+                }
+            }
+            match seg {
+                Seg::Key(k) => {
+                    key.push('.');
+                    key.push_str(k);
+                    cur = cur.get(k.as_str()).unwrap_or(&Value::Null);
+                }
+                Seg::Index(i) => {
+                    key.push_str("[]");
+                    cur = cur.get(*i).unwrap_or(&Value::Null);
+                }
+            }
+        }
+        key
+    }
+
+    fn probe(&self) -> bool {
         let mut candidate = self.root.clone();
         if set_at(
             &mut candidate,
@@ -181,7 +217,7 @@ fn compare(original: &Value, output: &Value, path: &str, ctx: &mut Ctx<'_>) {
             }
         }
         (Value::Number(a), Value::Number(b)) => {
-            let same = a == b || matches!((a.as_f64(), b.as_f64()), (Some(x), Some(y)) if x == y);
+            let same = a == b || numbers_equivalent(a, b);
             if !same {
                 ctx.paths.push(path.to_string());
             }
@@ -192,6 +228,27 @@ fn compare(original: &Value, output: &Value, path: &str, ctx: &mut Ctx<'_>) {
             }
         }
     }
+}
+
+/// Different representations of the same value (`1` vs `1.0`). An integer
+/// compared with a float must round-trip exactly, so an integer above 2^53 that
+/// an `f64` field rounded is reported as lossy.
+fn numbers_equivalent(a: &serde_json::Number, b: &serde_json::Number) -> bool {
+    let (ia, ib) = (exact_int(a), exact_int(b));
+    match (ia, ib, a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y), _, _) => x == y,
+        (Some(i), None, _, Some(f)) | (None, Some(i), Some(f), _) => {
+            f.is_finite() && f.fract() == 0.0 && f.abs() < 1e38 && f as i128 == i
+        }
+        (None, None, Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+fn exact_int(n: &serde_json::Number) -> Option<i128> {
+    n.as_i64()
+        .map(i128::from)
+        .or_else(|| n.as_u64().map(i128::from))
 }
 
 /// Minimal JSON text walker (input already parsed successfully, so nesting is

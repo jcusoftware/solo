@@ -2057,3 +2057,56 @@ fn next_id_is_the_smallest_free_numbered_id() {
     )
     .unwrap();
 }
+
+// ---- lossless null / number soundness -----------------------------------------
+
+#[test]
+fn batch_with_many_explicit_nulls_is_accepted() {
+    let uid = uid_of(&upgraded(), "pages[0].body[0]");
+    let cmds: Vec<Value> = (0..300)
+        .map(|i| json!({ "op": "set_attr", "uid": uid, "attr": format!("a{i}"), "value": null }))
+        .collect();
+    let text = json!({ "version": 1, "commands": cmds }).to_string();
+    parse_batch(&text).expect("300 explicit nulls on a known optional field");
+
+    // A genuinely lost null after the same shape is still reported.
+    let mut cmds: Vec<Value> = (0..300)
+        .map(|i| json!({ "op": "set_attr", "uid": uid, "attr": format!("a{i}"), "value": null }))
+        .collect();
+    cmds[299]["bogus"] = json!(null);
+    let text = json!({ "version": 1, "commands": cmds }).to_string();
+    assert_eq!(parse_batch(&text).unwrap_err().code, ErrorCode::InvalidJson);
+}
+
+#[test]
+fn document_with_many_uid_nulls_upgrades_and_unknown_null_is_lossy() {
+    let mut raw = serde_json::to_value(legacy_doc()).unwrap();
+    let nodes: Vec<Value> = (0..300)
+        .map(|i| json!({ "type": "text", "value": format!("t{i}"), "uid": null }))
+        .collect();
+    raw["pages"][0]["body"] = Value::Array(nodes);
+    upgrade_json(&raw.to_string(), EditOptions::default()).expect("300 uid nulls upgrade");
+
+    raw["pages"][0]["body"][299]["future"] = json!(null);
+    let err = upgrade_json(&raw.to_string(), EditOptions::default()).unwrap_err();
+    assert_eq!(err.code, ErrorCode::LossyDocument);
+    assert_eq!(err.paths, vec!["$.pages[0].body[299].future"]);
+}
+
+#[test]
+fn integers_must_round_trip_exactly_through_f64_fields() {
+    let pair = |ratio: &str| {
+        let mut raw = serde_json::to_value(upgraded()).unwrap();
+        raw["tokens"]["contrast_pairs"] = json!([{ "foreground": "a", "background": "b" }]);
+        let text = serde_json::to_string(&raw).unwrap().replace(
+            "\"background\":\"b\"",
+            &format!("\"background\":\"b\",\"min_ratio\":{ratio}"),
+        );
+        upgrade_json(&text, EditOptions::default())
+    };
+    let err = pair("9007199254740993").unwrap_err();
+    assert_eq!(err.code, ErrorCode::LossyDocument, "{err}");
+    pair("4.5").expect("ordinary floats are fine");
+    pair("7").expect("small integers round-trip");
+    pair("9007199254740992").expect("2^53 is exactly representable");
+}
