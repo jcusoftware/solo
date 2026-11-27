@@ -54,6 +54,9 @@ fn same_file(a: &Path, b: &Path) -> bool {
     false
 }
 
+/// Largest existing target inspected for the manifest check.
+const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Refuse a write target that is (or is the same file as) one of `forbidden`,
 /// or that already holds a pack manifest: lowered IR is never written over a
 /// venue manifest, whatever the path spelling.
@@ -65,7 +68,12 @@ fn guard_target(path: &Path, forbidden: &[&Path]) -> Result<(), String> {
             input.display()
         ));
     }
-    if let Ok(existing) = fs::read_to_string(path)
+    // Only regular files of sane size are read: a FIFO, device or `/dev/stdout`
+    // would block or never end.
+    if let Ok(meta) = fs::metadata(path)
+        && meta.is_file()
+        && meta.len() <= MAX_MANIFEST_BYTES
+        && let Ok(existing) = fs::read_to_string(path)
         && let Ok(raw) = serde_json::from_str::<Value>(&existing)
         && default_registry()
             .list()
@@ -96,8 +104,8 @@ enum Staged {
     /// Content already sits in `temp`; rename it over `dest`.
     Atomic { temp: PathBuf, dest: PathBuf },
     /// Write `content` straight to `dest`: a non-regular destination (device,
-    /// FIFO) cannot be replaced by a rename, and a writable file in a
-    /// directory we cannot create files in has no room for a temp file.
+    /// FIFO) cannot be replaced by a rename. Regular files are never written
+    /// in place, so a failed write cannot leave them half-written.
     Direct {
         path: PathBuf,
         dest: PathBuf,
@@ -110,6 +118,12 @@ fn stage(path: &Path, content: &str, index: usize) -> Result<Staged, String> {
     let fail = |e: std::io::Error| format!("failed to write '{}': {e}", path.display());
     let existing = fs::metadata(&dest).ok();
     if let Some(meta) = &existing {
+        if meta.is_dir() {
+            return Err(format!(
+                "refusing to write '{}': it is a directory",
+                path.display()
+            ));
+        }
         if !meta.is_file() {
             return Ok(Staged::Direct {
                 path: path.to_path_buf(),
@@ -138,12 +152,12 @@ fn stage(path: &Path, content: &str, index: usize) -> Result<Staged, String> {
         .open(&temp)
     {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && existing.is_some() => {
-            return Ok(Staged::Direct {
-                path: path.to_path_buf(),
-                dest,
-                content: content.to_owned(),
-            });
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(format!(
+                "refusing to write '{}': its directory '{}' is not writable, so a temp file cannot be created and the file is left unchanged",
+                path.display(),
+                dir.display()
+            ));
         }
         Err(e) => return Err(fail(e)),
     };
@@ -193,8 +207,8 @@ fn commit(item: &Staged) -> Result<(), String> {
 /// never leaves a new `--out` without its sidecars. The only remaining window
 /// is a rename failing part-way, which leaves the earlier files replaced and
 /// the later ones untouched (never half-written). Read-only destinations are
-/// refused up front; special files (e.g. `/dev/stdout`) and writable files in
-/// directories without create permission are written directly instead.
+/// refused up front; special files (e.g. `/dev/stdout`) are written directly, and
+/// directories are refused.
 fn write_all(files: &[(&Path, String)]) -> Result<(), String> {
     let mut staged: Vec<Staged> = Vec::new();
     for (index, (path, content)) in files.iter().enumerate() {

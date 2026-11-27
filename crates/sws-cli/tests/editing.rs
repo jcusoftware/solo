@@ -566,7 +566,7 @@ fn special_file_targets_are_written_directly() {
 
 #[cfg(unix)]
 #[test]
-fn writable_file_in_a_read_only_directory_falls_back_to_a_direct_write() {
+fn writable_file_in_a_read_only_directory_is_refused_and_left_unchanged() {
     let dir = TempDir::new("rodir");
     let (upgraded, batch) = writer_inputs(dir.path());
     let out = dir.path().join("out.json");
@@ -580,9 +580,65 @@ fn writable_file_in_a_read_only_directory_falls_back_to_a_direct_write() {
     if is_root() {
         return;
     }
-    ok(&result);
-    assert_ne!(fs::read_to_string(&tx).unwrap(), "old");
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("not writable"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read_to_string(&tx).unwrap(), "old");
+    assert!(!out.exists(), "--out must not be written");
     assert!(solo_tmp_files(&locked).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_targets_do_not_hang_the_manifest_guard() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = TempDir::new("fifo");
+    let (upgraded, batch) = writer_inputs(dir.path());
+    let out = dir.path().join("out.json");
+    let fifo = dir.path().join("tx.fifo");
+    let c_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: c_path is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    // Reading the guard's old `read_to_string` would block on open with no
+    // writer; this reader supplies one-sided traffic for the direct write.
+    let (tx_done, rx_done) = mpsc::channel();
+    let reader = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx_done.send(fs::read_to_string(reader));
+    });
+    ok(&apply_with_tx(&upgraded, &batch, &out, &fifo));
+    let received = rx_done
+        .recv_timeout(Duration::from_secs(20))
+        .expect("fifo reader timed out")
+        .unwrap();
+    assert!(received.contains("forward"), "{received}");
+    assert!(out.exists());
+}
+
+#[test]
+fn directory_targets_are_refused_before_anything_is_written() {
+    let dir = TempDir::new("dirtarget");
+    let (upgraded, batch) = writer_inputs(dir.path());
+    let target = dir.path().join("a-directory");
+    fs::create_dir(&target).unwrap();
+    let tx = dir.path().join("tx.json");
+    let failed = apply_with_tx(&upgraded, &batch, &target, &tx);
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("is a directory"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert!(!tx.exists(), "sidecar must not be written");
+    assert!(solo_tmp_files(dir.path()).is_empty());
+    assert!(fs::read_dir(&target).unwrap().next().is_none());
 }
 
 #[cfg(unix)]

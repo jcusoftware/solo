@@ -127,14 +127,20 @@ impl Ctx<'_> {
             if let Value::Object(map) = cur {
                 for tag in ["op", "kind", "type"] {
                     if let Some(Value::String(v)) = map.get(tag) {
-                        key.push_str(&format!("{{{tag}={v}}}"));
+                        key.push_str(&format!(
+                            "{{{tag}={}}}",
+                            serde_json::to_string(v).unwrap_or_default()
+                        ));
                     }
                 }
             }
             match seg {
                 Seg::Key(k) => {
+                    // JSON-encoded so a raw key can never imitate the
+                    // `.`/`[]`/`{..}` markers: encoded strings contain no
+                    // unescaped quote, and markers sit outside quotes.
                     key.push('.');
-                    key.push_str(k);
+                    key.push_str(&serde_json::to_string(k).unwrap_or_default());
                     cur = cur.get(k.as_str()).unwrap_or(&Value::Null);
                 }
                 Seg::Index(i) => {

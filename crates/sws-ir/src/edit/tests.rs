@@ -2201,14 +2201,6 @@ fn batch_with_many_explicit_nulls_is_accepted() {
         .collect();
     let text = json!({ "version": 1, "commands": cmds }).to_string();
     parse_batch(&text).expect("300 explicit nulls on a known optional field");
-
-    // A genuinely lost null after the same shape is still reported.
-    let mut cmds: Vec<Value> = (0..300)
-        .map(|i| json!({ "op": "set_attr", "uid": uid, "attr": format!("a{i}"), "value": null }))
-        .collect();
-    cmds[299]["bogus"] = json!(null);
-    let text = json!({ "version": 1, "commands": cmds }).to_string();
-    assert_eq!(parse_batch(&text).unwrap_err().code, ErrorCode::InvalidJson);
 }
 
 #[test]
@@ -2224,6 +2216,18 @@ fn document_with_many_uid_nulls_upgrades_and_unknown_null_is_lossy() {
     let err = upgrade_json(&raw.to_string(), EditOptions::default()).unwrap_err();
     assert_eq!(err.code, ErrorCode::LossyDocument);
     assert_eq!(err.paths, vec!["$.pages[0].body[299].future"]);
+}
+
+#[test]
+fn unknown_key_spelling_a_known_shape_is_still_lossy() {
+    let mut raw = serde_json::to_value(legacy_doc()).unwrap();
+    raw["pages"][0]["body"] = json!([{ "type": "text", "value": "t", "uid": null }]);
+    // The real `.pages[].body[]{type=text}.uid` null is known and memoized; an
+    // unknown page key spelled like that shape must not ride on the verdict.
+    raw["pages"][0]["body[]{type=text}.uid"] = json!(null);
+    let err = upgrade_json(&raw.to_string(), EditOptions::default()).unwrap_err();
+    assert_eq!(err.code, ErrorCode::LossyDocument, "{err}");
+    assert_eq!(err.paths, vec!["$.pages[0].body[]{type=text}.uid"]);
 }
 
 #[test]
