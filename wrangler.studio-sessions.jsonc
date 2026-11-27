@@ -1,0 +1,35 @@
+// LOCAL INTEGRATION-TEST config for the Studio session Durable Object (#62). Never deployed.
+//
+// Identical to ./wrangler.studio.jsonc except `main` points at a SEPARATE build
+// (crates/sws-worker-studio/build-dev-auth) compiled with the `insecure-dev-auth` Cargo
+// feature, which lets the X-Sws-Dev-User header stand in for real authentication so the
+// WebSocket flows can be driven without OAuth (#65). That feature is never part of the
+// default `build/` (`npm run studio:build`) or any deploy; `npm run check:studio:release`
+// proves it. State lives under .wrangler/studio-sessions-state (see test:studio:sessions).
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sws-studio-sessions-test",
+	"main": "crates/sws-worker-studio/build-dev-auth/index.js",
+	"compatibility_date": "2026-11-01",
+	"workers_dev": true,
+	"build": {
+		"command": "node scripts/build-wasm.mjs --profile dev --crate crates/sws-worker-studio --features insecure-dev-auth --out-dir build-dev-auth",
+		"watch_dir": "crates/sws-worker-studio/src"
+	},
+	"d1_databases": [
+		{
+			"binding": "STUDIO_DB",
+			"database_name": "sws-studio-sessions-test-db",
+			"migrations_dir": "crates/sws-worker-studio/migrations",
+			"database_id": "00000000-0000-0000-0000-000000000062"
+		}
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "SITE_SESSION", "class_name": "SiteSession" }]
+	},
+	"migrations": [{ "tag": "v1-site-session", "new_sqlite_classes": ["SiteSession"] }],
+	"vars": {
+		"STUDIO_VERSION": "0.2.0-dev",
+		"STUDIO_PUBLIC_ORIGIN": "http://127.0.0.1:8790"
+	}
+}

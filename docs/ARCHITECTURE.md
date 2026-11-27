@@ -27,7 +27,7 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
 ====================================================================================================
  PLANE 2: CONTROL PLANE (planned v0.2.0 Studio — optional, Cloudflare Workers)
 ====================================================================================================
-  `sws-worker-studio` (Rust → wasm32; scaffold present: D1 registry + request bounds + /api/health; DOs, R2, Queues and auth are later issues)
+  `sws-worker-studio` (Rust → wasm32; present: D1 registry, request bounds, /api/health and the `SiteSession` Durable Object, #62; R2, Queues and auth (#65) are later issues)
     ├── SQLite Durable Objects (hibernating, one command session per site)
     │     └── per-site snapshot + monotonic command log + expiring soft presence
     │         (command log, not CRDT; see §10)
@@ -82,7 +82,7 @@ crates/                       Open-source Rust workspace (MIT OR Apache-2.0)
   sws-wasm/                   wasm-bindgen target for browser visual canvas
   sws-cli/                    `solo` CLI + MCP server
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          optional studio control-plane Worker — scaffold only (D1 registry, request bounds; Durable Objects, Queues and R2 opt-in/conditional, later issues)
+  sws-worker-studio/          optional studio control-plane Worker — D1 registry, request bounds and hibernating per-site command sessions (`SiteSession` Durable Object); Queues and R2 opt-in/conditional, later issues
 
 apps/                         planned v0.3.0 — thin TypeScript Builder shell and canvas (MIT OR Apache-2.0); directory names are an open assumption
   builder/                    Editor shell (inspector, tree, diagnostics, save/publish/export dialogs)
@@ -224,6 +224,7 @@ See the `cloudflare-rust-headers` skill.
 | --- | --- | --- | --- | --- |
 | 2026-11-24 | 0 | 0 | Phase 0 scaffold: `cargo test`, `cargo check --target wasm32`, `worker-build` and `wrangler dev` all working first time | — |
 | 2026-11-27 | 0 | 0 | #61 Studio Worker scaffold: wasm32 clippy, `worker-build --release`, local D1 migration and `wrangler dev` all worked first time; no toolchain debugging | — |
+| 2026-11-27 | 0.5 | 0.5 | #62 hibernating Durable Object sessions: `#[durable_object]` needs `worker::wasm_bindgen` in scope (minutes); an echoed close code 1005 is rejected by workerd (minutes); local workerd delays the Node client's close event ~10 s when the server closes from an alarm, although the close frame is on the wire within ms (investigated with a raw socket, worked around in the test). No blocker; the WebSocket Hibernation API, DO SQLite and alarms all worked | Under the 15 h ceiling |
 
 ---
 
@@ -281,7 +282,7 @@ This section records the decisions stated by the Studio and Builder release issu
 
 ### Command log instead of CRDT
 
-Each site's Durable Object session keeps a snapshot, a monotonic command log and expiring soft presence, and checkpoints every 50 commands or on save/publish (#62). Stale batches are rebased only for explicitly tested independent field updates. Stale structural commands and incompatible undo are rejected with actionable conflicts. Collaborative undo is a new inverse command, and operation IDs are idempotent. The former `ProjectRoom` CRDT/patch wording is retired. Whether the class keeps that name is open.
+Each site's Durable Object session keeps a snapshot, a monotonic command log and expiring soft presence, and checkpoints every 50 commands or on save/publish (#62). Stale batches are rebased only for explicitly tested independent field updates. Stale structural commands and incompatible undo are rejected with actionable conflicts. Collaborative undo is a new inverse command, and operation IDs are idempotent. The former `ProjectRoom` CRDT/patch wording is retired. The class is `SiteSession` (binding `SITE_SESSION`, one object per `workspace_id/site_id`, SQLite-backed so it stays cardless). The protocol, conflict rules, checkpoint policy, bounds and the authorization recheck bound are in `docs/STUDIO_SESSIONS.md`.
 
 ### Cardless default, opt-in R2
 

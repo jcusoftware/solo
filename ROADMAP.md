@@ -66,7 +66,7 @@ These are the decisions recorded by the Studio and Builder release issues (#54 t
 - #59 time-boxed Workers Free Queue CPU spike. Server compilation is the default only if the supported workload shows repeatable headroom. Otherwise the CLI compile-and-upload path (#68) is the default. Queue wall time is not CPU time. Remote deployment needs approval.
 - #60 cardless GitHub OAuth model: self-hosted OAuth app, one bootstrapped owner, explicit collaborator invitations. Magic links, passkeys and Cloudflare Access are not launch dependencies.
 - #61 optional wasm32 Studio Worker and D1 workspace registry, configured separately from the visitor Worker. D1 checkpoint writes do not happen on each edit.
-- #62 hibernating Durable Object command sessions. Checkpoint every 50 commands or on save/publish.
+- #62 hibernating Durable Object command sessions (`SiteSession`, `docs/STUDIO_SESSIONS.md`). Checkpoint every 50 commands or on save/publish. Sessions stay closed (401) until #65 supplies real authentication.
 - #63 bounded cardless, R2 and local asset stores.
 - #64 asynchronous publish job pipeline against an immutable revision. Compilation never runs inside HTTP handlers.
 
@@ -142,4 +142,4 @@ The Studio and Builder design document is unavailable to this repository. The it
 4. **Studio frontend layout.** The issues fix Preact and Signals for the shell (#77) and `packages/@solo-website-system/ir-types` (#56), but not the exact `apps/` directory names, the npm package list beyond `ir-types`, or the build tool.
 5. **Legacy ID and extension handling details** were settled in #54 and are implemented by #55, not decided here.
 6. **Hostnames, retention periods and revocation delay.** Studio and preview hostnames, preview/export retention, and the maximum delay for revoked sockets to stop receiving updates (#65 requires documenting and testing it) are unspecified.
-7. **Durable Object class names.** The earlier roadmap named `ProjectRoom` and `RateLimiter`. The issues describe per-site command sessions (#62) and do not name classes, so the names are open. `ProjectRoom` is no longer described as CRDT synchronization.
+7. **Durable Object class names.** The earlier roadmap named `ProjectRoom` and `RateLimiter`. The per-site command session class is now `SiteSession` (#62); `ProjectRoom` is retired and was never CRDT synchronization. A `RateLimiter` class, if one is ever needed, is still open.

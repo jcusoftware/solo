@@ -3,12 +3,15 @@
 //! Scope of issue #61: the D1 workspace registry (`migrations/0001_registry.sql`),
 //! tenant-scoped repository SQL ([`repo`]), strict request bounds ([`bounds`])
 //! and `GET|HEAD /api/health`. Everything else answers a JSON 404/405.
-//! Sessions/OAuth (#65), Durable Object edit sessions (#62), blob storage (#63)
-//! and the publish pipeline (#64/#66) are out of scope.
+//! Sessions/OAuth (#65), blob storage (#63) and the publish pipeline (#64/#66)
+//! are out of scope. Per-site Durable Object command sessions (#62) live in
+//! [`session`], reached through `GET /api/sites/{workspace_id}/{site_id}/session`
+//! (WebSocket); [`auth`] keeps every protected route closed until #65.
 //!
 //! Write-frequency invariant: the registry is written only on explicit
 //! save/publish/checkpoint actions, never once per edit. There is deliberately
-//! no edit route; per-edit state belongs to the session layer (#62).
+//! no HTTP edit route; per-edit state belongs to the session layer ([`session`]),
+//! which writes one `site_revisions` row per checkpoint.
 //!
 //! Configuration is separate from the visitor Worker: its own Wrangler config
 //! (`wrangler.studio.jsonc`), its own `STUDIO_DB` binding and database. All
@@ -16,11 +19,13 @@
 //! [`sws_security::headers::SECURITY_HEADERS`] and `Cache-Control: no-store`;
 //! the wasm glue below only adapts `worker` types to it.
 
+pub mod auth;
 pub mod bounds;
 pub mod model;
 pub mod repo;
 pub mod respond;
 pub mod routes;
+pub mod session;
 
 #[cfg(target_arch = "wasm32")]
 pub mod d1;
@@ -35,6 +40,16 @@ mod wasm {
 
     use crate::bounds::{self, BodyLimiter};
     use crate::respond::{self, RequestFacts, Resp};
+    use crate::routes::{self, Route};
+    use crate::session;
+
+    /// Either a response decided by the pure layer (headers already applied) or
+    /// a raw one from the Durable Object (a 101 WebSocket upgrade has immutable
+    /// headers and must reach the client untouched).
+    enum Outcome {
+        Local(Resp),
+        Raw(Response),
+    }
 
     #[event(start)]
     fn start() {
@@ -48,11 +63,14 @@ mod wasm {
             Ok(r) => r,
             Err(e) => {
                 console_error!("unhandled error: {e}");
-                respond::internal_error()
+                Outcome::Local(respond::internal_error())
             }
         };
-        // Idempotent (`set`): the pure layer already carries the same headers.
-        with_security_headers(to_response(resp)?)
+        match resp {
+            Outcome::Raw(r) => Ok(r),
+            // Idempotent (`set`): the pure layer already carries the same headers.
+            Outcome::Local(r) => with_security_headers(to_response(r)?),
+        }
     }
 
     fn to_response(r: Resp) -> Result<Response> {
@@ -67,7 +85,7 @@ mod wasm {
         Ok(resp)
     }
 
-    async fn handle(mut req: Request, env: &Env) -> Result<Resp> {
+    async fn handle(mut req: Request, env: &Env) -> Result<Outcome> {
         let method = req.method().to_string();
         let url = req.url()?;
         let path = url.path().to_string();
@@ -76,6 +94,7 @@ mod wasm {
         let content_length = headers.get("Content-Length")?;
         let transfer_encoding = headers.get("Transfer-Encoding")?;
         let content_type = headers.get("Content-Type")?;
+        let upgrade = headers.get("Upgrade")?;
         let facts = RequestFacts {
             method: &method,
             path: &path,
@@ -86,7 +105,7 @@ mod wasm {
         };
 
         if let Err(r) = respond::precheck(&facts) {
-            return Ok(r);
+            return Ok(Outcome::Local(r));
         }
 
         // Do not trust headers: count the bytes actually streamed, for every
@@ -105,8 +124,25 @@ mod wasm {
             }
         }
 
+        // Site command sessions (#62): a WebSocket upgrade goes to the site's
+        // Durable Object after authentication and membership checks. A plain GET
+        // falls through to the pure layer, which answers 426.
+        if seen == 0
+            && let Route::Session {
+                workspace_id,
+                site_id,
+            } = routes::route(&method, &path)
+            && upgrade
+                .as_deref()
+                .is_some_and(|u| u.eq_ignore_ascii_case("websocket"))
+        {
+            return Ok(Outcome::Raw(
+                session::entry::open(req, env, &workspace_id, &site_id).await?,
+            ));
+        }
+
         let version =
             var(env, "STUDIO_VERSION").unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-        Ok(respond::respond(&facts, seen, &version))
+        Ok(Outcome::Local(respond::respond(&facts, seen, &version)))
     }
 }

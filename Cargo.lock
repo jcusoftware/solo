@@ -765,7 +765,9 @@ version = "0.1.2"
 dependencies = [
  "console_error_panic_hook",
  "futures-util",
+ "serde",
  "serde_json",
+ "sws-ir",
  "sws-security",
  "worker",
 ]

@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "slug": "session-fixture",
+  "name": "Session fixture (fictional)",
+  "locale": "en-US",
+  "base_url": "https://session-fixture.example",
+  "tokens": {
+    "colors": {
+      "accent": "#7A1F2B",
+      "accent-2": "#2F5233",
+      "bg": "#E9E2D2",
+      "footer-bg": "#241207",
+      "footer-text": "#E9E2D2",
+      "muted": "#5C3A1E",
+      "on-accent": "#F6F1E7",
+      "surface": "#F6F1E7",
+      "text": "#241207"
+    },
+    "fonts": {
+      "body": "system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+      "heading": "Georgia, \"Times New Roman\", Times, serif",
+      "mono": null
+    },
+    "spacing": {},
+    "radii": {},
+    "contrast_pairs": [
+      {
+        "foreground": "text",
+        "background": "bg",
+        "min_ratio": 4.5,
+        "usage": "body text"
+      },
+      {
+        "foreground": "text",
+        "background": "surface",
+        "min_ratio": 4.5,
+        "usage": "body text on cards"
+      },
+      {
+        "foreground": "accent",
+        "background": "bg",
+        "min_ratio": 4.5,
+        "usage": "links, prices, headings accent"
+      },
+      {
+        "foreground": "accent",
+        "background": "surface",
+        "min_ratio": 4.5,
+        "usage": "prices and links on cards"
+      },
+      {
+        "foreground": "accent-2",
+        "background": "bg",
+        "min_ratio": 4.5,
+        "usage": "dietary tags, happy-hour label"
+      },
+      {
+        "foreground": "accent-2",
+        "background": "surface",
+        "min_ratio": 4.5,
+        "usage": "dietary tags on cards"
+      },
+      {
+        "foreground": "muted",
+        "background": "bg",
+        "min_ratio": 4.5,
+        "usage": "secondary text"
+      },
+      {
+        "foreground": "muted",
+        "background": "surface",
+        "min_ratio": 4.5,
+        "usage": "item descriptions on cards"
+      },
+      {
+        "foreground": "on-accent",
+        "background": "accent",
+        "min_ratio": 4.5,
+        "usage": "button text"
+      },
+      {
+        "foreground": "footer-text",
+        "background": "footer-bg",
+        "min_ratio": 4.5,
+        "usage": "footer text and links"
+      }
+    ]
+  },
+  "breakpoints": [
+    {
+      "id": "sm",
+      "media_query": "(min-width: 40rem)",
+      "min_width": "40rem"
+    },
+    {
+      "id": "md",
+      "media_query": "(min-width: 48rem)",
+      "min_width": "48rem"
+    },
+    {
+      "id": "print",
+      "media_query": "print",
+      "min_width": null
+    }
+  ],
+  "styles": [
+    {
+      "id": "box-sizing",
+      "selector": "*, *::before, *::after",
+      "breakpoint": null,
+      "pseudo": null,
+      "declarations": {
+        "box-sizing": "border-box"
+      }
+    },
+    {
+      "id": "html",
+      "selector": "html",
+      "breakpoint": null,
+      "pseudo": null,
+      "declarations": {
+        "text-size-adjust": "100%"
+      }
+    },
+    {
+      "id": "body",
+      "selector": "body",
+      "breakpoint": null,
+      "pseudo": null,
+      "declarations": {
+        "background": "var(--bg)",
+        "color": "var(--text)",
+        "font-family": "var(--font-body)",
+        "font-size": "1.0625rem",
+        "line-height": "1.6",
+        "margin": "0"
+      }
+    }
+  ],
+  "components": {},
+  "forms": {},
+  "pages": [
+    {
+      "id": "home",
+      "route": {
+        "kind": "static",
+        "path": "/"
+      },
+      "title": "Hearthstone Lane Cafe (fictional demo)",
+      "description": "Fictional demo page for tests.",
+      "canonical": null,
+      "noindex": false,
+      "is_not_found": false,
+      "json_ld": [],
+      "scripts": [],
+      "body": [
+        {
+          "type": "element",
+          "uid": "home.main",
+          "id": null,
+          "tag": "main",
+          "attrs": {},
+          "classes": [],
+          "style_refs": [],
+          "children": [
+            {
+              "type": "element",
+              "uid": "home.hero",
+              "id": null,
+              "tag": "section",
+              "attrs": {},
+              "classes": [],
+              "style_refs": [],
+              "children": [
+                {
+                  "type": "element",
+                  "uid": "home.title",
+                  "id": null,
+                  "tag": "h1",
+                  "attrs": {},
+                  "classes": [],
+                  "style_refs": [],
+                  "children": [
+                    {
+                      "type": "text",
+                      "uid": "home.title-text",
+                      "value": "Hearthstone Lane Cafe (fictional demo)"
+                    }
+                  ]
+                },
+                {
+                  "type": "element",
+                  "uid": "home.lede",
+                  "id": null,
+                  "tag": "p",
+                  "attrs": {
+                    "data-k": "v"
+                  },
+                  "classes": [],
+                  "style_refs": [],
+                  "children": [
+                    {
+                      "type": "text",
+                      "uid": "home.lede-text",
+                      "value": "A fictional venue used for Studio session tests."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "element",
+              "uid": "home.menu",
+              "id": null,
+              "tag": "section",
+              "attrs": {},
+              "classes": [],
+              "style_refs": [],
+              "children": [
+                {
+                  "type": "element",
+                  "uid": "home.menu-h",
+                  "id": null,
+                  "tag": "h2",
+                  "attrs": {},
+                  "classes": [],
+                  "style_refs": [],
+                  "children": [
+                    {
+                      "type": "text",
+                      "uid": "home.menu-h-text",
+                      "value": "Menu"
+                    }
+                  ]
+                },
+                {
+                  "type": "element",
+                  "uid": "home.menu-p",
+                  "id": null,
+                  "tag": "p",
+                  "attrs": {},
+                  "classes": [],
+                  "style_refs": [],
+                  "children": [
+                    {
+                      "type": "text",
+                      "uid": "home.menu-p-text",
+                      "value": "Soup of the day."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "element",
+              "uid": "home.visit",
+              "id": null,
+              "tag": "section",
+              "attrs": {},
+              "classes": [],
+              "style_refs": [],
+              "children": [
+                {
+                  "type": "element",
+                  "uid": "home.visit-h",
+                  "id": null,
+                  "tag": "h2",
+                  "attrs": {},
+                  "classes": [],
+                  "style_refs": [],
+                  "children": [
+                    {
+                      "type": "text",
+                      "uid": "home.visit-h-text",
+                      "value": "Visit"
+                    }
+                  ]
+                },
+                {
+                  "type": "element",
+                  "uid": "home.visit-p",
+                  "id": null,
+                  "tag": "p",
+                  "attrs": {},
+                  "classes": [],
+                  "style_refs": [],
+                  "children": [
+                    {
+                      "type": "text",
+                      "uid": "home.visit-p-text",
+                      "value": "Hearthstone Lane, 555-0100."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "seo": {
+    "title_template": null,
+    "default_description": null,
+    "robots_allow": [
+      "/"
+    ],
+    "robots_disallow": [],
+    "sitemap_routes": [
+      "/"
+    ]
+  },
+  "scripts": [],
+  "data": {
+    "k1": "v1"
+  },
+  "metadata": {
+    "sws.ir": {
+      "uid_scheme": 1
+    }
+  }
+}

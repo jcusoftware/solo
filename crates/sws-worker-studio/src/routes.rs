@@ -10,12 +10,38 @@ use serde_json::{Value, json};
 pub enum Route {
     Health,
     HealthHead,
+    /// `GET /api/sites/{workspace_id}/{site_id}/session`: WebSocket command
+    /// session (#62). Ids already satisfy the registry id grammar.
+    Session {
+        workspace_id: String,
+        site_id: String,
+    },
     /// Known path, wrong method. Carries the `Allow` header value.
     MethodNotAllowed(&'static str),
     NotFound,
 }
 
+/// `/api/sites/{workspace_id}/{site_id}/session` -> the two ids.
+fn session_ids(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/api/sites/")?;
+    let mut parts = rest.split('/');
+    let (w, s, tail) = (parts.next()?, parts.next()?, parts.next()?);
+    if tail != "session" || parts.next().is_some() {
+        return None;
+    }
+    (crate::session::is_valid_id(w) && crate::session::is_valid_id(s)).then_some((w, s))
+}
+
 pub fn route(method: &str, path: &str) -> Route {
+    if let Some((w, s)) = session_ids(path) {
+        return match method {
+            "GET" => Route::Session {
+                workspace_id: w.to_string(),
+                site_id: s.to_string(),
+            },
+            _ => Route::MethodNotAllowed("GET"),
+        };
+    }
     match (path, method) {
         ("/api/health", "GET") => Route::Health,
         ("/api/health", "HEAD") => Route::HealthHead,
@@ -43,6 +69,38 @@ mod tests {
         assert_eq!(
             route("POST", "/api/health"),
             Route::MethodNotAllowed("GET, HEAD")
+        );
+    }
+
+    #[test]
+    fn session_route_parses_ids_strictly() {
+        assert_eq!(
+            route("GET", "/api/sites/ws-a/site_1/session"),
+            Route::Session {
+                workspace_id: "ws-a".into(),
+                site_id: "site_1".into()
+            }
+        );
+        assert_eq!(
+            route("POST", "/api/sites/ws-a/site_1/session"),
+            Route::MethodNotAllowed("GET")
+        );
+        for p in [
+            "/api/sites/ws-a/site_1",
+            "/api/sites/ws-a/site_1/session/",
+            "/api/sites/ws-a/site_1/session/x",
+            "/api/sites//site_1/session",
+            "/api/sites/WS/site_1/session",
+            "/api/sites/ws.a/site_1/session",
+            "/api/sites/ws-a/si%20te/session",
+            "/api/sites/ws-a/site_1/sessions",
+        ] {
+            assert_eq!(route("GET", p), Route::NotFound, "{p}");
+        }
+        let long = "a".repeat(65);
+        assert_eq!(
+            route("GET", &format!("/api/sites/{long}/s/session")),
+            Route::NotFound
         );
     }
 

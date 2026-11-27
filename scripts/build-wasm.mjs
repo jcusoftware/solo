@@ -9,8 +9,12 @@
 // and the Wasm target features of the artifacts.
 //
 // Usage: node scripts/build-wasm.mjs --profile dev|release [--force] [--crate crates/sws-worker-site]
+//                                    [--features a,b --out-dir build-name]
 // Stamp: target/wasm-build/<crate-name>-stamp.json, one per Worker crate so switching
-// Workers does not force rebuilds (gitignored with target/).
+// Workers does not force rebuilds (gitignored with target/). A build with Cargo
+// features writes to its own `--out-dir` (required with --features, so a feature
+// build can never overwrite the default `build/` that production uses) and keeps its
+// own stamp `<crate-name>-<out-dir>-stamp.json`; the features are part of the hash.
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -48,11 +52,12 @@ export function crateClosure(root, crateDir) {
   return [...seen].sort();
 }
 
-export function inputHash(root, crateDir) {
+export function inputHash(root, crateDir, features = '') {
   const files = [];
   for (const f of ROOT_INPUTS) if (existsSync(join(root, f))) files.push(join(root, f));
   for (const dir of crateClosure(root, crateDir)) walk(dir, files);
   const h = createHash('sha256');
+  if (features) h.update(`features=${features}\0`);
   for (const f of files) {
     h.update(relative(root, f)).update('\0').update(readFileSync(f)).update('\0');
   }
@@ -67,8 +72,12 @@ function main(argv) {
   let profile = null;
   let force = false;
   let crateDir = 'crates/sws-worker-site';
+  let features = '';
+  let outDir = 'build';
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--profile') profile = argv[++i];
+    else if (argv[i] === '--features') features = argv[++i] ?? '';
+    else if (argv[i] === '--out-dir') outDir = argv[++i] ?? '';
     else if (argv[i] === '--force') force = true;
     else if (argv[i] === '--crate') crateDir = argv[++i];
     else {
@@ -77,24 +86,37 @@ function main(argv) {
     }
   }
   if (!['dev', 'release'].includes(profile)) {
-    console.error('usage: build-wasm.mjs --profile dev|release [--force] [--crate dir]');
+    console.error('usage: build-wasm.mjs --profile dev|release [--force] [--crate dir] [--features a,b --out-dir name]');
+    return 2;
+  }
+  if (!/^[A-Za-z0-9_,-]*$/.test(features) || !/^[A-Za-z0-9_-]+$/.test(outDir)) {
+    console.error('--features and --out-dir accept only [A-Za-z0-9_,-]');
+    return 2;
+  }
+  if (features && outDir === 'build') {
+    console.error('--features requires a separate --out-dir (never overwrite the default build/)');
     return 2;
   }
 
   const crateAbs = resolve(ROOT, crateDir);
-  const outputs = [join(crateAbs, 'build', 'index.js'), join(crateAbs, 'build', 'index_bg.wasm')];
-  const stampPath = join(ROOT, 'target', 'wasm-build', `${basename(crateAbs)}-stamp.json`);
-  const hash = inputHash(ROOT, crateDir);
+  const outputs = [join(crateAbs, outDir, 'index.js'), join(crateAbs, outDir, 'index_bg.wasm')];
+  const stampName = outDir === 'build' ? `${basename(crateAbs)}-stamp.json` : `${basename(crateAbs)}-${outDir}-stamp.json`;
+  const stampPath = join(ROOT, 'target', 'wasm-build', stampName);
+  const hash = inputHash(ROOT, crateDir, features);
 
   if (!force && existsSync(stampPath) && outputs.every(existsSync)) {
     const stamp = JSON.parse(readFileSync(stampPath, 'utf8'));
-    if (stamp.profile === profile && stamp.hash === hash && stamp.crate === crateDir) {
+    if (stamp.profile === profile && stamp.hash === hash && stamp.crate === crateDir && (stamp.features ?? '') === features) {
       console.log(`wasm ${profile} build is up to date (Rust inputs unchanged, ${size(outputs[1])}); skipping Cargo`);
       return 0;
     }
   }
 
-  const build = spawnSync('worker-build', [profile === 'release' ? '--release' : '--dev'], {
+  // worker-build [OPTIONS] [PATH] [EXTRA_OPTIONS]...: extras go to `cargo build`.
+  const args = [profile === 'release' ? '--release' : '--dev'];
+  if (outDir !== 'build') args.push('--out-dir', outDir);
+  if (features) args.push('.', '--features', features);
+  const build = spawnSync('worker-build', args, {
     cwd: crateAbs,
     stdio: 'inherit',
   });
@@ -124,7 +146,7 @@ function main(argv) {
       return 1;
     }
     mkdirSync(dirname(stampPath), { recursive: true });
-    writeFileSync(stampPath, JSON.stringify({ profile, hash, crate: crateDir }, null, 2));
+    writeFileSync(stampPath, JSON.stringify({ profile, hash, crate: crateDir, features }, null, 2));
     console.log(`wasm ${profile} build OK: ${relative(ROOT, outputs[1])} ${size(outputs[1])}`);
     return 0;
   });

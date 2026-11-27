@@ -173,6 +173,8 @@ jobs:
           echo "$out" | grep -q 'skipping Cargo'
       - name: Build Studio Worker (size-optimized release; verifies Binaryen pin and Wasm target features)
         run: npm run studio:build
+      - name: Release Studio Wasm must not carry the dev-auth header
+        run: npm run check:studio:release -- --require-artifact
       - name: Local D1 migrations
         run: npx wrangler d1 migrations apply DB --local
       - name: Start wrangler dev
@@ -205,6 +207,9 @@ jobs:
           # Stop only the Studio dev server (wrangler tears down its workerd children).
           pkill -f 'wrangler dev -c wrangler.studio.jsonc' || true
           exit $status
+      - name: Studio session integration tests (Durable Object, WebSockets, hibernation; own port, own local state)
+        # Builds a SEPARATE dev-auth Worker (build-dev-auth/), never the release build above.
+        run: npm run test:studio:sessions
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Accessibility + header gates (axe, WCAG 2.2 AA)

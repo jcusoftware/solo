@@ -71,6 +71,12 @@ pub fn reject(r: Reject) -> Resp {
     Resp::new(r.status(), Some(error_body(r.code())), extra)
 }
 
+/// JSON error with the standard header set, for glue that decides a status
+/// itself (the session routes).
+pub fn json_error(status: u16, code: &str, extra: &[(&str, &str)]) -> Resp {
+    Resp::new(status, Some(error_body(code)), extra)
+}
+
 pub fn internal_error() -> Resp {
     Resp::new(500, Some(error_body("internal_error")), &[])
 }
@@ -106,6 +112,13 @@ pub fn respond(f: &RequestFacts, body_len: usize, version: &str) -> Resp {
     match route(f.method, f.path) {
         Route::Health => Resp::new(200, Some(health_body(version)), &[]),
         Route::HealthHead => Resp::new(200, None, &[]),
+        // The WebSocket upgrade is intercepted by the wasm glue before this layer
+        // (auth, membership, then the Durable Object); a plain GET lands here.
+        Route::Session { .. } => Resp::new(
+            426,
+            Some(error_body("upgrade_required")),
+            &[("Upgrade", "websocket")],
+        ),
         Route::MethodNotAllowed(allow) => Resp::new(
             405,
             Some(error_body("method_not_allowed")),
@@ -172,6 +185,35 @@ mod tests {
         assert_eq!(h.status, 200);
         assert_eq!(h.body, None);
         assert_headers(&h, None);
+    }
+
+    #[test]
+    fn session_route_without_upgrade_is_426_with_the_full_header_set() {
+        let r = respond(&facts("GET", "/api/sites/ws-a/site_1/session"), 0, "v");
+        assert_eq!((r.status, error_code(&r)), (426, "upgrade_required"));
+        assert_eq!(r.header("Upgrade"), Some("websocket"));
+        for (k, v) in SECURITY_HEADERS {
+            assert_eq!(r.header(k), Some(*v), "{k}");
+        }
+        assert_eq!(r.header("Cache-Control"), Some("no-store"));
+        // Other methods on the session path are 405 with Allow: GET.
+        let mut p = facts("POST", "/api/sites/ws-a/site_1/session");
+        p.content_length = Some("0");
+        let r = respond(&p, 0, "v");
+        assert_eq!(r.status, 405);
+        assert_eq!(r.header("Allow"), Some("GET"));
+        // A body on the upgrade GET is still a 400.
+        assert_eq!(
+            respond(&facts("GET", "/api/sites/ws-a/site_1/session"), 3, "v").status,
+            400
+        );
+    }
+
+    #[test]
+    fn json_error_carries_the_standard_headers() {
+        let r = json_error(401, "unauthenticated", &[]);
+        assert_eq!((r.status, error_code(&r)), (401, "unauthenticated"));
+        assert_headers(&r, None);
     }
 
     #[test]
