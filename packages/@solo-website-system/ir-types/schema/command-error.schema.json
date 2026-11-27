@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "ErrorCode": {
+      "description": "Stable, machine-readable error codes (snake_case on the wire).",
+      "enum": [
+        "invalid_json",
+        "unsupported_version",
+        "empty_batch",
+        "batch_too_large",
+        "not_upgraded",
+        "unsupported_uid_scheme",
+        "missing_uid",
+        "invalid_uid",
+        "duplicate_uid",
+        "duplicate_id",
+        "invalid_document",
+        "not_found",
+        "already_exists",
+        "invalid_value",
+        "invalid_index",
+        "invalid_container",
+        "move_into_self",
+        "wrong_node_kind",
+        "lossy_document",
+        "history_corrupt"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://solo-website-system.example/schemas/command-error.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Typed editor error. `command_index` names the failing command of a batch.",
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/ErrorCode"
+    },
+    "command_index": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "paths": {
+      "description": "Addresses (IDs or document paths) the error refers to.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "title": "CommandError",
+  "type": "object"
+}

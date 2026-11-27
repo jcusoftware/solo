@@ -19,6 +19,7 @@ use std::io;
 use std::path::Path;
 
 use serde_json::Value;
+use sws_ir::edit::{CommandBatch, CommandError, Transaction, UpgradeReport};
 use sws_ir::jsonschema::root_schema;
 use sws_ir::jsonschema::schemars::JsonSchema;
 use sws_ir::{IrPatch, SiteDocument};
@@ -36,6 +37,21 @@ pub const SITE_DOCUMENT_ID: &str =
 
 /// Canonical `$id` of the `IrPatch` schema.
 pub const IR_PATCH_ID: &str = "https://solo-website-system.example/schemas/ir-patch.v1.json";
+
+/// Canonical `$id` of the editor `CommandBatch` schema.
+pub const COMMAND_BATCH_ID: &str =
+    "https://solo-website-system.example/schemas/command-batch.v1.json";
+
+/// Canonical `$id` of the editor `Transaction` schema.
+pub const TRANSACTION_ID: &str = "https://solo-website-system.example/schemas/transaction.v1.json";
+
+/// Canonical `$id` of the editor `UpgradeReport` schema.
+pub const UPGRADE_REPORT_ID: &str =
+    "https://solo-website-system.example/schemas/upgrade-report.v1.json";
+
+/// Canonical `$id` of the editor `CommandError` schema.
+pub const COMMAND_ERROR_ID: &str =
+    "https://solo-website-system.example/schemas/command-error.v1.json";
 
 /// One generated file, relative to the repository root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +72,10 @@ pub fn core_roots() -> Vec<Root> {
     vec![
         root::<SiteDocument>("site-document", SITE_DOCUMENT_ID),
         root::<IrPatch>("ir-patch", IR_PATCH_ID),
+        root::<CommandBatch>("command-batch", COMMAND_BATCH_ID),
+        root::<Transaction>("transaction", TRANSACTION_ID),
+        root::<UpgradeReport>("upgrade-report", UPGRADE_REPORT_ID),
+        root::<CommandError>("command-error", COMMAND_ERROR_ID),
     ]
 }
 

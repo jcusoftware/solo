@@ -933,3 +933,29 @@ fn lowered_demo_ir_validates_against_the_generated_site_document_schema() {
     let errors = validate(&schema, &value);
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn upgraded_demo_ir_with_stable_ids_validates_against_the_generated_schemas() {
+    let ir = HospitalityPlugin
+        .transform_input(&demo())
+        .expect("demo lowers to IR");
+    let (upgraded, report) = sws_ir::edit::assign_stable_ids(&ir).expect("demo upgrades");
+    let root = |stem: &str| {
+        sws_codegen::core_roots()
+            .into_iter()
+            .find(|r| r.file_stem == stem)
+            .unwrap_or_else(|| panic!("{stem} root"))
+            .schema
+    };
+    let value = serde_json::to_value(&upgraded).expect("IR serializes");
+    assert_eq!(value["metadata"]["sws.ir"], json!({ "uid_scheme": 1 }));
+    let errors = validate(&root("site-document"), &value);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(
+        !report.assigned.is_empty(),
+        "the demo must have received uids"
+    );
+    let report = serde_json::to_value(&report).expect("report serializes");
+    let errors = validate(&root("upgrade-report"), &report);
+    assert!(errors.is_empty(), "{errors:?}");
+}

@@ -25,6 +25,7 @@ fn schema_of(stem: &str) -> Value {
 
 fn el(tag: &str, children: Vec<Node>) -> Node {
     Node::Element {
+        uid: None,
         id: Some(format!("{tag}-1")),
         tag: tag.to_string(),
         attrs: BTreeMap::from([("lang".to_string(), "en".to_string())]),
@@ -75,8 +76,10 @@ fn full_document() -> SiteDocument {
             )]),
             slots: vec!["body".to_string()],
             template: vec![Node::SlotRef {
+                uid: None,
                 name: "body".to_string(),
                 fallback: vec![Node::Text {
+                    uid: None,
                     value: "empty".to_string(),
                 }],
             }],
@@ -112,20 +115,24 @@ fn full_document() -> SiteDocument {
         el(
             "main",
             vec![Node::Text {
+                uid: None,
                 value: "hi".to_string(),
             }],
         ),
         Node::ComponentInstance {
+            uid: None,
             component: "Card".to_string(),
             props: BTreeMap::from([("title".to_string(), json!({"a": [1, null]}))]),
             slots: BTreeMap::from([("body".to_string(), vec![el("p", vec![])])]),
         },
         Node::Conditional {
+            uid: None,
             expr: "flag".to_string(),
             then_nodes: vec![el("b", vec![])],
             else_nodes: vec![],
         },
         Node::Loop {
+            uid: None,
             item_var: "item".to_string(),
             collection_expr: "items".to_string(),
             body: vec![el("li", vec![])],
@@ -221,8 +228,10 @@ fn site_document_schema_describes_serde_reality() {
         s["$defs"]["RoutePattern"]["oneOf"][1]["properties"]["kind"]["const"],
         "dynamic"
     );
-    // `#[serde(default)]` fields are not required; real requireds are.
-    assert_eq!(s["required"], json!(["slug", "name", "base_url"]));
+    // `#[serde(default)]` fields are not required, except `pages`, which the
+    // original hand-written schema required (with `minItems: 1`) and the
+    // generated schema keeps; real requireds are.
+    assert_eq!(s["required"], json!(["slug", "name", "base_url", "pages"]));
     // Options are nullable, maps are additionalProperties, Value is open.
     assert_eq!(
         s["$defs"]["Page"]["properties"]["description"]["type"],
@@ -245,9 +254,12 @@ fn serialized_ir_documents_validate_against_the_generated_schema() {
     let schema = schema_of("site-document");
     let value = site_doc_value();
     assert_eq!(validate(&schema, &value), Vec::<String>::new());
-    // The default (minimal) document with only required keys also validates,
+    // A minimal document with only required keys also validates,
     // and so does a legacy-shaped document that omits every defaulted key.
-    let minimal = json!({"slug": "a", "name": "A", "base_url": "https://example.test"});
+    let minimal = json!({
+        "slug": "a", "name": "A", "base_url": "https://example.test",
+        "pages": [{"id": "index", "route": {"kind": "static", "path": "/"}, "title": "Home"}]
+    });
     assert_eq!(validate(&schema, &minimal), Vec::<String>::new());
     let parsed: SiteDocument = serde_json::from_value(minimal).expect("minimal parses");
     let round = serde_json::to_value(parsed).expect("serializes");
@@ -374,7 +386,10 @@ fn every_ir_patch_op_round_trips_through_the_schema() {
             page_id: "home".into(),
             parent_id: None,
             index: Some(0),
-            node: Node::Text { value: "x".into() },
+            node: Node::Text {
+                uid: None,
+                value: "x".into(),
+            },
         },
         IrPatch::RemoveNode {
             page_id: "home".into(),

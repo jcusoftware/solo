@@ -1,0 +1,1037 @@
+{
+  "$defs": {
+    "Command": {
+      "description": "One editor command. Nodes are addressed by `uid`, never by array index.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "locale": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "set_site_meta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "hex": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "op": {
+              "const": "set_color_token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "key",
+            "hex"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "op": {
+              "const": "remove_color_token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "set_font_token",
+              "type": "string"
+            },
+            "slot": {
+              "type": "string"
+            },
+            "stack": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "slot",
+            "stack"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Unset the optional `heading` or `mono` font slot.",
+          "properties": {
+            "op": {
+              "const": "clear_font_token",
+              "type": "string"
+            },
+            "slot": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "slot"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "op": {
+              "const": "set_data_value",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "op",
+            "key",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "op": {
+              "const": "remove_data_value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Replace the rule with the same id in place, else append.",
+          "properties": {
+            "op": {
+              "const": "upsert_style_rule",
+              "type": "string"
+            },
+            "rule": {
+              "$ref": "#/$defs/IrStyleRule"
+            }
+          },
+          "required": [
+            "op",
+            "rule"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "index": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "insert_style_rule",
+              "type": "string"
+            },
+            "rule": {
+              "$ref": "#/$defs/IrStyleRule"
+            }
+          },
+          "required": [
+            "op",
+            "rule"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "op": {
+              "const": "remove_style_rule",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "index": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "insert_page",
+              "type": "string"
+            },
+            "page": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "op",
+            "page"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Replace the page with the same id in place, else append.",
+          "properties": {
+            "op": {
+              "const": "upsert_page",
+              "type": "string"
+            },
+            "page": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "op",
+            "page"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "op": {
+              "const": "remove_page",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Move a page so it ends at `index` in the page order.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "index": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "move_page",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "index"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "container": {
+              "$ref": "#/$defs/ContainerRef"
+            },
+            "index": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "node": {
+              "$ref": "#/$defs/Node",
+              "description": "Whole subtree; every node must carry a unique `uid`."
+            },
+            "op": {
+              "const": "insert_node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "container",
+            "node"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "remove_node",
+              "type": "string"
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "uid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Move a node (with its subtree) so it ends at `index` of `container`\n(`index` counts positions after the node is detached; `None` appends).",
+          "properties": {
+            "container": {
+              "$ref": "#/$defs/ContainerRef"
+            },
+            "index": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "move_node",
+              "type": "string"
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "uid",
+            "container"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "attr": {
+              "type": "string"
+            },
+            "op": {
+              "const": "set_attr",
+              "type": "string"
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "uid",
+            "attr"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Set the value of a `text` node (non-destructive: siblings are untouched).",
+          "properties": {
+            "op": {
+              "const": "set_text",
+              "type": "string"
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "uid",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "set_tag",
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "uid",
+            "tag"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "classes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "op": {
+              "const": "set_classes",
+              "type": "string"
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "uid",
+            "classes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "set_style_refs",
+              "type": "string"
+            },
+            "style_refs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "uid",
+            "style_refs"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ContainerRef": {
+      "description": "Address of an ordered node list that can receive or lose nodes.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "`pages[id].body`.",
+          "properties": {
+            "kind": {
+              "const": "page_body",
+              "type": "string"
+            },
+            "page_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "page_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`components[name].template`.",
+          "properties": {
+            "kind": {
+              "const": "component_template",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A child list of the node with this `uid`. `slot` is one of `children`\n(element, default), `fallback` (slot_ref, default), `then_nodes`,\n`else_nodes` (conditional), `body` (loop, default) or `slots.<name>`\n(component_instance).",
+          "properties": {
+            "kind": {
+              "const": "node",
+              "type": "string"
+            },
+            "slot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "uid": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "uid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "IrStyleRule": {
+      "additionalProperties": false,
+      "description": "Deterministic CSS rule emitted by the IR compiler.",
+      "properties": {
+        "breakpoint": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declarations": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pseudo": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "selector"
+      ],
+      "type": "object"
+    },
+    "JsonLdBlock": {
+      "additionalProperties": false,
+      "description": "Structured JSON-LD script block attached to a [`Page`].",
+      "properties": {
+        "data": true,
+        "id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "Node": {
+      "description": "Renderable DOM/template node inside a [`Page`] or [`ComponentDef`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "attrs": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "children": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "classes": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "style_refs": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tag": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "element",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "tag"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fallback": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_ref",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "component": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "props": {
+              "additionalProperties": true,
+              "default": {},
+              "type": "object"
+            },
+            "slots": {
+              "additionalProperties": {
+                "items": {
+                  "$ref": "#/$defs/Node"
+                },
+                "type": "array"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "type": {
+              "const": "component_instance",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "component"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "else_nodes": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "expr": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "then_nodes": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "conditional",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "expr"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "collection_expr": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "item_var": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "loop",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "item_var",
+            "collection_expr"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Page": {
+      "additionalProperties": false,
+      "description": "Individual static or parameterized page in a [`SiteDocument`].",
+      "properties": {
+        "body": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "canonical": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "is_not_found": {
+          "default": false,
+          "type": "boolean"
+        },
+        "json_ld": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/JsonLdBlock"
+          },
+          "type": "array"
+        },
+        "noindex": {
+          "default": false,
+          "type": "boolean"
+        },
+        "route": {
+          "$ref": "#/$defs/RoutePattern"
+        },
+        "scripts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptRef"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route",
+        "title"
+      ],
+      "type": "object"
+    },
+    "RoutePattern": {
+      "description": "Route pattern for a [`Page`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "static",
+              "type": "string"
+            },
+            "path": {
+              "pattern": "^/",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "dynamic",
+              "type": "string"
+            },
+            "params": {
+              "default": [],
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "pattern": {
+              "pattern": "^/",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pattern",
+            "params"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ScriptRef": {
+      "additionalProperties": false,
+      "description": "External or bundled script reference.",
+      "properties": {
+        "async_load": {
+          "default": false,
+          "type": "boolean"
+        },
+        "defer": {
+          "default": false,
+          "type": "boolean"
+        },
+        "src": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "src"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://solo-website-system.example/schemas/command-batch.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Versioned, ordered batch of commands applied atomically.",
+  "properties": {
+    "coalesce_key": {
+      "description": "Consecutive batches sharing a non-empty key merge into one undo step.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commands": {
+      "items": {
+        "$ref": "#/$defs/Command"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "type": "array"
+    },
+    "label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "const": 1,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "commands"
+  ],
+  "title": "CommandBatch",
+  "type": "object"
+}

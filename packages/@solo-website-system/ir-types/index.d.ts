@@ -3,12 +3,164 @@
 // Declarations only; this package ships no JavaScript.
 
 /**
+ * One ID assigned (or re-assigned) by the upgrade.
+ */
+export interface AssignedId {
+  path: string;
+  /**
+   * `new`, `duplicate_uid` or `invalid_uid`.
+   */
+  reason: string;
+  uid: string;
+}
+
+/**
  * Responsive media-query breakpoint definition.
  */
 export interface Breakpoint {
   id: string;
   media_query: string;
   min_width?: string | null;
+}
+
+/**
+ * One editor command. Nodes are addressed by `uid`, never by array index.
+ */
+export type Command =
+  | {
+    base_url?: string | null;
+    locale?: string | null;
+    name?: string | null;
+    op: "set_site_meta";
+  }
+  | {
+    hex: string;
+    key: string;
+    op: "set_color_token";
+  }
+  | {
+    key: string;
+    op: "remove_color_token";
+  }
+  | {
+    op: "set_font_token";
+    slot: string;
+    stack: string;
+  }
+  | {
+    op: "clear_font_token";
+    slot: string;
+  }
+  | {
+    key: string;
+    op: "set_data_value";
+    value: unknown;
+  }
+  | {
+    key: string;
+    op: "remove_data_value";
+  }
+  | {
+    op: "upsert_style_rule";
+    rule: IrStyleRule;
+  }
+  | {
+    index?: number | null;
+    op: "insert_style_rule";
+    rule: IrStyleRule;
+  }
+  | {
+    id: string;
+    op: "remove_style_rule";
+  }
+  | {
+    index?: number | null;
+    op: "insert_page";
+    page: Page;
+  }
+  | {
+    op: "upsert_page";
+    page: Page;
+  }
+  | {
+    id: string;
+    op: "remove_page";
+  }
+  | {
+    id: string;
+    index: number;
+    op: "move_page";
+  }
+  | {
+    container: ContainerRef;
+    index?: number | null;
+    /**
+     * Whole subtree; every node must carry a unique `uid`.
+     */
+    node: Node;
+    op: "insert_node";
+  }
+  | {
+    op: "remove_node";
+    uid: string;
+  }
+  | {
+    container: ContainerRef;
+    index?: number | null;
+    op: "move_node";
+    uid: string;
+  }
+  | {
+    attr: string;
+    op: "set_attr";
+    uid: string;
+    value?: string | null;
+  }
+  | {
+    op: "set_text";
+    uid: string;
+    value: string;
+  }
+  | {
+    op: "set_tag";
+    tag: string;
+    uid: string;
+  }
+  | {
+    classes: string[];
+    op: "set_classes";
+    uid: string;
+  }
+  | {
+    op: "set_style_refs";
+    style_refs: string[];
+    uid: string;
+  };
+
+/**
+ * Versioned, ordered batch of commands applied atomically.
+ */
+export interface CommandBatch {
+  /**
+   * Consecutive batches sharing a non-empty key merge into one undo step.
+   */
+  coalesce_key?: string | null;
+  commands: Command[];
+  label?: string | null;
+  version: 1;
+}
+
+/**
+ * Typed editor error. `command_index` names the failing command of a batch.
+ */
+export interface CommandError {
+  code: ErrorCode;
+  command_index?: number | null;
+  message: string;
+  /**
+   * Addresses (IDs or document paths) the error refers to.
+   */
+  paths?: string[];
 }
 
 /**
@@ -20,6 +172,24 @@ export interface ComponentDef {
   slots?: string[];
   template?: Node[];
 }
+
+/**
+ * Address of an ordered node list that can receive or lose nodes.
+ */
+export type ContainerRef =
+  | {
+    kind: "page_body";
+    page_id: string;
+  }
+  | {
+    kind: "component_template";
+    name: string;
+  }
+  | {
+    kind: "node";
+    slot?: string | null;
+    uid: string;
+  };
 
 /**
  * Declared foreground/background color token pair with minimum WCAG contrast ratio.
@@ -41,6 +211,11 @@ export interface DesignTokens {
   radii?: Record<string, string>;
   spacing?: Record<string, string>;
 }
+
+/**
+ * Stable, machine-readable error codes (snake_case on the wire).
+ */
+export type ErrorCode = "invalid_json" | "unsupported_version" | "empty_batch" | "batch_too_large" | "not_upgraded" | "unsupported_uid_scheme" | "missing_uid" | "invalid_uid" | "duplicate_uid" | "duplicate_id" | "invalid_document" | "not_found" | "already_exists" | "invalid_value" | "invalid_index" | "invalid_container" | "move_into_self" | "wrong_node_kind" | "lossy_document" | "history_corrupt";
 
 /**
  * Font stack tokens for body, heading, and monospace text.
@@ -187,33 +362,57 @@ export type Node =
     style_refs?: string[];
     tag: string;
     type: "element";
+    /**
+     * Stable editor identity; never rendered, unique across the document.
+     */
+    uid?: string | null;
   }
   | {
     type: "text";
+    /**
+     * Stable editor identity; never rendered, unique across the document.
+     */
+    uid?: string | null;
     value: string;
   }
   | {
     fallback?: Node[];
     name: string;
     type: "slot_ref";
+    /**
+     * Stable editor identity; never rendered, unique across the document.
+     */
+    uid?: string | null;
   }
   | {
     component: string;
     props?: Record<string, unknown>;
     slots?: Record<string, Node[]>;
     type: "component_instance";
+    /**
+     * Stable editor identity; never rendered, unique across the document.
+     */
+    uid?: string | null;
   }
   | {
     else_nodes?: Node[];
     expr: string;
     then_nodes?: Node[];
     type: "conditional";
+    /**
+     * Stable editor identity; never rendered, unique across the document.
+     */
+    uid?: string | null;
   }
   | {
     body?: Node[];
     collection_expr: string;
     item_var: string;
     type: "loop";
+    /**
+     * Stable editor identity; never rendered, unique across the document.
+     */
+    uid?: string | null;
   };
 
 /**
@@ -257,7 +456,7 @@ export type RoutePattern =
   }
   | {
     kind: "dynamic";
-    params?: string[];
+    params: string[];
     pattern: string;
   };
 
@@ -293,11 +492,40 @@ export interface SiteDocument {
   locale?: string;
   metadata?: Record<string, unknown>;
   name: string;
-  pages?: Page[];
+  pages: Page[];
   schema_version?: number;
   scripts?: ScriptRef[];
   seo?: SeoMeta;
   slug: string;
   styles?: IrStyleRule[];
   tokens?: DesignTokens;
+}
+
+/**
+ * Result of applying one batch: the replayable forward commands, the exact
+ * inverse (in application order) and the conflict-addressable touched fields.
+ */
+export interface Transaction {
+  coalesce_key?: string | null;
+  forward: Command[];
+  inverse: Command[];
+  label?: string | null;
+  /**
+   * Sorted, de-duplicated touched-field paths (see `docs/EDITOR_COMMANDS.md`).
+   */
+  touched: string[];
+  version: 1;
+}
+
+/**
+ * Reviewable result of [`assign_stable_ids`].
+ */
+export interface UpgradeReport {
+  assigned: AssignedId[];
+  /**
+   * Nodes that already carried a valid unique `uid` and were left alone.
+   */
+  kept: number;
+  marker_written: boolean;
+  uid_scheme: number;
 }

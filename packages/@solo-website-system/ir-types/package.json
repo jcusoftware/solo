@@ -14,7 +14,11 @@
       "types": "./index.d.ts"
     },
     "./schema/site-document.schema.json": "./schema/site-document.schema.json",
-    "./schema/ir-patch.schema.json": "./schema/ir-patch.schema.json"
+    "./schema/ir-patch.schema.json": "./schema/ir-patch.schema.json",
+    "./schema/command-batch.schema.json": "./schema/command-batch.schema.json",
+    "./schema/transaction.schema.json": "./schema/transaction.schema.json",
+    "./schema/upgrade-report.schema.json": "./schema/upgrade-report.schema.json",
+    "./schema/command-error.schema.json": "./schema/command-error.schema.json"
   },
   "files": [
     "index.d.ts",

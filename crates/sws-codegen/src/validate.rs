@@ -86,6 +86,8 @@ const KNOWN: &[&str] = &[
     "pattern",
     "minimum",
     "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
     "format",
     "oneOf",
     "anyOf",
@@ -232,6 +234,16 @@ fn check(root: &Value, schema: &Value, inst: &Value, at: &str, errs: &mut Vec<St
             && n > max
         {
             errs.push(format!("{here}: {n} > maximum {max}"));
+        }
+        if let Some(min) = map.get("exclusiveMinimum").and_then(Value::as_f64)
+            && n <= min
+        {
+            errs.push(format!("{here}: {n} <= exclusiveMinimum {min}"));
+        }
+        if let Some(max) = map.get("exclusiveMaximum").and_then(Value::as_f64)
+            && n >= max
+        {
+            errs.push(format!("{here}: {n} >= exclusiveMaximum {max}"));
         }
     }
     if let Value::String(s) = inst {

@@ -19,6 +19,7 @@
           "type": "object"
         },
         "id": {
+          "minLength": 1,
           "type": "string"
         },
         "pseudo": {
@@ -29,6 +30,7 @@
           ]
         },
         "selector": {
+          "minLength": 1,
           "type": "string"
         }
       },
@@ -98,11 +100,20 @@
               "type": "array"
             },
             "tag": {
+              "minLength": 1,
               "type": "string"
             },
             "type": {
               "const": "element",
               "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -117,6 +128,14 @@
             "type": {
               "const": "text",
               "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "value": {
               "type": "string"
@@ -139,11 +158,20 @@
               "type": "array"
             },
             "name": {
+              "minLength": 1,
               "type": "string"
             },
             "type": {
               "const": "slot_ref",
               "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -156,6 +184,7 @@
           "additionalProperties": false,
           "properties": {
             "component": {
+              "minLength": 1,
               "type": "string"
             },
             "props": {
@@ -176,6 +205,14 @@
             "type": {
               "const": "component_instance",
               "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -195,6 +232,7 @@
               "type": "array"
             },
             "expr": {
+              "minLength": 1,
               "type": "string"
             },
             "then_nodes": {
@@ -207,6 +245,14 @@
             "type": {
               "const": "conditional",
               "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -226,14 +272,24 @@
               "type": "array"
             },
             "collection_expr": {
+              "minLength": 1,
               "type": "string"
             },
             "item_var": {
+              "minLength": 1,
               "type": "string"
             },
             "type": {
               "const": "loop",
               "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -271,6 +327,7 @@
           ]
         },
         "id": {
+          "minLength": 1,
           "type": "string"
         },
         "is_not_found": {
@@ -320,6 +377,7 @@
               "type": "string"
             },
             "path": {
+              "pattern": "^/",
               "type": "string"
             }
           },
@@ -339,17 +397,21 @@
             "params": {
               "default": [],
               "items": {
+                "minLength": 1,
                 "type": "string"
               },
+              "minItems": 1,
               "type": "array"
             },
             "pattern": {
+              "pattern": "^/",
               "type": "string"
             }
           },
           "required": [
             "kind",
-            "pattern"
+            "pattern",
+            "params"
           ],
           "type": "object"
         }
@@ -368,6 +430,7 @@
           "type": "boolean"
         },
         "src": {
+          "minLength": 1,
           "type": "string"
         }
       },

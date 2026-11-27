@@ -348,7 +348,9 @@ pub fn next_id(doc: &SiteDocument, prefix: &str) -> String {
 
 /// One ID assigned (or re-assigned) by the upgrade.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct AssignedId {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
     pub uid: String,
     pub path: String,
     /// `new`, `duplicate_uid` or `invalid_uid`.
@@ -357,6 +359,7 @@ pub struct AssignedId {
 
 /// Reviewable result of [`assign_stable_ids`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct UpgradeReport {
     pub uid_scheme: u64,
     pub assigned: Vec<AssignedId>,
