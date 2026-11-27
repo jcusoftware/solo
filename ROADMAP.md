@@ -188,64 +188,64 @@ Visitor traffic must keep working when Studio is unavailable. The Studio Worker 
 
 ## `v0.6.0` — Growth
 
-**Goal:** Capture and act on visitor interest without breaking the cookie-free default. Issues are not yet filed for these milestones.
+**Goal:** Capture and act on visitor interest without breaking the cookie-free default.
 
-- `v0.6.0-alpha.1` — Inbox, Contacts & Webhooks. **Exit:** submissions are tenant-scoped, exportable and redacted in logs; webhooks (using the #65 scoped tokens) are signed and retried safely.
-- `v0.6.0-beta.1` — Analytics & Consent. **Exit:** the default site sets no cookies and ships no third-party scripts.
-- `v0.6.0` — Campaigns & Engagement. **Exit:** a campaign sends through a bring-your-own provider and never re-subscribes an unsubscribed contact.
+- `v0.6.0-alpha.1` — Inbox, Contacts & Webhooks (#117–#119). **Exit:** submissions are tenant-scoped, exportable and redacted in logs; webhooks (using the #65 scoped tokens) are signed and retried safely.
+- `v0.6.0-beta.1` — Analytics & Consent (#120–#123). **Exit:** the default site sets no cookies and ships no third-party scripts.
+- `v0.6.0` — Campaigns & Engagement (#124–#127). **Exit:** a campaign sends through a bring-your-own provider and never re-subscribes an unsubscribed contact.
 
 ---
 
 ## `v0.7.0` — Commerce
 
-**Goal:** Full commerce on a shared visitor identity layer (OAuth-only by default, magic-link email opt-in with a bring-your-own provider) that v0.9.0 Members reuses. Issues are not yet filed.
+**Goal:** Full commerce on a shared visitor identity layer (OAuth-only by default, magic-link email opt-in with a bring-your-own provider) that v0.9.0 Members reuses.
 
-- `v0.7.0-alpha.1` — Visitor Identity & Catalog. **Exit:** visitor sign-in works on a cardless account and catalog pages pass the a11y gates.
-- `v0.7.0-beta.1` — Cart, Payments & Fulfilment. **Exit:** a test-mode order completes end to end with webhook-verified state and atomic inventory decrement.
-- `v0.7.0` — Orders, Subscriptions & Growth. **Exit:** refunds and subscriptions are verified in Stripe test mode and the full store passes the a11y and header gates.
+- `v0.7.0-alpha.1` — Visitor Identity & Catalog (#128–#131). **Exit:** visitor sign-in works on a cardless account and catalog pages pass the a11y gates.
+- `v0.7.0-beta.1` — Cart, Payments & Fulfilment (#132–#138). **Exit:** a test-mode order completes end to end with webhook-verified state and atomic inventory decrement.
+- `v0.7.0` — Orders, Subscriptions & Growth (#139–#145). **Exit:** refunds and subscriptions are verified in Stripe test mode and the full store passes the a11y and header gates.
 
 ---
 
 ## `v0.8.0` — Services & bookings
 
-**Goal:** Promote hospitality scheduling to a generic core bookings feature. Issues are not yet filed.
+**Goal:** Promote hospitality scheduling to a generic core bookings feature.
 
-- `v0.8.0-beta.1` — Core Bookings. **Exit:** the hospitality pack runs on the core bookings API with no regressions.
-- `v0.8.0` — Paid Bookings & Reminders. **Exit:** a deposit booking completes in Stripe test mode and reminders respect consent.
+- `v0.8.0-beta.1` — Core Bookings (#146–#148). **Exit:** the hospitality pack runs on the core bookings API with no regressions.
+- `v0.8.0` — Paid Bookings & Reminders (#149–#151). **Exit:** a deposit booking completes in Stripe test mode and reminders respect consent.
 
 ---
 
 ## `v0.9.0` — Members
 
-**Goal:** Member features on the v0.7.0 visitor identity layer. Issues are not yet filed.
+**Goal:** Member features on the v0.7.0 visitor identity layer.
 
-- `v0.9.0-beta.1` — Gated Content & Memberships. **Exit:** gated content is never served to unauthorised visitors, verified by tests.
-- `v0.9.0` — Community, Courses & Loyalty. **Exit:** moderation, rate limits and a11y gates pass for all member-generated content.
+- `v0.9.0-beta.1` — Gated Content & Memberships (#152–#154). **Exit:** gated content is never served to unauthorised visitors, verified by tests.
+- `v0.9.0` — Community, Courses & Loyalty (#155–#157). **Exit:** moderation, rate limits and a11y gates pass for all member-generated content.
 
 ---
 
 ## `v0.10.0` — Migration
 
-**Goal:** Move existing sites into Solo. Builds on the v0.4.0 import pipeline. Issues are not yet filed.
+**Goal:** Move existing sites into Solo. Builds on the v0.4.0 import pipeline.
 
-- `v0.10.0-beta.1` — Builder Import Adapters (WordPress WXR, Squarespace, Shopify, Wix). **Exit:** fictional fixture exports from each source import deterministically into editable drafts with a migration report.
-- `v0.10.0` — URL Mapping & GitHub Sync. GitHub repository sync is in scope here by maintainer decision; #80 still keeps GitHub integration out of v0.3.0. **Exit:** an imported site keeps its old URLs working through generated redirects, and repo sync round-trips without data loss.
+- `v0.10.0-beta.1` — Builder Import Adapters (WordPress WXR, Squarespace, Shopify, Wix) (#158–#160). **Exit:** fictional fixture exports from each source import deterministically into editable drafts with a migration report.
+- `v0.10.0` — URL Mapping & GitHub Sync (#161–#162). GitHub repository sync is in scope here by maintainer decision; #80 still keeps GitHub integration out of v0.3.0. **Exit:** an imported site keeps its old URLs working through generated redirects, and repo sync round-trips without data loss.
 
 ---
 
 ## `v0.11.0` — Onboarding & operations
 
-**Goal:** Make setup and day-two operations approachable. Separate from v0.10.0. Issues are not yet filed.
+**Goal:** Make setup and day-two operations approachable. Separate from v0.10.0.
 
-- `v0.11.0-beta.1` — Setup Wizard & Domains. **Exit:** a non-technical tester publishes to a custom domain on a fresh cardless account using only the wizard.
-- `v0.11.0` — Operations & Support. **Exit:** backup and restore are verified end to end and the installable PWA Studio passes the a11y gates.
+- `v0.11.0-beta.1` — Setup Wizard & Domains (#163–#165). **Exit:** a non-technical tester publishes to a custom domain on a fresh cardless account using only the wizard.
+- `v0.11.0` — Operations & Support (#166–#169). **Exit:** backup and restore are verified end to end and the installable PWA Studio passes the a11y gates.
 
 ---
 
 ## `v1.0.0`
 
-- `v1.0.0-rc.1` — Audits & API Freeze. External security and accessibility audits, a frozen public pack API, and IR upgrade and migration guarantees. **Exit:** audit findings are resolved or documented and the pack API and IR compatibility policy are published.
-- `v1.0.0` — Initial Release. User guides, support process and response policy, and a signed tag-only release from a verified squash commit on `main`. **Exit:** all prior milestone exits hold on the release commit.
+- `v1.0.0-rc.1` — Audits & API Freeze (#170–#172). External security and accessibility audits, a frozen public pack API, and IR upgrade and migration guarantees. **Exit:** audit findings are resolved or documented and the pack API and IR compatibility policy are published.
+- `v1.0.0` — Initial Release (#173–#175). User guides, support process and response policy, and a signed tag-only release from a verified squash commit on `main`. **Exit:** all prior milestone exits hold on the release commit.
 
 ### Ground rules for v0.5.0 onward
 
