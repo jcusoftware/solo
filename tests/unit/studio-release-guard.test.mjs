@@ -1,10 +1,13 @@
 // Unit tests for scripts/check-studio-release.mjs (the insecure-dev-auth release guard, #62).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
   ALLOWED_SCRIPTS,
+  DEV_MARKERS,
+  checkArtifact,
   checkSessionsConfig,
   checkStatic,
   defaultFeatures,
@@ -17,6 +20,21 @@ import {
 } from '../../scripts/check-studio-release.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
+
+/** A minimal repository for checkStatic/checkArtifact (ported from the former
+ *  tests/unit/studio-no-dev-auth.test.mjs, #63). */
+function fakeRepo({ defaults = '"console_error_panic_hook"', scripts = {}, wf = '', wasm = null } = {}) {
+  const r = mkdtempSync(join(tmpdir(), 'studio-release-guard-'));
+  mkdirSync(join(r, 'crates/sws-worker-studio/build'), { recursive: true });
+  mkdirSync(join(r, '.github/workflows'), { recursive: true });
+  mkdirSync(join(r, 'deploy'), { recursive: true });
+  writeFileSync(join(r, 'crates/sws-worker-studio/Cargo.toml'), `[features]\ndefault = [${defaults}]\ninsecure-dev-auth = []\n`);
+  writeFileSync(join(r, 'package.json'), JSON.stringify({ scripts }));
+  writeFileSync(join(r, '.github/workflows/ci.yml'), wf);
+  writeFileSync(join(r, 'wrangler.studio.jsonc'), '{ "main": "crates/sws-worker-studio/build/index.js" }\n');
+  if (wasm) writeFileSync(join(r, 'crates/sws-worker-studio/build/index_bg.wasm'), wasm);
+  return r;
+}
 
 describe('studio release guard', () => {
   it('the repository passes its own static checks', () => {
@@ -100,5 +118,46 @@ describe('studio release guard', () => {
     assert.equal(wasmHasDevAuth(Buffer.from('\0\0x-sws-other\0')), false);
     assert.equal(wasmHasDevAuth(Buffer.from('\0SWS_INSECURE_DEV_AUTH\0')), true, 'the fence var');
     assert.equal(wasmHasDevAuth(Buffer.from('\0/api/dev/revoke\0')), true, 'the test-only routes');
+  });
+
+  it('detects every dev header name (#62 and #63) and the feature name in Wasm bytes', () => {
+    for (const m of [
+      'X-Sws-Dev-User',
+      'X-Sws-Dev-Now',
+      'X-Sws-Dev-Commit-Skew',
+      'X-Sws-Dev-Batch',
+      'X-Sws-Dev-Fail-Put',
+      'X-Sws-Dev-Fail-Batch-After-Commit',
+      'X-Sws-Dev-Hold-Slot',
+      'insecure-dev-auth',
+    ]) {
+      assert.ok(DEV_MARKERS.includes(m), m);
+      assert.equal(wasmHasDevAuth(Buffer.from(`..${m}..`)), true, m);
+    }
+  });
+
+  // Ported from the former tests/unit/studio-no-dev-auth.test.mjs (#63).
+  it('flags the feature as a default, in release scripts, in workflows, and in the release Wasm', () => {
+    assert.match(checkStatic(fakeRepo({ defaults: '"insecure-dev-auth"' }))[0], /default features/);
+    assert.match(checkStatic(fakeRepo({ scripts: { 'studio:build': 'x --features insecure-dev-auth' } }))[0], /studio:build/);
+    assert.match(checkStatic(fakeRepo({ wf: 'run: worker-build --features insecure-dev-auth' }))[0], /outside a cargo clippy\/test/);
+    assert.match(checkArtifact(fakeRepo({ wasm: Buffer.from('..X-Sws-Dev-User..') }))[0], /dev-auth marker/);
+    assert.match(checkArtifact(fakeRepo({ wasm: Buffer.from('..X-Sws-Dev-Hold-Slot..') }))[0], /dev-auth marker/);
+  });
+
+  it('allows the test scripts, clippy lines and a clean Wasm; a missing Wasm fails only when required', () => {
+    const r = fakeRepo({
+      scripts: {
+        'test:studio:assets': 'node --test x --features insecure-dev-auth',
+        'test:studio:sessions': 'node x --features insecure-dev-auth',
+        'lint:clippy': 'cargo clippy --features insecure-dev-auth',
+      },
+      wf: 'run: cargo clippy --features insecure-dev-auth',
+      wasm: Buffer.from('clean'),
+    });
+    assert.deepEqual(checkStatic(r), []);
+    assert.deepEqual(checkArtifact(r, { require: true }), []);
+    assert.deepEqual(checkArtifact(fakeRepo()), []);
+    assert.match(checkArtifact(fakeRepo(), { require: true })[0], /missing/);
   });
 });

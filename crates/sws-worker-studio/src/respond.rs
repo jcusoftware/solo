@@ -35,7 +35,7 @@ pub struct Resp {
 }
 
 impl Resp {
-    fn new(status: u16, body: Option<Value>, extra: &[(&str, &str)]) -> Self {
+    pub(crate) fn new(status: u16, body: Option<Value>, extra: &[(&str, &str)]) -> Self {
         let mut headers: Vec<(String, String)> = vec![
             ("Content-Type".into(), "application/json".into()),
             ("Cache-Control".into(), API_CACHE_CONTROL.into()),

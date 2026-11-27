@@ -32,6 +32,13 @@ agents/
 opencode.json
 docs/WORKFLOW_PROMPTS.md
 tenants/
+opencode.jsonc
 
+opencode.jsonc
+.agents/
+.claude/
+.mcp.json
+CLAUDE.md
+skills-lock.json
 # Local packaging artifacts
 *.pkg.tar.*

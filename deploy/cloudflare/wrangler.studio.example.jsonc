@@ -31,8 +31,16 @@
 	"migrations": [{ "tag": "v1-site-session", "new_sqlite_classes": ["SiteSession"] }],
 	// Cardless default: D1 + Durable Objects + vars only. Opt-in/later bindings (add them only when the
 	// owning issue ships and you accept any billing implications):
-	//   R2 media/bundles  (#63): "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "sws-studio-media" },
-	//                            { "binding": "BUNDLES_BUCKET", "bucket_name": "sws-studio-bundles" }]
+	//   R2 media          (#63, OPT-IN, may require a payment method on your Cloudflare account):
+	//                            "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "sws-studio-media" }]
+	//                            AND the var "STUDIO_ASSET_BACKEND": "r2". Both are needed; the var without the
+	//                            binding answers 503 r2_not_configured (no silent fallback). Create the bucket
+	//                            yourself (`wrangler r2 bucket create`); nothing in this repo does it for you.
+	//                            Leave both unset for the cardless default: size-capped D1 blobs
+	//                            (1 MiB/asset, 50 MiB/site, 150 MiB/workspace; provisional limits).
+	//   R2 bundles        (#64): "r2_buckets": [{ "binding": "BUNDLES_BUCKET", "bucket_name": "sws-studio-bundles" }]
+	// Asset caps (and any alerts you add) reduce billing risk but are NOT provider-side hard stops;
+	// set your own Cloudflare usage notifications. See docs/ARCHITECTURE.md, "Studio asset storage".
 	//   Queues publish    (#64): "queues": { "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "sws-studio-publish" }],
 	//                            "consumers": [{ "queue": "sws-studio-publish", "max_retries": 3, "dead_letter_queue": "sws-studio-publish-dlq" }] }
 	"vars": {

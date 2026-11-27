@@ -3,10 +3,12 @@
 //! Scope of issue #61: the D1 workspace registry (`migrations/0001_registry.sql`),
 //! tenant-scoped repository SQL ([`repo`]), strict request bounds ([`bounds`])
 //! and `GET|HEAD /api/health`. Everything else answers a JSON 404/405.
-//! Sessions/OAuth (#65), blob storage (#63) and the publish pipeline (#64/#66)
-//! are out of scope. Per-site Durable Object command sessions (#62) live in
-//! [`session`], reached through `GET /api/sites/{workspace_id}/{site_id}/session`
-//! (WebSocket); [`auth`] keeps every protected route closed until #65.
+//! The bounded asset store (#63: [`assets_api`], [`asset_repo`], `sws-assets`)
+//! serves `/api/sites/{workspace_id}/{site_id}/assets[/...]`. Per-site Durable
+//! Object command sessions (#62) live in [`session`], reached through
+//! `GET /api/sites/{workspace_id}/{site_id}/session` (WebSocket). Sessions/OAuth
+//! (#65) and the publish pipeline (#64/#66) are out of scope; [`auth`] keeps
+//! every protected route closed until #65.
 //!
 //! Write-frequency invariant: the registry is written only on explicit
 //! save/publish/checkpoint actions, never once per edit. There is deliberately
@@ -19,6 +21,8 @@
 //! [`sws_security::headers::SECURITY_HEADERS`] and `Cache-Control: no-store`;
 //! the wasm glue below only adapts `worker` types to it.
 
+pub mod asset_repo;
+pub mod assets_api;
 pub mod auth;
 pub mod bounds;
 pub mod model;
@@ -29,6 +33,9 @@ pub mod session;
 
 #[cfg(target_arch = "wasm32")]
 pub mod d1;
+
+#[cfg(target_arch = "wasm32")]
+mod assets_http;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
@@ -59,6 +66,22 @@ mod wasm {
 
     #[event(fetch)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+        // Asset routes (#63) are authenticated, tenant-scoped, and carry uploads
+        // larger than the 64 KiB JSON bound, so they are decided before `handle`.
+        if let Some(route) = req
+            .url()
+            .ok()
+            .and_then(|u| crate::assets_api::parse_route(u.path()))
+        {
+            let resp = match crate::assets_http::handle(req, &env, route).await {
+                Ok(r) => r,
+                Err(e) => {
+                    console_error!("unhandled asset error: {e}");
+                    to_response(respond::internal_error())?
+                }
+            };
+            return with_security_headers(resp);
+        }
         let resp = match handle(req, &env).await {
             Ok(r) => r,
             Err(e) => {

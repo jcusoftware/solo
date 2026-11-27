@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 // Guard: the Studio release build must never enable `insecure-dev-auth` (#62, #65).
 //
-// That Cargo feature lets the X-Sws-Dev-User header stand in for authentication, so it exists
-// only for the local session integration tests (wrangler.studio-sessions.jsonc, a SEPARATE build
-// directory). Static checks (part of `npm run verify`, no build needed):
+// That Cargo feature lets the X-Sws-Dev-User header stand in for authentication and compiles in
+// the asset-store test hooks (X-Sws-Dev-Now, -Commit-Skew, -Batch, -Fail-Put,
+// -Fail-Batch-After-Commit, -Hold-Slot; #63) and the /api/dev/ session test routes, so it exists
+// only for the local integration tests (scripts/test-studio-sessions.mjs with
+// wrangler.studio-sessions.jsonc, and tests/integration/studio-assets.test.mjs), each building
+// into a SEPARATE build-* directory. This one script is the union of the former #63 guard
+// (scripts/check-studio-no-dev-auth.mjs) and the #62 guard. Static checks (part of
+// `npm run verify`, no build needed):
 //   1. the crate's default features do not include it, and no other manifest turns it on;
 //   2. package.json scripts and CI steps mention it only in the allowlisted test/clippy places;
 //   3. production configs (wrangler.studio.jsonc, deploy/cloudflare/*) never reference it, and
@@ -11,13 +16,13 @@
 //   4. the dev-auth test config (wrangler.studio-sessions.jsonc) never opens a workers.dev route
 //      (`"workers_dev": false`), and the runtime fence var (SWS_INSECURE_DEV_AUTH) that the dev-auth
 //      build additionally requires is set by no committed config or npm script, only by the local
-//      test script's `--var`. A dev-auth Worker deployed by mistake therefore still answers 401.
+//      test runners' `--var`. A dev-auth Worker deployed by mistake therefore still answers 401.
 // Artifact check (needs `npm run studio:build`; CI passes --require-artifact):
-//   5. crates/sws-worker-studio/build/index_bg.wasm contains none of the dev-auth markers (the dev header
-//      name, the fence var name, the /api/dev/ test routes). The
-//      Worker reads that header only under the feature, so a release Wasm never carries it.
+//   5. crates/sws-worker-studio/build/index_bg.wasm contains none of the dev-auth markers (every
+//      X-Sws-Dev-* header name, the feature name, the fence var name, the /api/dev/ test routes).
+//      The Worker reads those headers only under the feature, so a release Wasm never carries them.
 //
-// Usage: node scripts/check-studio-release.mjs [--require-artifact]
+// Usage: node scripts/check-studio-release.mjs [--require-artifact | --require-wasm]
 // Exit: 0 = OK, 1 = violation.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -28,8 +33,20 @@ export const FEATURE = 'insecure-dev-auth';
 export const HEADER = 'X-Sws-Dev-User';
 /** Var the dev-auth build requires at runtime; only the local test script passes it. */
 export const FENCE_VAR = 'SWS_INSECURE_DEV_AUTH';
+/** Every test-only header the dev-auth build reads (#62 auth, #63 asset-store hooks). */
+export const DEV_HEADERS = [
+  HEADER,
+  'X-Sws-Dev-Now',
+  'X-Sws-Dev-Commit-Skew',
+  'X-Sws-Dev-Batch',
+  'X-Sws-Dev-Fail-Put',
+  'X-Sws-Dev-Fail-Batch-After-Commit',
+  'X-Sws-Dev-Hold-Slot',
+];
 /** package.json scripts allowed to mention the feature (test and lint only). */
-export const ALLOWED_SCRIPTS = new Set(['test:studio:sessions', 'lint:clippy']);
+export const ALLOWED_SCRIPTS = new Set(['test:studio:sessions', 'test:studio:assets', 'lint:clippy']);
+/** Local runners that start a dev-auth Worker; each must open the runtime fence itself. */
+export const DEV_RUNNERS = ['scripts/test-studio-sessions.mjs'];
 
 const WALK_SKIP = new Set(['target', 'node_modules', '.git', 'build', '.wrangler']);
 
@@ -129,8 +146,9 @@ export function checkSessionsConfig(text) {
   return problems;
 }
 
-/** Strings only the dev-auth build carries: the header, the runtime fence var and the test-only routes. */
-export const DEV_MARKERS = [HEADER, FENCE_VAR, '/api/dev/'];
+/** Strings only the dev-auth build carries: the dev headers, the feature name, the runtime fence
+ *  var and the test-only routes. */
+export const DEV_MARKERS = [...DEV_HEADERS, FEATURE, FENCE_VAR, '/api/dev/'];
 
 export function wasmHasDevAuth(bytes) {
   const buf = Buffer.from(bytes);
@@ -157,7 +175,7 @@ export function checkStatic(root) {
   }
   const prod = [join(root, 'wrangler.studio.jsonc'), ...walk(join(root, 'deploy'), (p) => /\.jsonc?$/.test(p))];
   for (const f of prod) {
-    if (existsSync(f) && /insecure-dev-auth|X-Sws-Dev-User|build-dev-auth/.test(readFileSync(f, 'utf8'))) {
+    if (existsSync(f) && /insecure-dev-auth|X-Sws-Dev-|build-dev-auth/.test(readFileSync(f, 'utf8'))) {
       problems.push(`${relative(root, f)} must not reference the dev-auth build`);
     }
   }
@@ -172,11 +190,13 @@ export function checkStatic(root) {
     if (readFileSync(f, 'utf8').includes(FENCE_VAR)) problems.push(`${relative(root, f)} must not set ${FENCE_VAR}`);
   }
   if (readFileSync(join(root, 'package.json'), 'utf8').includes(FENCE_VAR)) {
-    problems.push(`package.json must not mention ${FENCE_VAR}; only scripts/test-studio-sessions.mjs passes it`);
+    problems.push(`package.json must not mention ${FENCE_VAR}; only the local test runners pass it`);
   }
-  const runner = join(root, 'scripts/test-studio-sessions.mjs');
-  if (existsSync(runner) && !readFileSync(runner, 'utf8').includes(`${FENCE_VAR}:1`)) {
-    problems.push(`scripts/test-studio-sessions.mjs must pass --var ${FENCE_VAR}:1 (the dev-auth build is closed without it)`);
+  for (const rel of DEV_RUNNERS) {
+    const runner = join(root, rel);
+    if (existsSync(runner) && !readFileSync(runner, 'utf8').includes(`${FENCE_VAR}:1`)) {
+      problems.push(`${rel} must pass --var ${FENCE_VAR}:1 (the dev-auth build is closed without it)`);
+    }
   }
   const studio = readFileSync(join(root, 'wrangler.studio.jsonc'), 'utf8');
   if (!studio.includes('"main": "crates/sws-worker-studio/build/index.js"')) {
@@ -200,14 +220,15 @@ export function checkArtifact(root, { require = false } = {}) {
 
 function main(argv) {
   const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-  const require = argv.includes('--require-artifact');
+  // `--require-wasm` is the former check-studio-no-dev-auth.mjs spelling.
+  const require = argv.includes('--require-artifact') || argv.includes('--require-wasm');
   const problems = [...checkStatic(root), ...checkArtifact(root, { require })];
   if (problems.length) {
     for (const p of problems) console.error(`check:studio:release: ${p}`);
     return 1;
   }
   const art = existsSync(join(root, 'crates/sws-worker-studio/build/index_bg.wasm'));
-  console.log(`check:studio:release OK (static checks${art ? ' + release Wasm has no dev-auth header' : '; no release artifact to scan'})`);
+  console.log(`check:studio:release OK (static checks${art ? ' + release Wasm has no dev-auth marker' : '; no release artifact to scan'})`);
   return 0;
 }
 

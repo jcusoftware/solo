@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 # `raw_value` keeps the command batch as untouched text so `sws_ir::edit::parse_batch`
 # keeps its duplicate-key and precision checks on session messages.
 serde_json = { version = "1", features = ["raw_value"] }
+sws-assets = { path = "../sws-assets" }
 sws-ir = { path = "../sws-ir" }
 sws-security = { path = "../sws-security" }
 
@@ -27,7 +28,8 @@ console_error_panic_hook = { version = "0.1", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]
-# Local integration tests ONLY: lets the `X-Sws-Dev-User` header stand in for real
-# authentication (#65). Never enabled by the release build; `npm run check:studio:release`
-# (part of `npm run verify`) and CI enforce that.
+# Local integration tests ONLY (scripts/test-studio-sessions.mjs, tests/integration/studio-assets.test.mjs):
+# lets `X-Sws-Dev-*` headers stand in for real authentication (#65) and drive test hooks.
+# NEVER enabled by the release build; `npm run check:studio:release` (part of
+# `npm run verify`) and CI enforce that.
 insecure-dev-auth = []
