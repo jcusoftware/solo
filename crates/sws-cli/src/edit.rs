@@ -91,13 +91,39 @@ fn resolve_link(path: &Path) -> PathBuf {
     }
 }
 
-struct Staged {
-    temp: PathBuf,
-    dest: PathBuf,
+/// How one destination is written once every file has been staged.
+enum Staged {
+    /// Content already sits in `temp`; rename it over `dest`.
+    Atomic { temp: PathBuf, dest: PathBuf },
+    /// Write `content` straight to `dest`: a non-regular destination (device,
+    /// FIFO) cannot be replaced by a rename, and a writable file in a
+    /// directory we cannot create files in has no room for a temp file.
+    Direct {
+        path: PathBuf,
+        dest: PathBuf,
+        content: String,
+    },
 }
 
 fn stage(path: &Path, content: &str, index: usize) -> Result<Staged, String> {
     let dest = resolve_link(path);
+    let fail = |e: std::io::Error| format!("failed to write '{}': {e}", path.display());
+    let existing = fs::metadata(&dest).ok();
+    if let Some(meta) = &existing {
+        if !meta.is_file() {
+            return Ok(Staged::Direct {
+                path: path.to_path_buf(),
+                dest,
+                content: content.to_owned(),
+            });
+        }
+        if meta.permissions().readonly() {
+            return Err(format!(
+                "refusing to write '{}': it is read-only",
+                path.display()
+            ));
+        }
+    }
     let dir = dest
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
@@ -106,24 +132,57 @@ fn stage(path: &Path, content: &str, index: usize) -> Result<Staged, String> {
         .file_name()
         .map_or_else(|| "out".into(), |n| n.to_string_lossy().into_owned());
     let temp = dir.join(format!(".{name}.solo-tmp-{}-{index}", std::process::id()));
-    let fail = |e: std::io::Error| format!("failed to write '{}': {e}", path.display());
-    let mut file = fs::OpenOptions::new()
+    let mut file = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&temp)
-        .map_err(fail)?;
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && existing.is_some() => {
+            return Ok(Staged::Direct {
+                path: path.to_path_buf(),
+                dest,
+                content: content.to_owned(),
+            });
+        }
+        Err(e) => return Err(fail(e)),
+    };
     let written = file
         .write_all(content.as_bytes())
         .and_then(|()| file.sync_all())
-        .and_then(|()| match fs::metadata(&dest) {
-            Ok(meta) => fs::set_permissions(&temp, meta.permissions()),
-            Err(_) => Ok(()),
+        .and_then(|()| match &existing {
+            Some(meta) => fs::set_permissions(&temp, meta.permissions()),
+            None => Ok(()),
         });
     if let Err(e) = written {
         let _ = fs::remove_file(&temp);
         return Err(fail(e));
     }
-    Ok(Staged { temp, dest })
+    Ok(Staged::Atomic { temp, dest })
+}
+
+fn discard(item: &Staged) {
+    if let Staged::Atomic { temp, .. } = item {
+        let _ = fs::remove_file(temp);
+    }
+}
+
+fn commit(item: &Staged) -> Result<(), String> {
+    match item {
+        Staged::Atomic { temp, dest } => {
+            fs::rename(temp, dest).map_err(|e| format!("failed to write '{}': {e}", dest.display()))
+        }
+        Staged::Direct {
+            path,
+            dest,
+            content,
+        } => fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(dest)
+            .and_then(|mut file| file.write_all(content.as_bytes()))
+            .map_err(|e| format!("failed to write '{}': {e}", path.display())),
+    }
 }
 
 /// Write every `(path, content)` pair atomically per file: all contents are
@@ -133,29 +192,27 @@ fn stage(path: &Path, content: &str, index: usize) -> Result<Staged, String> {
 /// sidecar files (transaction, report) before the main `--out`, so a failure
 /// never leaves a new `--out` without its sidecars. The only remaining window
 /// is a rename failing part-way, which leaves the earlier files replaced and
-/// the later ones untouched (never half-written).
+/// the later ones untouched (never half-written). Read-only destinations are
+/// refused up front; special files (e.g. `/dev/stdout`) and writable files in
+/// directories without create permission are written directly instead.
 fn write_all(files: &[(&Path, String)]) -> Result<(), String> {
     let mut staged: Vec<Staged> = Vec::new();
     for (index, (path, content)) in files.iter().enumerate() {
         match stage(path, content, index) {
             Ok(item) => staged.push(item),
             Err(e) => {
-                for item in &staged {
-                    let _ = fs::remove_file(&item.temp);
-                }
+                staged.iter().for_each(discard);
                 return Err(e);
             }
         }
     }
     let mut result = Ok(());
     for item in &staged {
-        if result.is_ok()
-            && let Err(e) = fs::rename(&item.temp, &item.dest)
-        {
-            result = Err(format!("failed to write '{}': {e}", item.dest.display()));
+        if result.is_ok() {
+            result = commit(item);
         }
         if result.is_err() {
-            let _ = fs::remove_file(&item.temp);
+            discard(item);
         }
     }
     result

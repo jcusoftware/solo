@@ -458,6 +458,151 @@ fn a_failing_sidecar_write_leaves_no_new_output_behind() {
     );
 }
 
+/// Upgraded legacy fixture plus a one-command batch, for writer tests.
+fn writer_inputs(dir: &Path) -> (PathBuf, PathBuf) {
+    let fixtures = legacy_fixtures(dir);
+    let upgraded = dir.join("up.json");
+    ok(&solo(&[
+        Path::new("edit"),
+        Path::new("upgrade"),
+        &fixtures[0],
+        Path::new("--out"),
+        &upgraded,
+    ]));
+    let batch = dir.join("batch.json");
+    fs::write(
+        &batch,
+        r#"{"version":1,"commands":[{"op":"set_data_value","key":"k","value":1}]}"#,
+    )
+    .unwrap();
+    (upgraded, batch)
+}
+
+fn apply_with_tx(upgraded: &Path, batch: &Path, out: &Path, tx: &Path) -> Output {
+    solo(&[
+        Path::new("edit"),
+        Path::new("apply"),
+        upgraded,
+        batch,
+        Path::new("--out"),
+        out,
+        Path::new("--transaction"),
+        tx,
+    ])
+}
+
+fn solo_tmp_files(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("solo-tmp"))
+        .collect()
+}
+
+#[cfg(unix)]
+fn is_root() -> bool {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+#[test]
+fn read_only_targets_are_refused_and_left_unchanged() {
+    let dir = TempDir::new("readonly");
+    let (upgraded, batch) = writer_inputs(dir.path());
+    let out = dir.path().join("out.json");
+    let tx = dir.path().join("tx.json");
+    fs::write(&tx, "keep").unwrap();
+    set_mode(&tx, 0o444);
+    let refused = apply_with_tx(&upgraded, &batch, &out, &tx);
+    set_mode(&tx, 0o644);
+    if is_root() {
+        return; // root ignores mode bits; nothing meaningful to assert
+    }
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("read-only"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(fs::read_to_string(&tx).unwrap(), "keep");
+    assert!(!out.exists(), "--out must not be written");
+    assert!(solo_tmp_files(dir.path()).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn special_file_targets_are_written_directly() {
+    let dir = TempDir::new("special");
+    let (upgraded, batch) = writer_inputs(dir.path());
+    let out = dir.path().join("out.json");
+    ok(&apply_with_tx(
+        &upgraded,
+        &batch,
+        &out,
+        Path::new("/dev/null"),
+    ));
+    assert!(out.exists());
+    assert!(Path::new("/dev/null").exists(), "device must survive");
+    assert!(
+        !fs::metadata("/dev/null").unwrap().is_file(),
+        "/dev/null must not be replaced by a regular file"
+    );
+    assert!(solo_tmp_files(dir.path()).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn writable_file_in_a_read_only_directory_falls_back_to_a_direct_write() {
+    let dir = TempDir::new("rodir");
+    let (upgraded, batch) = writer_inputs(dir.path());
+    let out = dir.path().join("out.json");
+    let locked = dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    let tx = locked.join("tx.json");
+    fs::write(&tx, "old").unwrap();
+    set_mode(&locked, 0o555);
+    let result = apply_with_tx(&upgraded, &batch, &out, &tx);
+    set_mode(&locked, 0o755);
+    if is_root() {
+        return;
+    }
+    ok(&result);
+    assert_ne!(fs::read_to_string(&tx).unwrap(), "old");
+    assert!(solo_tmp_files(&locked).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn atomic_write_preserves_destination_permissions() {
+    let dir = TempDir::new("perms");
+    let (upgraded, batch) = writer_inputs(dir.path());
+    let out = dir.path().join("out.json");
+    let tx = dir.path().join("tx.json");
+    fs::write(&tx, "old").unwrap();
+    fs::write(&out, "old").unwrap();
+    set_mode(&tx, 0o640);
+    set_mode(&out, 0o600);
+    ok(&apply_with_tx(&upgraded, &batch, &out, &tx));
+    assert_eq!(mode_of(&tx), 0o640);
+    assert_eq!(mode_of(&out), 0o600);
+    assert_ne!(fs::read_to_string(&tx).unwrap(), "old");
+    assert!(solo_tmp_files(dir.path()).is_empty());
+}
+
 #[cfg(feature = "pack-hospitality")]
 #[test]
 fn eject_never_writes_over_a_venue_manifest() {
