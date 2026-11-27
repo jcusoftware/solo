@@ -760,6 +760,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sws-worker-studio"
+version = "0.1.2"
+dependencies = [
+ "console_error_panic_hook",
+ "futures-util",
+ "serde_json",
+ "sws-security",
+ "worker",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -9,12 +9,13 @@
 // and the Wasm target features of the artifacts.
 //
 // Usage: node scripts/build-wasm.mjs --profile dev|release [--force] [--crate crates/sws-worker-site]
-// Stamp: target/wasm-build/stamp.json (gitignored with target/).
+// Stamp: target/wasm-build/<crate-name>-stamp.json, one per Worker crate so switching
+// Workers does not force rebuilds (gitignored with target/).
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkInstalled, loadPins } from '../core/tools/check-wasm-toolchain.mjs';
 import { checkFiles } from '../core/tools/check-wasm-features.mjs';
@@ -82,7 +83,7 @@ function main(argv) {
 
   const crateAbs = resolve(ROOT, crateDir);
   const outputs = [join(crateAbs, 'build', 'index.js'), join(crateAbs, 'build', 'index_bg.wasm')];
-  const stampPath = join(ROOT, 'target', 'wasm-build', 'stamp.json');
+  const stampPath = join(ROOT, 'target', 'wasm-build', `${basename(crateAbs)}-stamp.json`);
   const hash = inputHash(ROOT, crateDir);
 
   if (!force && existsSync(stampPath) && outputs.every(existsSync)) {

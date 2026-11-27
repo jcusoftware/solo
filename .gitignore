@@ -15,6 +15,7 @@ test-results/
 playwright-report/
 .lighthouseci/
 wrangler-dev.log
+studio-dev.log
 
 # Secrets & private zone (never commit)
 .dev.vars

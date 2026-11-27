@@ -21,70 +21,31 @@
 			"database_id": "<YOUR_STUDIO_D1_DATABASE_ID>"
 		}
 	],
-	"r2_buckets": [
-		{
-			"binding": "MEDIA_BUCKET",
-			"bucket_name": "sws-studio-media"
-		},
-		{
-			"binding": "BUNDLES_BUCKET",
-			"bucket_name": "sws-studio-bundles"
-		}
-	],
-	"queues": {
-		"producers": [
-			{
-				"binding": "PUBLISH_QUEUE",
-				"queue": "sws-studio-publish"
-			}
-		],
-		"consumers": [
-			{
-				"queue": "sws-studio-publish",
-				"max_batch_size": 10,
-				"max_batch_timeout": 5,
-				"max_retries": 3,
-				"dead_letter_queue": "sws-studio-publish-dlq"
-			}
-		]
-	},
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "PROJECT_ROOM",
-				"class_name": "ProjectRoom"
-			},
-			{
-				"name": "RATE_LIMITER",
-				"class_name": "RateLimiter"
-			}
-		]
-	},
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": [
-				"ProjectRoom",
-				"RateLimiter"
-			]
-		}
-	],
+	// Cardless default: D1 + vars only. Opt-in/later bindings (add them only when the
+	// owning issue ships and you accept any billing implications):
+	//   R2 media/bundles  (#63): "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "sws-studio-media" },
+	//                            { "binding": "BUNDLES_BUCKET", "bucket_name": "sws-studio-bundles" }]
+	//   Queues publish    (#64): "queues": { "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "sws-studio-publish" }],
+	//                            "consumers": [{ "queue": "sws-studio-publish", "max_retries": 3, "dead_letter_queue": "sws-studio-publish-dlq" }] }
+	//   Durable Objects   (#62): "durable_objects": { "bindings": [{ "name": "PROJECT_ROOM", "class_name": "ProjectRoom" }] }
+	//                            plus a "migrations" entry with "new_sqlite_classes": ["ProjectRoom"]
 	"vars": {
 		"STUDIO_VERSION": "0.2.0-dev",
-		"STUDIO_ORIGIN": "https://studio.sws.example",
+		"STUDIO_PUBLIC_ORIGIN": "https://studio.sws.example",
 		"PUBLISHED_ORIGIN_TEMPLATE": "https://{slug}.sws.example",
+		// GitHub OAuth App client id (public, non-secret); consumed by #65.
+		"GITHUB_OAUTH_CLIENT_ID": "<YOUR_GITHUB_OAUTH_CLIENT_ID>",
 		// Cloudflare Turnstile always-pass TEST site key (dev only). Replace in production.
-		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
-		"RESEND_FROM": "SWS Studio <noreply@sws.example>"
+		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA"
 	},
 	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
 	// or in `.dev.vars` for local `wrangler dev`:
-	//   SESSION_SIGNING_KEY         required; signing key for Studio auth sessions
-	//   TURNSTILE_SECRET_KEY        required; API returns 503 if missing unless DEV_MODE="true"
-	//   CLOUDFLARE_DEPLOY_API_TOKEN required for remote publish jobs from PUBLISH_QUEUE
-	//   RESEND_API_KEY              optional; transactional email notifications
-	// Optional local-only var (in `.dev.vars`):
-	//   DEV_MODE="true"
+	//   GITHUB_OAUTH_CLIENT_SECRET  secret; GitHub OAuth App client secret (consumed by #65)
+	//   SESSION_SIGNING_KEY         (future, #65) signing key for Studio auth sessions; not read by the current scaffold
+	//   TURNSTILE_SECRET_KEY        (future, #65) not read by the current scaffold; no route uses it yet
+	//   CLOUDFLARE_DEPLOY_API_TOKEN opt-in (#64); required only for remote publish jobs
+	// Future (#65), not read by the current scaffold: a local-only DEV_MODE="true" in `.dev.vars`
+	// to relax Turnstile verification. Do not rely on it until that issue ships.
 	"observability": {
 		"enabled": true
 	}

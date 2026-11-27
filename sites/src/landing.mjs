@@ -49,7 +49,7 @@ sha256sum -c --ignore-missing SHA256SUMS.txt
 # Extract and verify the binary
 tar -xzf "${cliAssetFilename(config.version, CLI_TARGETS[0])}"
 ./solo --help`
-    : `# Clone and run locally from source (Node >= 20 LTS + Rust stable + wasm32)
+    : `# Clone and run locally from source (Node >= 22.13 + Rust stable + wasm32)
 git clone ${config.githubUrl}.git
 cd ${config.repoName}
 npm ci

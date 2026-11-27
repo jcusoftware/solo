@@ -13,7 +13,7 @@ SWS is organized as a Cargo + pnpm monorepo:
 └── packs/        # Industry vertical packs (e.g., packs/hospitality)
 ```
 
-`apps/` and `packages/` do not exist yet. The Studio Worker is planned as `crates/sws-worker-studio`. Canonical IR, command reduction and validation stay in Rust; TypeScript is a thin shell (see `docs/ARCHITECTURE.md` §10 and `ROADMAP.md`). The worker baseline is `worker` 0.9 and `worker-build` 0.9.
+`apps/` and `packages/` do not exist yet. The optional Studio Worker lives in `crates/sws-worker-studio` (scaffold only: D1 workspace registry, request bounds and `/api/health`; sessions, storage and publishing land in later v0.2.0 issues). It has its own Wrangler config (`wrangler.studio.jsonc`) and local D1 state (`npm run studio:dev`, `npm run studio:db:migrate:local`, `npm run test:studio`). Canonical IR, command reduction and validation stay in Rust; TypeScript is a thin shell (see `docs/ARCHITECTURE.md` §10 and `ROADMAP.md`). The worker baseline is `worker` 0.9 and `worker-build` 0.9.
 
 ### Dependency & Separation Rules
 
@@ -32,7 +32,7 @@ Open the repository in a compatible editor (VS Code / Dev Containers CLI) using 
 ### Option B: Local Workstation
 
 1. **Node.js LTS & pnpm**
-   Use `nvm` to select the active Node.js LTS release and enable `pnpm`:
+   Use `nvm` to select the active Node.js LTS release (Node >= 22.13 is required) and enable `pnpm`:
    ```bash
    export NVM_DIR="$HOME/.nvm"
    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -90,7 +90,7 @@ Run all host unit/integration tests and lint the `wasm32-unknown-unknown` target
 
 ```bash
 cargo test --workspace --locked
-cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings
+cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -p sws-worker-studio -- -D warnings
 ```
 
 Worker and Wasm constraints:
