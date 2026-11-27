@@ -46,8 +46,9 @@
 		// Optional session tuning (#62), clamped by the Worker; defaults shown.
 		// Membership is re-read from D1 before every edit; a socket not verified for twice
 		// SESSION_AUTHZ_RECHECK_MS (cap 30000 ms, so 60 s) is sent nothing. The idle sweep alarm
-		// (default 60000 ms, 250..120000) only closes idle removed members and is kept long so the
-		// object can hibernate. Presence entries expire after the TTL.
+		// (default 60000 ms, clamped to max(1000, SESSION_AUTHZ_RECHECK_MS)..60000) only closes idle
+		// removed members (within that plus one D1 read) and is kept long so the object can
+		// hibernate. Presence entries expire after the TTL.
 		"SESSION_AUTHZ_RECHECK_MS": "15000",
 		"SESSION_IDLE_SWEEP_MS": "60000",
 		"SESSION_PRESENCE_TTL_MS": "30000"

@@ -56,6 +56,12 @@ impl Attachment {
     }
 }
 
+/// `WebSocket.readyState` 1 = OPEN. Closing (2) and closed (3) sockets must not
+/// get new soft state written on their behalf.
+pub fn ready_state_open(ready_state: u16) -> bool {
+    ready_state == 1
+}
+
 /// What an asynchronous membership read means for a socket, decided against the
 /// attachment as it is AFTER the await (never the copy taken before it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +106,14 @@ pub fn admit(existing: &[i64], user_id: i64) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_open_socket_gets_soft_state() {
+        assert!(ready_state_open(1));
+        for s in [0, 2, 3, 99] {
+            assert!(!ready_state_open(s), "{s}");
+        }
+    }
 
     #[test]
     fn round_trips_and_stays_small() {

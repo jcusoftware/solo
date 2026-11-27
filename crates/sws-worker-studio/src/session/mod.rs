@@ -27,6 +27,7 @@ pub mod rebase;
 pub mod sha256;
 pub mod sql;
 pub mod store;
+pub mod txn;
 
 #[cfg(all(target_arch = "wasm32", feature = "insecure-dev-auth"))]
 pub mod dev;
@@ -71,6 +72,62 @@ mod origin_tests {
     }
 
     #[test]
+    fn origins_are_normalised_before_comparison() {
+        let p = Some("https://Studio.Example:443/");
+        for same in [
+            "https://studio.example",
+            "HTTPS://STUDIO.EXAMPLE",
+            "https://studio.example:443",
+            " https://studio.example/ ",
+        ] {
+            assert!(origin_allowed(Some(same), p), "{same}");
+        }
+        assert!(origin_allowed(
+            Some("http://127.0.0.1:8790"),
+            Some("HTTP://127.0.0.1:8790")
+        ));
+        assert!(origin_allowed(
+            Some("http://localhost:80"),
+            Some("http://localhost")
+        ));
+        for bad in [
+            "https://studio.example:444",
+            "http://studio.example",
+            "https://studio.example/path",
+            "https://studio.example?x",
+            "https://user@studio.example",
+            "https://studio.example.evil.example",
+            "https://evilstudio.example",
+            "ftp://studio.example",
+            "null",
+            "",
+            "   ",
+            "https://",
+            "https://studio.example:",
+            "https://studio.example:99999",
+        ] {
+            assert!(!origin_allowed(Some(bad), p), "{bad}");
+        }
+        // An unparsable setting never matches anything (not even itself).
+        assert!(!origin_allowed(Some("null"), Some("null")));
+        assert!(!origin_allowed(
+            Some("studio.example"),
+            Some("studio.example")
+        ));
+    }
+
+    #[test]
+    fn a_failed_alarm_plan_falls_back_to_the_idle_sweep_while_sockets_are_attached() {
+        use super::alarm_after;
+        // Planned: whatever the engine said (including "nothing to do").
+        assert_eq!(alarm_after(Some(Some(5)), 100, 2, 60_000), Some(5));
+        assert_eq!(alarm_after(Some(None), 100, 2, 60_000), None);
+        // The engine could not open: sockets still get a sweep, an empty object none.
+        assert_eq!(alarm_after(None, 100, 2, 60_000), Some(60_100));
+        assert_eq!(alarm_after(None, 100, 0, 60_000), None);
+    }
+
+    #[test]
     fn idle_sweep_is_long_by_default_and_capped() {
         use super::*;
         let d = SessionConfig::default();
@@ -78,9 +135,19 @@ mod origin_tests {
         assert!(d.idle_sweep_ms > d.authz_recheck_ms);
         let c = SessionConfig::from_vars(None, None, Some("99999999"));
         assert_eq!(c.idle_sweep_ms, MAX_IDLE_SWEEP_MS);
+        assert_eq!(MAX_IDLE_SWEEP_MS, 60_000, "the #60 worst case");
+        // Floor: a second, and never faster than the recheck interval.
         assert_eq!(
             SessionConfig::from_vars(None, None, Some("1")).idle_sweep_ms,
-            250
+            DEFAULT_AUTHZ_RECHECK_MS.max(1_000)
+        );
+        assert_eq!(
+            SessionConfig::from_vars(None, Some("250"), Some("1")).idle_sweep_ms,
+            1_000
+        );
+        assert_eq!(
+            SessionConfig::from_vars(None, Some("20000"), Some("5000")).idle_sweep_ms,
+            20_000
         );
         // Delivery to a removed member is bounded by the gate, whatever the sweep does.
         const { assert!(2 * MAX_AUTHZ_RECHECK_MS <= 60_000) };
@@ -149,7 +216,13 @@ pub const MAX_AUTHZ_RECHECK_MS: i64 = 30_000;
 /// state-changing message re-reads membership. The sweep only closes idle
 /// sockets of removed members.
 pub const DEFAULT_IDLE_SWEEP_MS: i64 = 60_000;
-pub const MAX_IDLE_SWEEP_MS: i64 = 120_000;
+/// Cap: an idle removed member's socket is closed within this plus one D1 read
+/// (the #60 "60 s worst case").
+pub const MAX_IDLE_SWEEP_MS: i64 = 60_000;
+/// Inbound messages that may be queued (held or waiting) in the per-object FIFO;
+/// more are answered `rate_limited` without being queued, so a flooding socket
+/// cannot grow memory without bound.
+pub const MAX_QUEUED_MESSAGES: u64 = 32;
 
 /// Application close codes (4000-4999 are reserved for applications).
 pub const CLOSE_PROTOCOL: u16 = 4400;
@@ -199,15 +272,23 @@ impl SessionConfig {
             v.and_then(|s| s.trim().parse::<i64>().ok())
                 .map_or(default, |n| n.clamp(lo, hi))
         };
+        let authz_recheck_ms = get(
+            authz_recheck,
+            DEFAULT_AUTHZ_RECHECK_MS,
+            250,
+            MAX_AUTHZ_RECHECK_MS,
+        );
         Self {
             presence_ttl_ms: get(presence_ttl, DEFAULT_PRESENCE_TTL_MS, 500, 300_000),
-            authz_recheck_ms: get(
-                authz_recheck,
-                DEFAULT_AUTHZ_RECHECK_MS,
-                250,
-                MAX_AUTHZ_RECHECK_MS,
+            authz_recheck_ms,
+            // Floor: never sweep (one D1 read per distinct user) more often than the
+            // recheck interval, nor than once a second.
+            idle_sweep_ms: get(
+                idle_sweep,
+                DEFAULT_IDLE_SWEEP_MS,
+                authz_recheck_ms.max(1_000),
+                MAX_IDLE_SWEEP_MS,
             ),
-            idle_sweep_ms: get(idle_sweep, DEFAULT_IDLE_SWEEP_MS, 250, MAX_IDLE_SWEEP_MS),
         }
     }
 }
@@ -221,12 +302,75 @@ impl Default for SessionConfig {
 /// Browser-origin gate for the WebSocket upgrade (CSWSH defence). A request
 /// without an `Origin` header (CLI and MCP token clients are not browsers) is
 /// allowed; one that carries an `Origin` must equal the configured
-/// `STUDIO_PUBLIC_ORIGIN` exactly (a trailing `/` on the setting is ignored). An
-/// unset or empty setting fails closed for browser-originated requests.
+/// `STUDIO_PUBLIC_ORIGIN` after normalisation ([`normalize_origin`]: scheme and
+/// host are case-insensitive, a default port and a trailing `/` do not matter).
+/// `null`, an empty value, a different port or a host suffix never match, and an
+/// unset or unparsable setting fails closed for browser-originated requests.
 pub fn origin_allowed(origin: Option<&str>, public_origin: Option<&str>) -> bool {
     let Some(origin) = origin else { return true };
-    let allowed = public_origin.map(|o| o.trim().trim_end_matches('/'));
-    matches!(allowed, Some(a) if !a.is_empty() && a == origin.trim())
+    match (
+        public_origin.and_then(normalize_origin),
+        normalize_origin(origin),
+    ) {
+        (Some(allowed), Some(got)) => allowed == got,
+        _ => false,
+    }
+}
+
+/// `scheme://host[:port]` with a lowercase scheme and host and the default port
+/// (443 for https, 80 for http) dropped; `None` for anything that is not a bare
+/// http(s) origin (a path, query, credentials, `null`, an empty string).
+pub fn normalize_origin(raw: &str) -> Option<String> {
+    let s = raw.trim().trim_end_matches('/');
+    let (scheme, rest) = s.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default_port: u16 = match scheme.as_str() {
+        "https" => 443,
+        "http" => 80,
+        _ => return None,
+    };
+    if rest.is_empty()
+        || rest
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']')))
+    {
+        return None;
+    }
+    let (host, port) = match rest.rfind(':') {
+        Some(i) if !rest[i..].contains(']') => (&rest[..i], Some(&rest[i + 1..])),
+        _ => (rest, None),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let port = match port {
+        None => None,
+        Some(p) if !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()) => {
+            Some(p.parse::<u16>().ok()?)
+        }
+        Some(_) => return None,
+    };
+    let host = host.to_ascii_lowercase();
+    Some(match port.filter(|p| *p != default_port) {
+        Some(p) => format!("{scheme}://{host}:{p}"),
+        None => format!("{scheme}://{host}"),
+    })
+}
+
+/// When to arm the alarm. `planned` is the engine's plan (`None` if the engine
+/// could not be opened). A failed plan must not leave sockets without a sweep, or
+/// a removed member's idle socket would stay open: fall back to the idle sweep.
+pub fn alarm_after(
+    planned: Option<Option<i64>>,
+    now_ms: i64,
+    connections: usize,
+    idle_sweep_ms: i64,
+) -> Option<i64> {
+    match planned {
+        Some(at) => at,
+        None if connections > 0 => Some(now_ms + idle_sweep_ms),
+        None => None,
+    }
 }
 
 /// Close code to echo back for a peer's close frame. Reserved codes (1005 "no

@@ -226,6 +226,7 @@ See the `cloudflare-rust-headers` skill.
 | 2026-11-27 | 0 | 0 | #61 Studio Worker scaffold: wasm32 clippy, `worker-build --release`, local D1 migration and `wrangler dev` all worked first time; no toolchain debugging | — |
 | 2026-11-27 | 0.5 | 0.5 | #62 hibernating Durable Object sessions: `#[durable_object]` needs `worker::wasm_bindgen` in scope (minutes); an echoed close code 1005 is rejected by workerd (minutes); local workerd delays the Node client's close event ~10 s when the server closes from an alarm, although the close frame is on the wire within ms (investigated with a raw socket, worked around in the test). No blocker; the WebSocket Hibernation API, DO SQLite and alarms all worked | Under the 15 h ceiling |
 | 2026-11-27 | 0.4 | 0.9 | #62 review fixes: workers-rs 0.9 has no `storage.transactionSync` wrapper (only the async KV `transaction`); reached it through `js_sys::Reflect` plus `ScopedClosure::borrow_mut` (a borrowed, non-`'static` closure; compiled first try) and proved in workerd that it exists and rolls DO SQL back; the Node client again does not report the close event when the server closes from a non-message path (`/internal/revoke`), so the test stopped awaiting it. No blocker | Under the 15 h ceiling |
+| 2026-11-27 | 0.2 | 1.1 | #62 wake-up and transaction edge-case fixes: the pure transaction wrapper, the guarded `ALTER TABLE` and the `workspace_id` resolution all compiled for wasm32 on the first try; no toolchain or runtime debugging beyond reading the workerd log of a failing test | Under the 15 h ceiling |
 
 ---
 

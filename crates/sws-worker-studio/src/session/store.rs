@@ -152,8 +152,9 @@ pub trait Store {
     fn latest_snapshot(&self) -> StoreResult<Option<SnapshotRow>>;
     fn snapshot_get(&self, seq: i64) -> StoreResult<Option<SnapshotRow>>;
     fn put_snapshot(&mut self, snap: &SnapshotRow, now_ms: i64) -> StoreResult<()>;
-    /// Delete every snapshot older than `latest_seq` except `keep_seq`.
-    fn prune_snapshots(&mut self, latest_seq: i64, keep_seq: Option<i64>) -> StoreResult<()>;
+    /// Delete every snapshot older than `latest_seq` except the `keep` seqs (the
+    /// latest confirmed checkpoint and the latest confirmed publish).
+    fn prune_snapshots(&mut self, latest_seq: i64, keep: [Option<i64>; 2]) -> StoreResult<()>;
     /// True (once) if any storage statement failed since the last call. A failed
     /// call may have left earlier writes in place, so the caller must drop its
     /// in-memory state and rebuild from storage.
@@ -236,10 +237,10 @@ impl Store for MemStore {
         self.snapshots.insert(snap.seq, snap.clone());
         Ok(())
     }
-    fn prune_snapshots(&mut self, latest_seq: i64, keep_seq: Option<i64>) -> StoreResult<()> {
+    fn prune_snapshots(&mut self, latest_seq: i64, keep: [Option<i64>; 2]) -> StoreResult<()> {
         self.gate()?;
         self.snapshots
-            .retain(|seq, _| *seq >= latest_seq || Some(*seq) == keep_seq);
+            .retain(|seq, _| *seq >= latest_seq || keep.contains(&Some(*seq)));
         Ok(())
     }
     fn take_failure(&mut self) -> bool {

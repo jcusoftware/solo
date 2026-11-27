@@ -67,6 +67,12 @@ impl Fifo {
         }
     }
 
+    /// True when `max` callers are already holding or waiting: the caller should
+    /// refuse the message instead of calling [`Fifo::enter`] (bounded queue).
+    pub fn is_full(&self, max: u64) -> bool {
+        self.depth() >= max
+    }
+
     /// Callers currently holding or waiting for a turn.
     pub fn depth(&self) -> u64 {
         self.inner.next_ticket.get() - self.inner.serving.get()
@@ -159,6 +165,31 @@ mod tests {
         };
         drop(gb);
         assert!(poll_once(&mut c).is_ready());
+    }
+
+    #[test]
+    fn the_queue_is_bounded_by_the_caller_checking_is_full_before_entering() {
+        let f = Fifo::new();
+        let mut turns: Vec<Turn> = Vec::new();
+        let mut refused = 0;
+        for _ in 0..50 {
+            if f.is_full(crate::session::MAX_QUEUED_MESSAGES) {
+                refused += 1; // the object answers rate_limited and does not enter
+            } else {
+                turns.push(f.enter());
+            }
+        }
+        assert_eq!(turns.len() as u64, crate::session::MAX_QUEUED_MESSAGES);
+        assert_eq!(refused, 50 - turns.len());
+        assert_eq!(f.depth(), crate::session::MAX_QUEUED_MESSAGES);
+        // Finishing one frees exactly one slot.
+        let mut first = turns.remove(0);
+        let Poll::Ready(held) = poll_once(&mut first) else {
+            panic!()
+        };
+        assert!(f.is_full(crate::session::MAX_QUEUED_MESSAGES));
+        drop(held);
+        assert!(!f.is_full(crate::session::MAX_QUEUED_MESSAGES));
     }
 
     #[test]

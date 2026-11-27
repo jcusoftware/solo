@@ -80,11 +80,21 @@ export function enabledByDefault(manifest) {
   return [...out];
 }
 
-/** True when a manifest line enables the feature on a dependency (`features = [..."insecure-dev-auth"...]`). */
+/**
+ * True when a manifest turns the feature on for a dependency, by either route:
+ *   - a `features = [ ... ]` array (inline table or `[dependencies.x]` table; the array may span
+ *     several lines) that lists the feature, or
+ *   - a feature-table member naming another crate's feature, `"<crate>/insecure-dev-auth"` or
+ *     `"<crate>?/insecure-dev-auth"`, in any array (`dev = ["sws-worker-studio/insecure-dev-auth"]`,
+ *     `default = [...]`).
+ * The feature's own definition (`insecure-dev-auth = []`) and comments are not flagged.
+ */
 export function enablesOnDependency(manifest) {
-  return manifest
-    .split('\n')
-    .some((l) => l.includes(FEATURE) && /features\s*=/.test(l) && !/^\s*(#|insecure-dev-auth\s*=)/.test(l));
+  const text = manifest.replace(/#[^\n]*/g, '');
+  for (const m of text.matchAll(/\bfeatures\s*=\s*\[([^\]]*)\]/g)) {
+    if (new RegExp(`"${FEATURE}"`).test(m[1])) return true;
+  }
+  return new RegExp(`"[A-Za-z0-9_-]+\\??/${FEATURE}"`).test(text);
 }
 
 export function scanPackageScripts(scripts) {

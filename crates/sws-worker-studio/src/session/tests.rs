@@ -823,8 +823,8 @@ fn checkpoint_snapshots_are_retained_for_the_latest_publish_and_latest_checkpoin
             .is_some()
     );
     assert!(
-        e.revision_snapshot(&save1.revision_id).unwrap().is_none(),
-        "the earlier non-publish checkpoint is no longer retained"
+        e.revision_snapshot(&save1.revision_id).unwrap().is_some(),
+        "the latest CONFIRMED checkpoint stays fetchable while a newer one is pending"
     );
     e.mark_revision_written(publish1.seq).unwrap();
     // Later auto/save checkpoints do not evict the latest publish snapshot.
@@ -843,9 +843,10 @@ fn checkpoint_snapshots_are_retained_for_the_latest_publish_and_latest_checkpoin
     let store = e.into_store();
     assert_eq!(
         store.snapshots.keys().copied().collect::<Vec<_>>(),
-        vec![4, 10],
-        "bounded: exactly the latest publish and the latest checkpoint"
+        vec![4, 8, 10],
+        "bounded: the latest publish, the previous confirmed checkpoint (pruned at the next one) and the latest"
     );
+    assert!(store.snapshots.len() <= 3);
     // After a restart the same lookups work (the refs live in meta).
     let woke = Engine::open(store, WS, SITE).unwrap();
     assert!(
@@ -881,6 +882,49 @@ fn checkpoint_snapshots_are_retained_for_the_latest_publish_and_latest_checkpoin
             .unwrap()
             .is_some()
     );
+}
+
+#[test]
+fn the_last_confirmed_revision_stays_fetchable_while_a_newer_checkpoint_is_pending() {
+    // A D1 outage: checkpoint B is taken but never confirmed. Revision A (confirmed
+    // earlier) and the confirmed publish P must stay fetchable; at most three rows.
+    let mut e = seeded();
+    let mut n = churn(&mut e, 2, 1);
+    let CheckpointOutcome::Taken(p) = e.take_checkpoint(1, CheckpointReason::Publish, 1).unwrap()
+    else {
+        panic!()
+    };
+    e.mark_revision_written(p.seq).unwrap();
+    n = churn(&mut e, 2, n);
+    let CheckpointOutcome::Taken(a) = e.take_checkpoint(1, CheckpointReason::Save, 2).unwrap()
+    else {
+        panic!()
+    };
+    e.mark_revision_written(a.seq).unwrap();
+    n = churn(&mut e, 2, n);
+    let CheckpointOutcome::Taken(b) = e.take_checkpoint(1, CheckpointReason::Auto, 3).unwrap()
+    else {
+        panic!()
+    };
+    // B is pending (D1 down); more edits and failed retries do not drop A or P.
+    e.note_revision_failure().unwrap();
+    churn(&mut e, 3, n);
+    for r in [&p, &a, &b] {
+        let got = e.revision_snapshot(&r.revision_id).unwrap();
+        assert_eq!(got.map(|s| s.seq), Some(r.seq), "{}", r.revision_id);
+    }
+    assert_eq!(e.meta().last_revision.as_ref().unwrap().seq, a.seq);
+    let store = e.into_store();
+    assert_eq!(
+        store.snapshots.keys().copied().collect::<Vec<_>>(),
+        vec![p.seq, a.seq, b.seq],
+        "pending + latest confirmed + latest confirmed publish, no more"
+    );
+    // The same after the object is evicted and rebuilt.
+    let woke = Engine::open(store, WS, SITE).unwrap();
+    for r in [&p, &a, &b] {
+        assert!(woke.revision_snapshot(&r.revision_id).unwrap().is_some());
+    }
 }
 
 #[test]
@@ -980,6 +1024,17 @@ fn constraint_errors_are_permanent_and_outages_are_not() {
         "D1_ERROR: FOREIGN KEY constraint failed: SQLITE_CONSTRAINT"
     ));
     assert!(is_permanent_d1_error("D1_ERROR: CHECK constraint failed"));
+    assert!(is_permanent_d1_error(
+        "D1_ERROR: UNIQUE constraint failed: site_revisions.id: SQLITE_CONSTRAINT_UNIQUE"
+    ));
+    assert!(is_permanent_d1_error(
+        "D1_ERROR: abort: SQLITE_CONSTRAINT_TRIGGER"
+    ));
+    // The word alone is not enough: only SQLite's constraint verdicts are permanent.
+    assert!(!is_permanent_d1_error("constraint solver timed out"));
+    assert!(!is_permanent_d1_error(
+        "Too many constraints on the request"
+    ));
     assert!(!is_permanent_d1_error("D1_ERROR: Network connection lost"));
     assert!(!is_permanent_d1_error("simulated D1 outage"));
     let fk = "FOREIGN KEY constraint failed";

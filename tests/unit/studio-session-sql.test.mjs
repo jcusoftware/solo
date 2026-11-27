@@ -17,11 +17,12 @@ function load() {
     encoding: 'utf8',
   });
   const parsed = JSON.parse(out);
-  return { schema: parsed.schema, Q: Object.fromEntries(parsed.statements.map((s) => [s.name, s.sql])) };
+  return { schema: parsed.schema, migrations: parsed.migrations, Q: Object.fromEntries(parsed.statements.map((s) => [s.name, s.sql])) };
 }
 
 describe('site session Durable Object SQL', () => {
   let schema;
+  let migrations;
   let Q;
   let db;
   const run = (name, ...p) => db.prepare(Q[name]).run(...p);
@@ -29,7 +30,7 @@ describe('site session Durable Object SQL', () => {
   const append = (seq, op = `op-${seq}`) =>
     run('LOG_APPEND', seq, op, 1, 'c-1', 'batch', null, Math.max(0, seq - 1), 0, '["site/name"]', '{}', 1000 + seq);
 
-  before(() => ({ schema, Q } = load()));
+  before(() => ({ schema, migrations, Q } = load()));
   beforeEach(() => {
     db = new DatabaseSync(':memory:');
     for (const s of schema) db.exec(s);
@@ -66,19 +67,40 @@ describe('site session Durable Object SQL', () => {
     append(7);
   });
 
-  it('keeps the latest snapshot and the retained publish snapshot only', () => {
+  it('keeps the latest snapshot, the latest confirmed checkpoint and the latest confirmed publish only', () => {
     run('SNAPSHOT_PUT', 0, 'a', 'h0', 1);
     run('SNAPSHOT_PUT', 20, 'p', 'h20', 2);
+    run('SNAPSHOT_PUT', 35, 'c', 'h35', 2);
     run('SNAPSHOT_PUT', 50, 'b', 'h50', 3);
-    run('SNAPSHOT_PRUNE', 50, 20);
+    run('SNAPSHOT_PRUNE', 50, 35, 20);
+    assert.deepEqual(db.prepare('SELECT seq FROM snapshots ORDER BY seq').all().map((r) => r.seq), [20, 35, 50]);
+    run('SNAPSHOT_PRUNE', 50, 20, 20); // the confirmed checkpoint moved on: 35 goes
     assert.deepEqual(db.prepare('SELECT seq FROM snapshots ORDER BY seq').all().map((r) => r.seq), [20, 50]);
     assert.deepEqual(all('SNAPSHOT_LATEST').map((r) => ({ ...r })), [{ seq: 50, doc: 'b', sha256: 'h50' }]);
     assert.equal(all('SNAPSHOT_GET', 20)[0].doc, 'p', 'the publish snapshot is fetchable by seq');
     assert.equal(all('SNAPSHOT_GET', 0).length, 0);
     run('SNAPSHOT_PUT', 50, 'b2', 'h50b', 4); // re-taking a checkpoint overwrites, never duplicates
     assert.equal(all('SNAPSHOT_LATEST')[0].doc, 'b2');
-    run('SNAPSHOT_PRUNE', 50, -1); // no retained publish snapshot
+    run('SNAPSHOT_PRUNE', 50, -1, -1); // nothing retained besides the latest
     assert.deepEqual(db.prepare('SELECT seq FROM snapshots').all().map((r) => r.seq), [50]);
+  });
+
+  it('an object created by the first #62 commit (ops without payload) upgrades in place', () => {
+    const old = new DatabaseSync(':memory:');
+    for (const stmt of schema) {
+      // The old `ops` table had no payload column.
+      old.exec(stmt.replace(/, payload TEXT NOT NULL DEFAULT ''/, ''));
+    }
+    assert.equal(old.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('ops') WHERE name = 'payload'").get().n, 0);
+    // Wake-up runs the schema (a no-op for existing tables) then the migrations.
+    for (const stmt of schema) old.exec(stmt);
+    for (const m of migrations) old.exec(m);
+    old.prepare(Q.OP_PUT).run('op-old', 1, 1, 0, 5000, 'hash');
+    assert.equal(old.prepare(Q.OP_GET).get('op-old', 10).payload, 'hash');
+    // A second wake-up: the migration fails with "duplicate column", which the object ignores.
+    for (const m of migrations) assert.throws(() => old.exec(m), /duplicate column/i);
+    // A fresh database already has the column, so the same error is the only outcome.
+    for (const m of migrations) assert.throws(() => db.exec(m), /duplicate column/i);
   });
 
   it('meta is one upserted JSON row', () => {

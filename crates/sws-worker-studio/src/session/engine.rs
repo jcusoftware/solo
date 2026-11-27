@@ -194,11 +194,12 @@ pub enum FailurePlan {
     Abandon,
 }
 
-/// True when a D1 error message is a constraint violation, which retrying can
+/// True when a D1 error message is a SQLite constraint violation (D1 reports
+/// `SQLITE_CONSTRAINT...` and `<kind> constraint failed`), which retrying can
 /// never fix (an outage or timeout is not).
 pub fn is_permanent_d1_error(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
-    m.contains("constraint") || m.contains("sqlite_constraint")
+    m.contains("sqlite_constraint") || m.contains("constraint failed")
 }
 
 /// Decide the fate of a failed checkpoint write. `owner` is the workspace owner
@@ -298,6 +299,16 @@ impl<S: Store> Engine<S> {
     #[cfg(test)]
     pub fn into_store(self) -> S {
         self.store
+    }
+
+    #[cfg(test)]
+    pub fn store_ref(&self) -> &S {
+        &self.store
+    }
+
+    #[cfg(test)]
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
     }
 
     pub fn head_seq(&self) -> i64 {
@@ -759,9 +770,16 @@ impl<S: Store> Engine<S> {
         self.store
             .put_snapshot(&snap, now_ms)
             .map_err(|e| store_failure(&e))?;
-        // Keep the latest snapshot and the latest confirmed publish snapshot.
+        // Keep this (pending) snapshot, the latest confirmed checkpoint and the latest
+        // confirmed publish: the revision bytes #64 may still ask for.
         self.store
-            .prune_snapshots(self.head, meta.last_publish.as_ref().map(|r| r.seq))
+            .prune_snapshots(
+                self.head,
+                [
+                    meta.last_revision.as_ref().map(|r| r.seq),
+                    meta.last_publish.as_ref().map(|r| r.seq),
+                ],
+            )
             .map_err(|e| store_failure(&e))?;
         self.store.save_meta(&meta).map_err(|e| store_failure(&e))?;
         self.meta = meta;

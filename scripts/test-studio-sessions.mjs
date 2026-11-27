@@ -309,7 +309,8 @@ async function test(name, fn) {
 
 const SITES = [
   's-auth', 's-sync', 's-idem', 's-rebase', 's-undo', 's-pres', 's-ckpt', 's-rev1', 's-rev2', 's-persist', 's-hib', 's-roles',
-  's-pipe', 's-caps', 's-race', 's-dev', 's-d1', 's-backlog', 's-perm', 's-abandon', 's-retain',
+  's-pipe', 's-caps', 's-race', 's-dev', 's-d1', 's-backlog', 's-perm', 's-abandon', 's-retain', 's-hib2', 's-flood',
+  's-retain2', 's-fk',
 ];
 
 function seedD1() {
@@ -319,8 +320,8 @@ function seedD1() {
   writeFileSync(
     file,
     `INSERT INTO workspaces (id, name) VALUES ('ws-a','Workspace A'), ('ws-b','Workspace B');
-INSERT INTO users (id, github_id, github_login) VALUES (1,1001,'owner'),(2,1002,'editor'),(3,1003,'editor3'),(4,1004,'outsider'),(5,1005,'revoked-a'),(6,1006,'revoked-b'),(7,1007,'hib-peer'),(8,1008,'publisher'),(9,1009,'cap-peer');
-INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a',1,'owner'),('ws-a',2,'editor'),('ws-a',3,'editor'),('ws-a',5,'editor'),('ws-a',6,'editor'),('ws-a',7,'editor'),('ws-a',8,'publisher'),('ws-a',9,'editor'),('ws-b',4,'owner');
+INSERT INTO users (id, github_id, github_login) VALUES (1,1001,'owner'),(2,1002,'editor'),(3,1003,'editor3'),(4,1004,'outsider'),(5,1005,'revoked-a'),(6,1006,'revoked-b'),(7,1007,'hib-peer'),(8,1008,'publisher'),(9,1009,'cap-peer'),(10,1010,'fk-author');
+INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a',1,'owner'),('ws-a',2,'editor'),('ws-a',3,'editor'),('ws-a',5,'editor'),('ws-a',6,'editor'),('ws-a',7,'editor'),('ws-a',8,'publisher'),('ws-a',9,'editor'),('ws-a',10,'editor'),('ws-b',4,'owner');
 INSERT INTO sites (workspace_id, id, slug, name) VALUES ${sites},('ws-b','sb','sb','SB');
 `,
   );
@@ -951,6 +952,72 @@ async function phase1() {
     a.close();
   });
 
+  await test('retention under a D1 outage: the last confirmed revision stays fetchable while a newer checkpoint is pending', async () => {
+    const a = await Client.connect('s-retain2', 8);
+    await seed(a);
+    let head = 0;
+    for (let i = 0; i < 2; i++) head = (await edit(a, head, [setText('home.title-text', `o ${i}`)], 'rn')).seq;
+    const confirmed = await a.request({ type: 'checkpoint', reason: 'save' }, (m) => m.type === 'checkpoint');
+    assert.equal(confirmed.status, 'written');
+    // D1 checkpoint writes now fail: the next checkpoint stays pending.
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-retain2/checkpoint')).status, 200);
+    for (let i = 0; i < 50; i++) head = (await edit(a, head, [setText('home.title-text', `n ${i}`)], 'rn')).seq;
+    const pending = await a.request({ type: 'checkpoint', reason: 'save' }, (m) => m.type === 'checkpoint' && m.seq === head);
+    assert.equal(pending.status, 'pending', JSON.stringify(pending));
+    assert.notEqual(pending.revision_id, confirmed.revision_id);
+    const old = await dev('GET', `revision/ws-a/s-retain2/${confirmed.revision_id}`);
+    assert.equal(old.status, 200, 'the latest CONFIRMED revision is still fetchable while a newer one is pending');
+    assert.equal(old.body.seq, confirmed.seq);
+    assert.equal((await dev('GET', `revision/ws-a/s-retain2/${pending.revision_id}`)).status, 200, 'the pending one is fetchable too');
+    // An object that never held a session answers 404 (and creates nothing).
+    assert.equal((await dev('GET', 'revision/ws-a/s-never-opened/ck-000000000000000000000000')).status, 404);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-retain2/up')).status, 200);
+    const done = await a.next((m) => m.type === 'checkpoint' && m.seq === head && m.status === 'written', 20_000);
+    assert.equal(done.revision_id, pending.revision_id);
+    a.close();
+  });
+
+  await test('a real foreign-key failure (the author was deleted) is classified permanent and re-attributed to the owner', async () => {
+    const o = await Client.connect('s-fk', 1);
+    const ed = await Client.connect('s-fk', 10);
+    await seed(o);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-fk/checkpoint')).status, 200);
+    let head = 0;
+    for (let i = 0; i < 50; i++) head = (await edit(ed, head, [setText('home.title-text', `fk ${i}`)], 'fk')).seq;
+    assert.equal(revisions('s-fk').length, 0, 'the checkpoint is pending (writes are failing)');
+    // The author is removed for real: the retry hits D1's own `FOREIGN KEY constraint failed`.
+    d1(`DELETE FROM memberships WHERE user_id = 10`);
+    d1(`DELETE FROM users WHERE id = 10`);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-fk/up')).status, 200);
+    const written = await o.next((m) => m.type === 'checkpoint' && m.seq === 50 && m.status === 'written', 30_000);
+    assert.equal(written.status, 'written');
+    assert.deepEqual(revisions('s-fk').map((r) => r.created_by), [1], 'written as the workspace owner');
+    o.close();
+    ed.close();
+  });
+
+  await test('flood: past the FIFO cap the object answers rate_limited without queueing; accepted messages apply in order', async () => {
+    const a = await Client.connect('s-flood', 1);
+    await seed(a);
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-flood/slow')).status, 200); // each batch waits ~400 ms on D1
+    const N = 40;
+    for (let i = 0; i < N; i++) a.send(batchMsg('fl', i, [setText('home.title-text', `fl ${i}`)]));
+    const replies = [];
+    while (replies.length < N) {
+      replies.push(await a.next((m) => m.type === 'ack' || (m.type === 'error' && m.code === 'rate_limited'), 30_000));
+    }
+    const acks = replies.filter((m) => m.type === 'ack');
+    const limited = replies.filter((m) => m.type === 'error');
+    assert.ok(limited.length >= 1, 'nothing was refused');
+    assert.ok(acks.length >= 1 && acks.length <= 32, `accepted ${acks.length}`);
+    assert.equal(acks.length + limited.length, N);
+    assert.deepEqual(acks.map((m) => m.seq), acks.map((_, i) => i + 1), 'the accepted messages applied in send order, no gaps');
+    assert.equal((await dev('POST', 'd1-fault/ws-a/s-flood/up')).status, 200);
+    assert.equal(titleOf(await a.doc()), `fl ${acks.length - 1}`);
+    assert.equal(a.closeInfo, null);
+    a.close();
+  });
+
   await test('s-persist: build up state that must survive the restart', async () => {
     const a = await Client.connect('s-persist', 1);
     const b = await Client.connect('s-persist', 2);
@@ -993,29 +1060,50 @@ async function phase2(persist) {
     a.close();
   });
 
-  await test('hibernation: the object is evicted while the socket stays open; a new instance serves the next message', async () => {
+  await test('hibernation: the object is evicted while the socket stays open; the FIRST message after the wake-up (a batch, and a sync with a stale authz cache) is served from storage', async () => {
     const a = await Client.connect('s-hib', 1);
     const peer = await Client.connect('s-hib', 7);
+    const c = await Client.connect('s-hib2', 1);
     await seed(a);
-    const before = (await edit(a, 0, [setText('home.title-text', 'before sleep')], 'h')).seq;
-    await peer.next((m) => m.type === 'entry' && m.seq === before);
-    const i1 = a.welcome.instance_id;
+    await seed(c);
+    let head = (await edit(a, 0, [setText('home.title-text', 'before sleep')], 'h')).seq;
+    await peer.next((m) => m.type === 'entry' && m.seq === head);
+    const headC = (await edit(c, 0, [setText('home.title-text', 'other before sleep')], 'h')).seq;
+    let ia = a.welcome.instance_id;
+    let ic = c.welcome.instance_id;
     let woke = null;
-    for (const idleMs of [14_000, 30_000]) {
-      // No traffic at all: the runtime may now evict the object (about 10 s idle) and keep the sockets.
+    let after = null;
+    for (const idleMs of [20_000, 30_000]) {
+      // No traffic at all: the runtime may now evict the objects (about 10 s idle) and keep the sockets.
+      // 20 s also outlives the 15 s authz cache, so the first read below must re-read membership.
       await sleep(idleMs);
       assert.equal(a.closeInfo, null, 'the WebSocket must stay open across hibernation');
-      const pong = await a.request({ type: 'ping' }, (m) => m.type === 'pong');
-      if (pong.instance_id !== i1) {
-        woke = pong;
+      assert.equal(c.closeInfo, null);
+      // The very first message is NOT a ping: a batch (always re-reads D1) and a sync with a stale
+      // cache. Neither can lean on something else having opened the engine first.
+      const ack = await edit(a, head, [setText('home.title-text', 'first after wake')], 'h');
+      head = ack.seq;
+      c.queue = c.queue.filter((m) => m.type !== 'state');
+      const st = await c.request({ type: 'sync' }, (m) => m.type === 'state' || m.type === 'error');
+      assert.equal(st.type, 'state', `the first sync after the wake-up failed: ${JSON.stringify(st)}`);
+      // Only now learn whether the instances changed (a ping after the work, not before it).
+      const pa = await a.request({ type: 'ping' }, (m) => m.type === 'pong');
+      const pc = await c.request({ type: 'ping' }, (m) => m.type === 'pong');
+      if (pa.instance_id !== ia && pc.instance_id !== ic) {
+        woke = pa;
+        after = ack;
         break;
       }
+      ia = pa.instance_id;
+      ic = pc.instance_id;
     }
-    assert.ok(woke, `the object was not evicted within the idle windows (instance ${i1} still serving): hibernation not observed`);
-    console.log(`         instance ${i1} -> ${woke.instance_id} on the SAME socket (hibernated and woke)`);
-    assert.equal(woke.head_seq, before, 'state came back from DO SQLite');
+    assert.ok(woke, `the objects were not both evicted within the idle windows: hibernation not observed`);
+    console.log(`         instance ${a.welcome.instance_id} -> ${woke.instance_id} on the SAME socket (hibernated and woke)`);
+    assert.equal(woke.head_seq, after.seq, 'state came back from DO SQLite');
+    assert.equal(woke.head_seq, head);
+    assert.equal(titleOf(await c.doc()), 'other before sleep');
     // Identity came back from the serialized attachment: the same client id authors the next edit.
-    const ack = await edit(a, before, [setText('home.title-text', 'after wake')], 'h');
+    const ack = await edit(a, head, [setText('home.title-text', 'after wake')], 'h');
     const entry = await peer.next((m) => m.type === 'entry' && m.seq === ack.seq);
     assert.equal(entry.client_id, a.welcome.client_id);
     assert.equal(entry.user_id, 1);
@@ -1027,7 +1115,9 @@ async function phase2(persist) {
     assert.equal((await peer.next((m) => m.type === 'revoked')).reason, 'membership_revoked');
     assert.equal((await peer.closedP).code, 4403);
     assert.equal(titleOf(await a.doc()), 'after wake');
+    assert.ok(headC >= 1);
     a.close();
+    c.close();
   });
 }
 

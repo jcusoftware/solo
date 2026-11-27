@@ -17,7 +17,8 @@
 //!   stale peers), re-checks the socket was not revoked meanwhile, and then
 //!   commits and broadcasts in one synchronous block. Each engine call runs
 //!   inside `storage.transactionSync` so its DO SQL writes commit or roll back
-//!   together.
+//!   together ([`run_in_tx`]: a failed or thrown transaction drops the cached
+//!   engine and returns an error, never a success).
 //! * **Revocation is sticky.** After any await the socket's attachment is read
 //!   again and merged ([`merge_membership`]); a copy taken before an await is
 //!   never written back, so a concurrent revocation cannot be undone.
@@ -38,7 +39,9 @@ use crate::model::Role;
 use crate::repo;
 use crate::respond::json_error;
 use crate::session::attach::{Attachment, Refresh, admit, merge_membership};
-use crate::session::authz::{Action, allows, delivery_allowed, needs_recheck, role_from_row};
+use crate::session::authz::{
+    Action, allowed_now, allows, delivery_allowed, needs_recheck, role_from_row,
+};
 use crate::session::do_store::DoStore;
 use crate::session::engine::{
     Actor, CheckpointOutcome, Committed, Engine, EngineError, FailurePlan, Rejection, SyncPlan,
@@ -47,10 +50,11 @@ use crate::session::engine::{
 use crate::session::fifo::Fifo;
 use crate::session::http::to_response;
 use crate::session::protocol::{self, CheckpointReason, ClientMessage};
+use crate::session::txn::run_in_tx;
 use crate::session::{
     CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_TOO_LARGE, CLOSE_UNAUTHENTICATED, CLOSE_UNSUPPORTED_DATA,
-    H_CREDENTIAL, H_ROLE, H_SITE, H_USER, H_WORKSPACE, PATH_REVISION, PATH_REVOKE, PATH_SESSION,
-    SessionConfig, is_valid_id,
+    H_CREDENTIAL, H_ROLE, H_SITE, H_USER, H_WORKSPACE, MAX_QUEUED_MESSAGES, PATH_REVISION,
+    PATH_REVOKE, PATH_SESSION, SessionConfig, alarm_after, is_valid_id,
 };
 
 type Eng = Engine<DoStore>;
@@ -164,6 +168,13 @@ impl DurableObject for SiteSession {
                 let Some(id) = id else {
                     return to_response(json_error(400, "bad_request", &[]));
                 };
+                // A never-used object has nothing to look up: answer 404 without
+                // running the schema (a read must not create tables).
+                if self.engine.borrow().is_none()
+                    && !DoStore::initialised(&self.state.storage().sql())
+                {
+                    return to_response(json_error(404, "not_found", &[]));
+                }
                 let snap = self
                     .with(None, |e| e.revision_snapshot(&id))
                     .await?
@@ -207,7 +218,7 @@ impl DurableObject for SiteSession {
         if let Ok(n) = self.with(None, |e| e.presence_prune(now)).await
             && n.unwrap_or(0) > 0
         {
-            self.broadcast_presence(now);
+            self.broadcast_presence(now).await;
         }
         // 2. Membership sweep: every connection, so a removed member is closed
         //    even if nobody is sending. (Cadence: `idle_sweep_ms`, see `ensure_alarm`.)
@@ -231,6 +242,20 @@ impl DurableObject for SiteSession {
         ws: WebSocket,
         message: WebSocketIncomingMessage,
     ) -> Result<()> {
+        // Bounded queue: past the cap, refuse instead of queueing (a flooding socket
+        // must not grow memory without bound). Nothing is applied for a refused message.
+        if self.fifo.is_full(MAX_QUEUED_MESSAGES) {
+            send(
+                &ws,
+                &protocol::error(
+                    "rate_limited",
+                    "too many messages in flight; slow down and resend",
+                    None,
+                    None,
+                ),
+            );
+            return Ok(());
+        }
         // The ticket is taken before the first await, i.e. in arrival order.
         let turn = self.fifo.enter();
         let _held = turn.await;
@@ -275,7 +300,12 @@ impl DurableObject for SiteSession {
                     console_error!("session message failed: {e}");
                     send(
                         &ws,
-                        &protocol::error("internal_error", "the session failed; retry", None, None),
+                        &protocol::error(
+                            "unavailable",
+                            "the session storage failed and was rolled back; retry shortly",
+                            None,
+                            None,
+                        ),
                     );
                 }
                 Ok(())
@@ -301,6 +331,12 @@ impl DurableObject for SiteSession {
     }
 }
 
+/// `WebSocket.readyState === OPEN`. A closing or closed peer reports otherwise.
+fn socket_open(ws: &WebSocket) -> bool {
+    let state: &worker::web_sys::WebSocket = ws.as_ref();
+    crate::session::attach::ready_state_open(state.ready_state())
+}
+
 fn send(ws: &WebSocket, v: &Value) {
     // The peer may already be gone; delivery is best effort per socket.
     let _ = ws.send_with_str(v.to_string());
@@ -323,10 +359,10 @@ impl SiteSession {
     /// run `f` synchronously inside one `transactionSync`, so its DO SQL writes
     /// commit together or not at all. `identity` is `Some` on a fresh connection.
     ///
-    /// A storage failure rolls the transaction back AND drops the cached engine,
-    /// so the next call rebuilds from durable state: memory is never trusted
-    /// after a partial failure. `f`'s own result is still returned to the caller
-    /// (it carries the client-facing `unavailable` rejection).
+    /// Any storage failure (a failed statement, or a `transactionSync` that threw)
+    /// rolls the transaction back, drops the cached engine so the next call
+    /// rebuilds from durable state, and returns `Err`: never `f`'s result, because
+    /// `f` may describe work the rollback discarded (see [`run_in_tx`]).
     async fn with<T>(
         &self,
         identity: Option<(&str, &str)>,
@@ -354,40 +390,22 @@ impl SiteSession {
                 Engine::open(store, &w, &s).map_err(|e| worker::Error::RustError(e.to_string()))?;
             *self.engine.borrow_mut() = Some(engine);
         }
-        let mut f = Some(f);
-        let mut out: Option<T> = None;
-        let mut failed = false;
-        let mut body = || -> std::result::Result<JsValue, JsValue> {
-            let mut guard = self.engine.borrow_mut();
-            let Some(engine) = guard.as_mut() else {
-                return Err(JsValue::from_str("engine unavailable"));
-            };
-            if let Some(f) = f.take() {
-                out = Some(f(engine));
-            }
-            if engine.store_failed() {
-                failed = true;
-                return Err(JsValue::from_str("storage failure: rolling back"));
-            }
-            Ok(JsValue::UNDEFINED)
-        };
-        self.transaction_sync(&mut body);
-        if failed {
-            console_error!("session storage failed; transaction rolled back, engine dropped");
-            *self.engine.borrow_mut() = None;
-        }
-        out.ok_or_else(|| worker::Error::RustError("engine unavailable".into()))
+        run_in_tx(&self.engine, f, |body| self.transaction_sync(body)).map_err(|e| {
+            console_error!("{e}; the cached engine was dropped");
+            worker::Error::RustError(e.to_string())
+        })
     }
 
     /// `ctx.storage.transactionSync(body)`: all DO SQL the body issues commits
-    /// together; a thrown error (an `Err` from `body`) rolls them all back.
-    /// workers-rs 0.9 does not wrap this API, so it is called through JS.
-    /// Without the API (very old runtime) the body runs unwrapped and the caller
-    /// still drops its cached engine on failure.
-    fn transaction_sync<F>(&self, body: &mut F)
-    where
-        F: FnMut() -> std::result::Result<JsValue, JsValue>,
-    {
+    /// together; a body that returns `Err` (or a call that throws) rolls them all
+    /// back and this returns `Err`. workers-rs 0.9 does not wrap this API, so it is
+    /// called through JS. Without the API (a runtime too old for it) this FAILS
+    /// CLOSED: the body is not run at all, because running writes non-atomically
+    /// could leave a half-applied command (log row without its operation id).
+    fn transaction_sync(
+        &self,
+        body: &mut dyn FnMut() -> std::result::Result<(), ()>,
+    ) -> std::result::Result<(), ()> {
         let storage: Option<(JsValue, worker::js_sys::Function)> = self
             .state
             .as_raw()
@@ -400,25 +418,30 @@ impl SiteSession {
                     .and_then(|f| f.dyn_into::<worker::js_sys::Function>().ok())
                     .map(|f| (st, f))
             });
-        match storage {
-            Some((st, func)) => {
-                let closure =
-                    ScopedClosure::<dyn FnMut() -> std::result::Result<JsValue, JsValue>>::borrow_mut_assert_unwind_safe(body);
-                // An Err here is the rollback signal thrown by `body`.
-                let _ = func.call1(&st, closure.as_ref());
-            }
-            None => {
-                console_error!("storage.transactionSync is unavailable; writes are not atomic");
-                let _ = body();
-            }
-        }
+        let Some((st, func)) = storage else {
+            console_error!("storage.transactionSync is unavailable; refusing non-atomic writes");
+            return Err(());
+        };
+        let mut js_body = || -> std::result::Result<JsValue, JsValue> {
+            body()
+                .map(|()| JsValue::UNDEFINED)
+                .map_err(|()| JsValue::from_str("storage failure: rolling back"))
+        };
+        let closure =
+            ScopedClosure::<dyn FnMut() -> std::result::Result<JsValue, JsValue>>::borrow_mut_assert_unwind_safe(&mut js_body);
+        // An Err here is the rollback signal thrown by `body` (or a runtime error).
+        func.call1(&st, closure.as_ref())
+            .map(|_| ())
+            .map_err(|_| ())
     }
 
-    fn identity(&self) -> Option<(String, String)> {
-        self.engine
-            .borrow()
-            .as_ref()
-            .map(|e| (e.meta().workspace_id.clone(), e.meta().site_id.clone()))
+    /// The workspace this object belongs to: from the cached engine, else by
+    /// opening it from DO storage (after eviction the cache is empty).
+    async fn workspace_id(&self) -> Result<String> {
+        if let Some(e) = self.engine.borrow().as_ref() {
+            return Ok(e.meta().workspace_id.clone());
+        }
+        self.with(None, |e| e.meta().workspace_id.clone()).await
     }
 
     // --- connect --------------------------------------------------------------
@@ -497,9 +520,7 @@ impl SiteSession {
     /// Fresh D1 membership read for one user. `Err` = D1 unavailable (callers
     /// fail closed for edits and keep sockets open).
     async fn fetch_role(&self, user_id: i64) -> Result<Option<Role>> {
-        let (workspace_id, _) = self
-            .identity()
-            .ok_or_else(|| worker::Error::RustError("session is not initialised".into()))?;
+        let workspace_id = self.workspace_id().await?;
         // #65: also validate the session/token behind `att.credential` here.
         #[cfg(feature = "insecure-dev-auth")]
         {
@@ -629,14 +650,12 @@ impl SiteSession {
         }
     }
 
-    fn broadcast_presence(&self, now: i64) {
-        if let Ok(Some(rows)) = self
-            .engine
-            .borrow()
-            .as_ref()
-            .map(|e| e.presence_list(now))
-            .transpose()
-        {
+    /// Send the live presence list to everyone. The read goes through `with` (a
+    /// transaction), so a failed read can neither leave a stale failure flag behind
+    /// nor be trusted after a rollback. (`with` never suspends when the engine is
+    /// cached, so the ordering of the surrounding synchronous block is unchanged.)
+    async fn broadcast_presence(&self, now: i64) {
+        if let Ok(Ok(rows)) = self.with(None, |e| e.presence_list(now)).await {
             self.broadcast(&protocol::presence(now, &rows), None, now);
         }
     }
@@ -647,7 +666,7 @@ impl SiteSession {
             .await
             .is_ok();
         if removed {
-            self.broadcast_presence(now_ms());
+            self.broadcast_presence(now_ms()).await;
         }
     }
 
@@ -674,13 +693,16 @@ impl SiteSession {
             })
             .count();
         let sweep = self.config.idle_sweep_ms;
-        let at = match self
+        let planned = match self
             .with(None, |e| e.next_alarm(now, connections, sweep))
             .await
         {
-            Ok(Ok(at)) => at,
-            _ => return,
+            Ok(Ok(at)) => Some(at),
+            _ => None,
         };
+        // If the engine cannot open, still arm the idle sweep while sockets are
+        // attached: otherwise a removed member's idle socket would never be closed.
+        let at = alarm_after(planned, now, connections, sweep);
         let Some(at) = at else { return };
         let storage = self.state.storage();
         let current = storage.get_alarm().await.ok().flatten();
@@ -872,9 +894,18 @@ impl SiteSession {
                 | ClientMessage::Presence { .. }
         ) {
             self.recheck_peers(now_ms(), false).await;
-            if self.live(ws).is_none() {
-                return Ok(());
+        }
+        // After every await: the socket as it is NOW (revoked? demoted by a peer's
+        // recheck since the role check above?). Immediately before the commit.
+        let live = self.live(ws);
+        if !allowed_now(live.as_ref(), action) {
+            if live.is_some() {
+                send(
+                    ws,
+                    &protocol::error("forbidden", "your role does not allow this", None, None),
+                );
             }
+            return Ok(());
         }
         let actor = Actor {
             user_id: att.user_id,
@@ -889,7 +920,14 @@ impl SiteSession {
                 send(ws, &protocol::presence(now, &rows.map_err(engine_err)?));
                 Ok(())
             }
-            ClientMessage::Presence { state } => self.on_presence(ws, &actor, state).await,
+            ClientMessage::Presence { state } => {
+                // A presence message queued behind a close must not resurrect the
+                // closed socket's row (it would linger until the TTL).
+                if !socket_open(ws) {
+                    return Ok(());
+                }
+                self.on_presence(ws, &actor, state).await
+            }
             ClientMessage::Seed { document } => self.on_seed(ws, &actor, &document).await,
             ClientMessage::Batch {
                 op_id,
@@ -957,7 +995,7 @@ impl SiteSession {
             .await?;
         match res {
             Ok(()) => {
-                self.broadcast_presence(now);
+                self.broadcast_presence(now).await;
                 self.ensure_alarm().await;
             }
             Err(r) => send(ws, &conflict_or_error(None, &r)),
@@ -1041,8 +1079,19 @@ impl SiteSession {
     ) -> Result<()> {
         // Resolve any outstanding row first so this request sees a clean slate.
         self.flush_pending().await;
-        // The flush awaited D1: the sender may have been revoked meanwhile.
-        if self.live(ws).is_none() {
+        // The flush awaited D1: the sender may have been revoked or demoted meanwhile.
+        let action = match reason {
+            CheckpointReason::Publish => Action::Publish,
+            _ => Action::Save,
+        };
+        let live = self.live(ws);
+        if !allowed_now(live.as_ref(), action) {
+            if live.is_some() {
+                send(
+                    ws,
+                    &protocol::error("forbidden", "your role does not allow this", None, None),
+                );
+            }
             return Ok(());
         }
         let now = now_ms();
@@ -1092,10 +1141,10 @@ impl SiteSession {
         sql.exec(ddl, None)?;
         sql.exec("DELETE FROM tx_probe", None)?;
         let sql2 = sql.clone();
-        let mut body = move || -> std::result::Result<JsValue, JsValue> {
+        let mut body = move || -> std::result::Result<(), ()> {
             sql2.exec("INSERT INTO tx_probe (k) VALUES ('rolled-back')", None)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            Err(JsValue::from_str("probe: roll back"))
+                .map_err(|_| ())?;
+            Err(())
         };
         let available = worker::js_sys::Reflect::get(
             &JsValue::from(
@@ -1108,7 +1157,7 @@ impl SiteSession {
         )
         .ok()
         .is_some_and(|f| f.is_function());
-        self.transaction_sync(&mut body);
+        let _ = self.transaction_sync(&mut body);
         let sql3 = self.state.storage().sql();
         let n: Vec<serde_json::Value> = sql3
             .exec("SELECT COUNT(*) AS n FROM tx_probe", None)?

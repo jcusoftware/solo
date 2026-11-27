@@ -38,6 +38,23 @@ describe('studio release guard', () => {
     );
   });
 
+  it('flags multi-line features arrays and crate/feature members in other manifests', () => {
+    assert.equal(
+      enablesOnDependency('[dependencies.sws-worker-studio]\npath = "x"\nfeatures = [\n  "serde",\n  "insecure-dev-auth", # dev\n]\n'),
+      true,
+    );
+    assert.equal(
+      enablesOnDependency('sws-worker-studio = { path = "x", features = [\n"a",\n"insecure-dev-auth"] }\n'),
+      true,
+    );
+    assert.equal(enablesOnDependency('[features]\ndev = ["sws-worker-studio/insecure-dev-auth"]\n'), true);
+    assert.equal(enablesOnDependency('[features]\ndefault = ["x", "sws-worker-studio?/insecure-dev-auth"]\n'), true);
+    // Not flagged: comments, unrelated features, the definition itself, a path mentioning no feature.
+    assert.equal(enablesOnDependency('# dev = ["sws-worker-studio/insecure-dev-auth"]\n'), false);
+    assert.equal(enablesOnDependency('x = { path = "y", features = [\n"serde"\n] }\ninsecure-dev-auth = []\n'), false);
+    assert.equal(enablesOnDependency('[features]\ndefault = ["x"]\ninsecure-dev-auth = []\n'), false);
+  });
+
   it('only the session test and clippy scripts may mention the feature', () => {
     assert.deepEqual(scanPackageScripts({ 'studio:build': 'node b.mjs', 'lint:clippy': 'cargo clippy --features insecure-dev-auth' }), []);
     assert.equal(scanPackageScripts({ 'studio:build': 'node b.mjs --features insecure-dev-auth' }).length, 1);

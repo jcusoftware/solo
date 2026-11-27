@@ -17,8 +17,10 @@
 /// Idempotent schema (run on every cold start / hibernation wake).
 pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    // The latest snapshot plus the latest written publish checkpoint's snapshot
-    // (so its revision bytes stay fetchable by revision id); older ones are deleted.
+    // The latest snapshot (the pending checkpoint, or else the latest confirmed one) plus
+    // the latest confirmed checkpoint and the latest confirmed publish checkpoint, so
+    // their revision bytes stay fetchable by revision id (at most three rows); older
+    // ones are deleted.
     "CREATE TABLE IF NOT EXISTS snapshots (\
        seq INTEGER PRIMARY KEY, doc TEXT NOT NULL, sha256 TEXT NOT NULL, created_ms INTEGER NOT NULL)",
     // The command log. `seq` is contiguous and strictly increasing (trigger below).
@@ -44,6 +46,15 @@ pub const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS presence_expiry ON presence (expires_ms)",
 ];
 
+/// Upgrades for state created by an earlier schema; each is run after [`SCHEMA`] and an
+/// error whose message contains "duplicate column" means it was already applied.
+/// (`ops.payload` was added after the first #62 commit created `ops` without it.)
+pub const MIGRATIONS: &[&str] = &["ALTER TABLE ops ADD COLUMN payload TEXT NOT NULL DEFAULT ''"];
+
+/// Does the per-site schema exist yet? (A read-only probe: used so a lookup on a
+/// never-used object creates nothing.)
+pub const SCHEMA_PROBE: &str = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1";
+
 /// The single JSON meta row lives under [`META_KEY`] (bound as `?1`).
 pub const META_KEY: &str = "meta";
 pub const META_GET: &str = "SELECT value FROM meta WHERE key = ?1";
@@ -56,9 +67,9 @@ pub const SNAPSHOT_PUT: &str = "INSERT INTO snapshots (seq, doc, sha256, created
 VALUES (?1, ?2, ?3, ?4) ON CONFLICT (seq) DO UPDATE SET doc = excluded.doc, \
 sha256 = excluded.sha256, created_ms = excluded.created_ms";
 pub const SNAPSHOT_GET: &str = "SELECT seq, doc, sha256 FROM snapshots WHERE seq = ?1";
-/// Delete snapshots older than `?1` (the latest) except `?2` (the retained
-/// publish snapshot; bind -1 for none).
-pub const SNAPSHOT_PRUNE: &str = "DELETE FROM snapshots WHERE seq < ?1 AND seq <> ?2";
+/// Delete snapshots older than `?1` (the latest) except `?2` (the latest confirmed
+/// checkpoint) and `?3` (the latest confirmed publish); bind -1 for none.
+pub const SNAPSHOT_PRUNE: &str = "DELETE FROM snapshots WHERE seq < ?1 AND seq NOT IN (?2, ?3)";
 
 pub const LOG_COLUMNS: &str = "seq, op_id, user_id, client_id, kind, target_seq, base_seq, \
 rebased, touched, tx, ts_ms";

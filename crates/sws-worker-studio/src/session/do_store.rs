@@ -116,10 +116,32 @@ impl From<PresenceDbRow> for PresenceRow {
 }
 
 impl DoStore {
+    /// True when the schema was already created by an earlier connection. A
+    /// read-only probe: it creates nothing.
+    pub fn initialised(sql_storage: &SqlStorage) -> bool {
+        sql_storage
+            .exec(
+                sql::SCHEMA_PROBE,
+                Some(vec![V::String(sql::META_KEY.into())]),
+            )
+            .and_then(|c| c.to_array::<serde_json::Value>())
+            .is_ok_and(|rows| !rows.is_empty())
+    }
+
     /// Create the tables if needed (idempotent; runs on every wake-up).
     pub fn new(sql_storage: SqlStorage) -> StoreResult<Self> {
         for stmt in sql::SCHEMA {
             sql_storage.exec(stmt, None).map_err(err)?;
+        }
+        for stmt in sql::MIGRATIONS {
+            if let Err(e) = sql_storage.exec(stmt, None)
+                && !e
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains("duplicate column")
+            {
+                return Err(err(e));
+            }
         }
         Ok(Self {
             sql: sql_storage,
@@ -208,10 +230,14 @@ impl Store for DoStore {
         )
     }
 
-    fn prune_snapshots(&mut self, latest_seq: i64, keep_seq: Option<i64>) -> StoreResult<()> {
+    fn prune_snapshots(&mut self, latest_seq: i64, keep: [Option<i64>; 2]) -> StoreResult<()> {
         self.run(
             sql::SNAPSHOT_PRUNE,
-            vec![V::Integer(latest_seq), V::Integer(keep_seq.unwrap_or(-1))],
+            vec![
+                V::Integer(latest_seq),
+                V::Integer(keep[0].unwrap_or(-1)),
+                V::Integer(keep[1].unwrap_or(-1)),
+            ],
         )
     }
 

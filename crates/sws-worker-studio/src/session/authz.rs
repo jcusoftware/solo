@@ -46,6 +46,15 @@ pub fn allows(role: Role, action: Action) -> bool {
     }
 }
 
+/// Is this socket, as its attachment is RIGHT NOW (re-read after every await), still
+/// allowed to do `action`? `None` (revoked or gone) and an unknown role are no. A
+/// demotion that landed during an await (a peer's recheck rewrote the role) is
+/// caught here, immediately before the commit.
+pub fn allowed_now(live: Option<&crate::session::attach::Attachment>, action: Action) -> bool {
+    live.and_then(|a| a.role())
+        .is_some_and(|r| allows(r, action))
+}
+
 /// True when a recheck is due: `checked_ms` is older than `ttl_ms`.
 pub fn needs_recheck(now_ms: i64, checked_ms: i64, ttl_ms: i64) -> bool {
     now_ms.saturating_sub(checked_ms) >= ttl_ms
@@ -82,6 +91,22 @@ mod tests {
         assert!(allows(Role::Owner, Action::Publish));
         assert!(allows(Role::Publisher, Action::Publish));
         assert!(!allows(Role::Editor, Action::Publish));
+    }
+
+    #[test]
+    fn a_demotion_after_the_check_is_caught_before_the_commit() {
+        use crate::session::attach::Attachment;
+        let publisher = Attachment::new("c-1".into(), 1, Role::Publisher, 0);
+        assert!(allowed_now(Some(&publisher), Action::Publish));
+        // The attachment as re-read after an await: a peer's recheck demoted it.
+        let demoted = publisher.clone().refreshed(Role::Editor, 10);
+        assert!(!allowed_now(Some(&demoted), Action::Publish));
+        assert!(allowed_now(Some(&demoted), Action::Edit));
+        // Revoked/gone, or an unreadable role, is never allowed.
+        assert!(!allowed_now(None, Action::Read));
+        let mut odd = publisher;
+        odd.role = "admin".into();
+        assert!(!allowed_now(Some(&odd), Action::Read));
     }
 
     #[test]
