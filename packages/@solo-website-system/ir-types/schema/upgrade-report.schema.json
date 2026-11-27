@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "AssignedId": {
+      "additionalProperties": false,
+      "description": "One ID assigned (or re-assigned) by the upgrade.",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "`new`, `duplicate_uid` or `invalid_uid`.",
+          "type": "string"
+        },
+        "uid": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uid",
+        "path",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://solo-website-system.example/schemas/upgrade-report.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Reviewable result of [`assign_stable_ids`].",
+  "properties": {
+    "assigned": {
+      "items": {
+        "$ref": "#/$defs/AssignedId"
+      },
+      "type": "array"
+    },
+    "kept": {
+      "description": "Nodes that already carried a valid unique `uid` and were left alone.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "marker_written": {
+      "type": "boolean"
+    },
+    "uid_scheme": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "uid_scheme",
+    "assigned",
+    "kept",
+    "marker_written"
+  ],
+  "title": "UpgradeReport",
+  "type": "object"
+}

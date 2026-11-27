@@ -8,6 +8,13 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Host-only: derive JSON Schema (Draft 2020-12) for the IR types. Never enabled
+# for the wasm32 / Worker builds; used by `sws-codegen`.
+jsonschema = ["dep:schemars"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = { version = "1", optional = true }

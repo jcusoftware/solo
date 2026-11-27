@@ -17,6 +17,7 @@ pub const MAX_BATCH_COMMANDS: usize = 1000;
 
 /// Stable, machine-readable error codes (snake_case on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidJson,
@@ -72,6 +73,7 @@ impl ErrorCode {
 
 /// Typed editor error. `command_index` names the failing command of a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct CommandError {
     pub code: ErrorCode,
     pub message: String,
@@ -123,6 +125,7 @@ impl std::error::Error for CommandError {}
 
 /// Address of an ordered node list that can receive or lose nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContainerRef {
     /// `pages[id].body`.
@@ -134,6 +137,7 @@ pub enum ContainerRef {
     /// `else_nodes` (conditional), `body` (loop, default) or `slots.<name>`
     /// (component_instance).
     Node {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slot: Option<String>,
@@ -142,6 +146,7 @@ pub enum ContainerRef {
 
 /// One editor command. Nodes are addressed by `uid`, never by array index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     SetSiteMeta {
@@ -211,17 +216,20 @@ pub enum Command {
         node: Node,
     },
     RemoveNode {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
     },
     /// Move a node (with its subtree) so it ends at `index` of `container`
     /// (`index` counts positions after the node is detached; `None` appends).
     MoveNode {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
         container: ContainerRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<usize>,
     },
     SetAttr {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
         attr: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,18 +237,22 @@ pub enum Command {
     },
     /// Set the value of a `text` node (non-destructive: siblings are untouched).
     SetText {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
         value: String,
     },
     SetTag {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
         tag: String,
     },
     SetClasses {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
         classes: Vec<String>,
     },
     SetStyleRefs {
+        #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9][a-z0-9._-]{0,63}$")))]
         uid: String,
         style_refs: Vec<String>,
     },
@@ -269,14 +281,17 @@ impl Command {
 
 /// Versioned, ordered batch of commands applied atomically.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CommandBatch {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("const" = 1)))]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Consecutive batches sharing a non-empty key merge into one undo step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coalesce_key: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minItems" = 1, "maxItems" = 1000)))]
     pub commands: Vec<Command>,
 }
 
@@ -321,7 +336,9 @@ impl CommandBatch {
 /// Result of applying one batch: the replayable forward commands, the exact
 /// inverse (in application order) and the conflict-addressable touched fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Transaction {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("const" = 1)))]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,

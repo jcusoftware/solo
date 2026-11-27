@@ -1,0 +1,709 @@
+{
+  "$defs": {
+    "IrStyleRule": {
+      "additionalProperties": false,
+      "description": "Deterministic CSS rule emitted by the IR compiler.",
+      "properties": {
+        "breakpoint": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declarations": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pseudo": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "selector"
+      ],
+      "type": "object"
+    },
+    "JsonLdBlock": {
+      "additionalProperties": false,
+      "description": "Structured JSON-LD script block attached to a [`Page`].",
+      "properties": {
+        "data": true,
+        "id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "Node": {
+      "description": "Renderable DOM/template node inside a [`Page`] or [`ComponentDef`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "attrs": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "children": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "classes": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "style_refs": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tag": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "element",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "tag"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fallback": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_ref",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "component": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "props": {
+              "additionalProperties": true,
+              "default": {},
+              "type": "object"
+            },
+            "slots": {
+              "additionalProperties": {
+                "items": {
+                  "$ref": "#/$defs/Node"
+                },
+                "type": "array"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "type": {
+              "const": "component_instance",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "component"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "else_nodes": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "expr": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "then_nodes": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "conditional",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "expr"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "collection_expr": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "item_var": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "loop",
+              "type": "string"
+            },
+            "uid": {
+              "description": "Stable editor identity; never rendered, unique across the document.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "item_var",
+            "collection_expr"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Page": {
+      "additionalProperties": false,
+      "description": "Individual static or parameterized page in a [`SiteDocument`].",
+      "properties": {
+        "body": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "canonical": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "is_not_found": {
+          "default": false,
+          "type": "boolean"
+        },
+        "json_ld": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/JsonLdBlock"
+          },
+          "type": "array"
+        },
+        "noindex": {
+          "default": false,
+          "type": "boolean"
+        },
+        "route": {
+          "$ref": "#/$defs/RoutePattern"
+        },
+        "scripts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptRef"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route",
+        "title"
+      ],
+      "type": "object"
+    },
+    "RoutePattern": {
+      "description": "Route pattern for a [`Page`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "static",
+              "type": "string"
+            },
+            "path": {
+              "pattern": "^/",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "dynamic",
+              "type": "string"
+            },
+            "params": {
+              "default": [],
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "pattern": {
+              "pattern": "^/",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pattern",
+            "params"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ScriptRef": {
+      "additionalProperties": false,
+      "description": "External or bundled script reference.",
+      "properties": {
+        "async_load": {
+          "default": false,
+          "type": "boolean"
+        },
+        "defer": {
+          "default": false,
+          "type": "boolean"
+        },
+        "src": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "src"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://solo-website-system.example/schemas/ir-patch.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Declarative patch operation applied to a [`SiteDocument`].",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "locale": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "op": {
+          "const": "set_site_meta",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "hex": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "op": {
+          "const": "set_color_token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "key",
+        "hex"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "const": "set_font_token",
+          "type": "string"
+        },
+        "slot": {
+          "type": "string"
+        },
+        "stack": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "slot",
+        "stack"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "const": "upsert_page",
+          "type": "string"
+        },
+        "page": {
+          "$ref": "#/$defs/Page"
+        }
+      },
+      "required": [
+        "op",
+        "page"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "op": {
+          "const": "remove_page",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "id"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "type": "string"
+        },
+        "op": {
+          "const": "set_node_text",
+          "type": "string"
+        },
+        "page_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "page_id",
+        "node_id",
+        "text"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attr": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "op": {
+          "const": "set_node_attr",
+          "type": "string"
+        },
+        "page_id": {
+          "type": "string"
+        },
+        "value": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "op",
+        "page_id",
+        "node_id",
+        "attr"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "default": null,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "node": {
+          "$ref": "#/$defs/Node"
+        },
+        "op": {
+          "const": "insert_child_node",
+          "type": "string"
+        },
+        "page_id": {
+          "type": "string"
+        },
+        "parent_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "op",
+        "page_id",
+        "node"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "type": "string"
+        },
+        "op": {
+          "const": "remove_node",
+          "type": "string"
+        },
+        "page_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "page_id",
+        "node_id"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "const": "upsert_style_rule",
+          "type": "string"
+        },
+        "rule": {
+          "$ref": "#/$defs/IrStyleRule"
+        }
+      },
+      "required": [
+        "op",
+        "rule"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "op": {
+          "const": "set_data_value",
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "op",
+        "key",
+        "value"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "IrPatch"
+}

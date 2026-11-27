@@ -8,6 +8,11 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Host-only: derive the venue manifest JSON Schema. Never enabled for wasm32.
+jsonschema = ["dep:schemars", "sws-ir/jsonschema"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -15,3 +20,7 @@ sws-security = { path = "../../../crates/sws-security" }
 sws-ir = { path = "../../../crates/sws-ir" }
 sws-plugin = { path = "../../../crates/sws-plugin" }
 sws-css = { path = "../../../crates/sws-css" }
+schemars = { version = "1", optional = true }
+
+[dev-dependencies]
+sws-codegen = { path = "../../../crates/sws-codegen" }

@@ -1,0 +1,785 @@
+{
+  "$defs": {
+    "Breakpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "media_query": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "min_width": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "media_query"
+      ],
+      "type": "object"
+    },
+    "ComponentDef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "props": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PropSpec"
+          },
+          "type": "object"
+        },
+        "slots": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "template": {
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ContrastPair": {
+      "additionalProperties": false,
+      "properties": {
+        "background": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "foreground": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "min_ratio": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "usage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "foreground",
+        "background",
+        "min_ratio"
+      ],
+      "type": "object"
+    },
+    "DesignTokens": {
+      "additionalProperties": false,
+      "properties": {
+        "colors": {
+          "additionalProperties": {
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "contrast_pairs": {
+          "items": {
+            "$ref": "#/$defs/ContrastPair"
+          },
+          "type": "array"
+        },
+        "fonts": {
+          "$ref": "#/$defs/FontTokens"
+        },
+        "radii": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "spacing": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "FontTokens": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "heading": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mono": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "type": "object"
+    },
+    "FormFieldKind": {
+      "enum": [
+        "text",
+        "textarea",
+        "email",
+        "phone",
+        "date",
+        "integer",
+        "select",
+        "checkbox",
+        "hidden",
+        "route"
+      ],
+      "type": "string"
+    },
+    "FormFieldOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "type": "object"
+    },
+    "FormFieldSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "autocomplete": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "help_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/FormFieldKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "max": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_chars": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/FormFieldOption"
+          },
+          "type": "array"
+        },
+        "placeholder": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FormSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FormFieldSchema"
+          },
+          "type": "array"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "method": {
+          "default": "POST",
+          "type": "string"
+        },
+        "turnstile_action": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "IrStyleRule": {
+      "additionalProperties": false,
+      "properties": {
+        "breakpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declarations": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pseudo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "selector"
+      ],
+      "type": "object"
+    },
+    "JsonLdBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {},
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "Node": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "attrs": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "classes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "style_refs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tag": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "element"
+            }
+          },
+          "required": [
+            "type",
+            "tag"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fallback": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_ref"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "component": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "props": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "slots": {
+              "additionalProperties": {
+                "items": {
+                  "$ref": "#/$defs/Node"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "type": {
+              "const": "component_instance"
+            }
+          },
+          "required": [
+            "type",
+            "component"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "else_nodes": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "expr": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "then_nodes": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "conditional"
+            }
+          },
+          "required": [
+            "type",
+            "expr"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "collection_expr": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "item_var": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "loop"
+            }
+          },
+          "required": [
+            "type",
+            "item_var",
+            "collection_expr"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Page": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "canonical": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "is_not_found": {
+          "type": "boolean"
+        },
+        "json_ld": {
+          "items": {
+            "$ref": "#/$defs/JsonLdBlock"
+          },
+          "type": "array"
+        },
+        "noindex": {
+          "type": "boolean"
+        },
+        "route": {
+          "$ref": "#/$defs/RoutePattern"
+        },
+        "scripts": {
+          "items": {
+            "$ref": "#/$defs/ScriptRef"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route",
+        "title"
+      ],
+      "type": "object"
+    },
+    "PropKind": {
+      "enum": [
+        "string",
+        "number",
+        "boolean",
+        "array",
+        "object",
+        "json"
+      ],
+      "type": "string"
+    },
+    "PropSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {},
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/PropKind"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RoutePattern": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "static"
+            },
+            "path": {
+              "pattern": "^/",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "dynamic"
+            },
+            "params": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "pattern": {
+              "pattern": "^/",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pattern",
+            "params"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ScriptRef": {
+      "additionalProperties": false,
+      "properties": {
+        "async_load": {
+          "type": "boolean"
+        },
+        "defer": {
+          "type": "boolean"
+        },
+        "src": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "src"
+      ],
+      "type": "object"
+    },
+    "SeoMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "default_description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "robots_allow": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "robots_disallow": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sitemap_routes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title_template": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://solo-website-system.example/schemas/site-document.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Deterministic intermediate representation for a Solo Website System (SWS) site.",
+  "properties": {
+    "base_url": {
+      "format": "uri",
+      "pattern": "^https://[^\\s/]+(/.*)?$",
+      "type": "string"
+    },
+    "breakpoints": {
+      "items": {
+        "$ref": "#/$defs/Breakpoint"
+      },
+      "type": "array"
+    },
+    "components": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ComponentDef"
+      },
+      "type": "object"
+    },
+    "data": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "forms": {
+      "additionalProperties": {
+        "$ref": "#/$defs/FormSchema"
+      },
+      "type": "object"
+    },
+    "locale": {
+      "default": "en-US",
+      "minLength": 1,
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "pages": {
+      "items": {
+        "$ref": "#/$defs/Page"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {
+      "default": 1,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "scripts": {
+      "items": {
+        "$ref": "#/$defs/ScriptRef"
+      },
+      "type": "array"
+    },
+    "seo": {
+      "$ref": "#/$defs/SeoMeta"
+    },
+    "slug": {
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "styles": {
+      "items": {
+        "$ref": "#/$defs/IrStyleRule"
+      },
+      "type": "array"
+    },
+    "tokens": {
+      "$ref": "#/$defs/DesignTokens"
+    }
+  },
+  "required": [
+    "slug",
+    "name",
+    "base_url",
+    "pages"
+  ],
+  "title": "SiteDocument",
+  "type": "object"
+}

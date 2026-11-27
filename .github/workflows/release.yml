@@ -61,6 +61,8 @@ jobs:
           if [ -n "$FLAGS" ]; then
             cargo clippy --locked --target wasm32-unknown-unknown $FLAGS -- -D warnings
           fi
+      - name: Generated IR types and schemas up-to-date (codegen:check)
+        run: npm run codegen:check
       - name: Static header parity (_headers vs Rust SECURITY_HEADERS)
         run: node core/tools/check-headers.mjs
       - name: Static sites up-to-date, header parity, and unit tests

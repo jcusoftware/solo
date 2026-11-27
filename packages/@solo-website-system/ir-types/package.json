@@ -1,0 +1,31 @@
+{
+  "name": "@solo-website-system/ir-types",
+  "version": "0.1.2",
+  "description": "TypeScript declarations and JSON Schemas (Draft 2020-12) for the Solo Website System IR, generated from the Rust types. Declarations and JSON only; no JavaScript.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jcusoftware/solo.git",
+    "directory": "packages/@solo-website-system/ir-types"
+  },
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
+    "./schema/site-document.schema.json": "./schema/site-document.schema.json",
+    "./schema/ir-patch.schema.json": "./schema/ir-patch.schema.json",
+    "./schema/command-batch.schema.json": "./schema/command-batch.schema.json",
+    "./schema/transaction.schema.json": "./schema/transaction.schema.json",
+    "./schema/upgrade-report.schema.json": "./schema/upgrade-report.schema.json",
+    "./schema/command-error.schema.json": "./schema/command-error.schema.json"
+  },
+  "files": [
+    "index.d.ts",
+    "schema/*.schema.json",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "sideEffects": false
+}
