@@ -6,9 +6,10 @@
 //! The bounded asset store (#63: [`assets_api`], [`asset_repo`], `sws-assets`)
 //! serves `/api/sites/{workspace_id}/{site_id}/assets[/...]`. Per-site Durable
 //! Object command sessions (#62) live in [`session`], reached through
-//! `GET /api/sites/{workspace_id}/{site_id}/session` (WebSocket). Sessions/OAuth
-//! (#65) and the publish pipeline (#64/#66) are out of scope; [`auth`] keeps
-//! every protected route closed until #65.
+//! `GET /api/sites/{workspace_id}/{site_id}/session` (WebSocket). Direct Upload
+//! publishing to the site Worker and the audited rollback route (#66) live in
+//! [`publish`]. Sessions/OAuth (#65) and publish jobs (#64) are out of scope;
+//! [`auth`] keeps every protected route closed until #65.
 //!
 //! Write-frequency invariant: the registry is written only on explicit
 //! save/publish/checkpoint actions, never once per edit. There is deliberately
@@ -27,6 +28,7 @@ pub mod assets_api;
 pub mod auth;
 pub mod bounds;
 pub mod model;
+pub mod publish;
 pub mod repo;
 pub mod respond;
 pub mod routes;
@@ -78,6 +80,21 @@ mod wasm {
                 Ok(r) => r,
                 Err(e) => {
                     console_error!("unhandled asset error: {e}");
+                    to_response(respond::internal_error())?
+                }
+            };
+            return with_profile_headers(resp, HeaderProfile::Studio, None);
+        }
+        // Rollback (#66): authenticated, audited re-activation of a retained deployment.
+        if let Some(route) = req
+            .url()
+            .ok()
+            .and_then(|u| crate::publish::route::parse(u.path()))
+        {
+            let resp = match crate::publish::wasm::handle_rollback(req, &env, route).await {
+                Ok(r) => r,
+                Err(e) => {
+                    console_error!("unhandled publish error: {e}");
                     to_response(respond::internal_error())?
                 }
             };

@@ -232,9 +232,10 @@ impl Drop for Inflight {
 /// The dev-auth header is only ever read by the `insecure-dev-auth` test build, and
 /// there only behind the same runtime fence as the session route
 /// ([`crate::session::entry::dev_fence_open`]); the release build neither reads it nor
-/// embeds its name (checked by `scripts/check-studio-release.mjs`).
+/// embeds its name (checked by `scripts/check-studio-release.mjs`). Shared with the
+/// rollback route (`publish::wasm`).
 #[cfg(feature = "insecure-dev-auth")]
-fn dev_user_header(req: &Request, env: &Env) -> Result<Option<String>> {
+pub(crate) fn dev_user_header(req: &Request, env: &Env) -> Result<Option<String>> {
     if !crate::session::entry::dev_fence_open(req, env) {
         return Ok(None);
     }
@@ -242,7 +243,7 @@ fn dev_user_header(req: &Request, env: &Env) -> Result<Option<String>> {
 }
 
 #[cfg(not(feature = "insecure-dev-auth"))]
-fn dev_user_header(_req: &Request, _env: &Env) -> Result<Option<String>> {
+pub(crate) fn dev_user_header(_req: &Request, _env: &Env) -> Result<Option<String>> {
     Ok(None)
 }
 
