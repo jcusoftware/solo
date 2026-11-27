@@ -70,6 +70,26 @@ pub const SECURITY_HEADERS: &[(&str, &str)] = &[
     assert.deepEqual(compare(rustHeaders, fileHeaders, '_headers vs headers.rs'), []);
     assert.deepEqual(compare(fileHeaders, rustHeaders, 'headers.rs vs _headers'), []);
   });
+
+  it('parses each named profile const exactly as its golden profiles/*.headers file (#180)', () => {
+    const rust = readFileSync(resolve(process.cwd(), 'crates/sws-security/src/headers.rs'), 'utf8');
+    for (const [name, file] of [
+      ['STUDIO_HEADERS', 'studio'],
+      ['PREVIEW_HEADERS', 'preview'],
+      ['CANVAS_HEADERS', 'canvas'],
+    ]) {
+      const golden = parseHeadersFile(
+        readFileSync(resolve(process.cwd(), `crates/sws-security/profiles/${file}.headers`), 'utf8'),
+      );
+      assert.deepEqual(parseRustConst(rust, name), golden, `${name} vs profiles/${file}.headers`);
+    }
+    // The default (site) const is still the first match, unaffected by the new consts.
+    assert.equal(parseRustConst(rust).find(([k]) => k === 'X-Frame-Options')?.[1], 'DENY');
+    assert.match(
+      parseRustConst(rust).find(([k]) => k === 'Content-Security-Policy')[1],
+      /challenges\.cloudflare\.com/,
+    );
+  });
 });
 
 describe('compare', () => {

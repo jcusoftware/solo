@@ -1,0 +1,13 @@
+# Golden copy of the `canvas` security-header profile
+# (CANVAS_HEADERS in crates/sws-security/src/headers.rs). Not served as a static
+# file; `cargo test -p sws-security` asserts exact two-way parity with the const.
+# `frame-ancestors 'none'` is the fail-closed default; HeaderProfile::resolve
+# replaces it with a validated Studio origin at the application point.
+/*
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), browsing-topics=()
+  Cross-Origin-Opener-Policy: same-origin
+  X-Robots-Tag: noindex, nofollow
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'

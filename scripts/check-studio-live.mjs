@@ -2,8 +2,8 @@
 // Live smoke check for the Studio Worker (zero dependencies).
 //
 // Hits a running `npm run studio:dev` server and asserts, on REAL responses, the
-// status, the Allow header for 405, the full security-header set from
-// crates/sws-security/src/headers.rs, and `Cache-Control: no-store`:
+// status, the Allow header for 405, the full `studio` security-header profile
+// (STUDIO_HEADERS in crates/sws-security/src/headers.rs), and `Cache-Control: no-store`:
 //   GET/HEAD /api/health -> 200, GET /nope -> 404, POST /api/health -> 405 + Allow,
 //   oversized POST -> 413, non-JSON POST -> 415, over-long URL -> 414.
 //
@@ -70,7 +70,7 @@ async function main(argv) {
   }
   let expected;
   try {
-    expected = parseRustConst(await readFile('crates/sws-security/src/headers.rs', 'utf8'));
+    expected = parseRustConst(await readFile('crates/sws-security/src/headers.rs', 'utf8'), 'STUDIO_HEADERS');
   } catch (e) {
     console.error(`check-studio-live: ${e.message}`);
     return 2;
@@ -86,7 +86,7 @@ async function main(argv) {
     for (const p of problems) console.error(`FAIL ${p}`);
     return 1;
   }
-  console.log(`check-studio-live: OK at ${base} (200/HEAD/404/405/413/415/414 with ${expected.length} security headers + no-store)`);
+  console.log(`check-studio-live: OK at ${base} (200/HEAD/404/405/413/415/414 with ${expected.length} studio-profile headers + no-store)`);
   return 0;
 }
 

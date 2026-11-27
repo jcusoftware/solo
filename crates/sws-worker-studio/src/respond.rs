@@ -3,12 +3,12 @@
 //! The wasm glue in `lib.rs` only adapts a `worker::Request` into
 //! [`RequestFacts`] plus the number of body bytes actually read, calls
 //! [`respond`], and turns the returned [`Resp`] into a `worker::Response`.
-//! Status, body and the full header set (including
-//! [`sws_security::headers::SECURITY_HEADERS`] and `Cache-Control: no-store`)
+//! Status, body and the full header set (the `studio` security-header profile,
+//! [`sws_security::headers::STUDIO_HEADERS`], and `Cache-Control: no-store`)
 //! are decided here, so host tests cover the real response contract.
 
 use serde_json::Value;
-use sws_security::headers::{API_CACHE_CONTROL, SECURITY_HEADERS};
+use sws_security::headers::{API_CACHE_CONTROL, HeaderProfile};
 use sws_security::response::error_body;
 
 use crate::bounds::{self, MAX_BODY_BYTES, Reject};
@@ -42,7 +42,8 @@ impl Resp {
         ];
         headers.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         headers.extend(
-            SECURITY_HEADERS
+            HeaderProfile::Studio
+                .headers()
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string())),
         );
@@ -136,6 +137,7 @@ pub fn respond(f: &RequestFacts, body_len: usize, version: &str) -> Resp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sws_security::headers::{SECURITY_HEADERS, STUDIO_HEADERS};
 
     fn facts<'a>(method: &'a str, path: &'a str) -> RequestFacts<'a> {
         RequestFacts {
@@ -148,16 +150,16 @@ mod tests {
         }
     }
 
-    /// The applied header set is exactly: security headers + Cache-Control:
+    /// The applied header set is exactly: the `studio` profile + Cache-Control:
     /// no-store + Content-Type (+ optional Allow), with no duplicates.
     fn assert_headers(r: &Resp, allow: Option<&str>) {
-        for (k, v) in SECURITY_HEADERS {
+        for (k, v) in STUDIO_HEADERS {
             assert_eq!(r.header(k), Some(*v), "{k} on {}", r.status);
         }
         assert_eq!(r.header("Cache-Control"), Some("no-store"));
         assert_eq!(r.header("Content-Type"), Some("application/json"));
         assert_eq!(r.header("Allow"), allow, "Allow on {}", r.status);
-        let expected = SECURITY_HEADERS.len() + 2 + usize::from(allow.is_some());
+        let expected = STUDIO_HEADERS.len() + 2 + usize::from(allow.is_some());
         assert_eq!(
             r.headers.len(),
             expected,
@@ -197,7 +199,7 @@ mod tests {
         let r = respond(&facts("GET", "/api/sites/ws-a/site_1/session"), 0, "v");
         assert_eq!((r.status, error_code(&r)), (426, "upgrade_required"));
         assert_eq!(r.header("Upgrade"), Some("websocket"));
-        for (k, v) in SECURITY_HEADERS {
+        for (k, v) in STUDIO_HEADERS {
             assert_eq!(r.header(k), Some(*v), "{k}");
         }
         assert_eq!(r.header("Cache-Control"), Some("no-store"));
@@ -296,5 +298,34 @@ mod tests {
         let r = internal_error();
         assert_eq!((r.status, error_code(&r)), (500, "internal_error"));
         assert_headers(&r, None);
+    }
+
+    #[test]
+    fn responses_carry_exactly_the_studio_profile_not_the_site_set() {
+        let mut want: Vec<(String, String)> = vec![
+            ("Content-Type".into(), "application/json".into()),
+            ("Cache-Control".into(), "no-store".into()),
+        ];
+        want.extend(HeaderProfile::Studio.resolve(None));
+        for r in [
+            respond(&facts("GET", "/api/health"), 0, "v"),
+            respond(&facts("GET", "/nope"), 0, "v"),
+            json_error(403, "forbidden_origin", &[]),
+            json_ok(serde_json::json!({ "ok": true })),
+            internal_error(),
+        ] {
+            assert_eq!(r.headers, want, "on {}", r.status);
+            assert_ne!(
+                r.header("Content-Security-Policy"),
+                SECURITY_HEADERS
+                    .iter()
+                    .find(|(k, _)| *k == "Content-Security-Policy")
+                    .map(|(_, v)| *v)
+            );
+        }
+        assert_eq!(
+            internal_error().header("Cross-Origin-Resource-Policy"),
+            Some("same-origin")
+        );
     }
 }
