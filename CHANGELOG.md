@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Roadmap and architecture phase table now cover the v0.3.x Builder additions and milestones v0.5.0 through v1.0.0, plus post-1.0 packs and declared non-goals (refs #58).
+
 ### Added
 
 - Scaffolded the optional Studio Worker `crates/sws-worker-studio` (#61): D1 workspace registry migration (`0001_registry.sql`), tenant-scoped repository SQL, strict request bounds, `GET|HEAD /api/health`, and a separate `wrangler.studio.jsonc` with its own local D1 state (`npm run studio:dev`, `studio:db:migrate:local`, `test:studio`).

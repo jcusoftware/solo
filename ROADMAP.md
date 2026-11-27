@@ -86,7 +86,7 @@ Visitor traffic must keep working when Studio is unavailable. The Studio Worker 
 
 ## `v0.3.0` — Builder, Standalone Export & Release Hardening
 
-**Goal:** Ship the browser Builder as a thin TypeScript shell over the Rust/Wasm core, plus hardened standalone Rust Worker export, without a Studio account being required to edit or export.
+**Goal:** Ship the browser Builder as a thin TypeScript shell over the Rust/Wasm core, plus hardened standalone Rust Worker export, without a Studio account being required to edit or export. Builder additions (templates, pages, SEO, form builder) follow in the `v0.3.x` releases below.
 
 ### `v0.3.0-alpha.1` — Opaque Wasm Session & Isolated Canvas (Phase 3)
 
@@ -117,6 +117,34 @@ Visitor traffic must keep working when Studio is unavailable. The Studio Worker 
 
 ---
 
+## `v0.3.x` — Builder additions
+
+**Goal:** Extend the standalone Builder after `v0.3.0`, one release at a time, without requiring a Studio account.
+
+### `v0.3.1` — Templates, Fonts & Media Library
+
+**Exit:** a starter template produces an exported site that passes the WCAG 2.2 AA gates, and images are resized at build time with no third-party font or image CDN.
+
+- #97 starter template gallery (8 to 12 templates, fictional fixtures only).
+- #98 self-hosted font picker.
+- #99 media library on the #63 asset store with responsive resizing and crop/focal metadata applied at compile.
+
+### `v0.3.2` — Pages, Navigation & SEO
+
+**Exit:** sitemap and redirects are verified in CI and the Lighthouse SEO score does not regress.
+
+- #100 page and navigation management with breakpoint preview.
+- #101 SEO panel (title, description, Open Graph).
+- #102 sitemap, robots and `_redirects` generation (redirect manager).
+
+### `v0.3.3` — Visual Form Builder
+
+**Exit:** generated forms pass the WCAG 2.2 AA gates, keep native semantics, and fail closed without Turnstile.
+
+- #103 visual form block on the existing Turnstile-protected form pipeline.
+
+---
+
 ## `v0.4.0` — Import Static Sites
 
 **Goal:** Import built static HTML, CSS and local assets from a folder or ZIP in the standalone Builder, show a best-effort inert reference, and produce an editable native Solo draft with a migration report (#83 to #88). No Studio account or network is required.
@@ -125,10 +153,124 @@ Visitor traffic must keep working when Studio is unavailable. The Studio Worker 
 
 ---
 
+## `v0.5.0` — Content & CMS
+
+**Goal:** Schema-driven content in the canonical IR, a blog, search and media content, multilingual sites, scheduling and restore points.
+
+### `v0.5.0-alpha.1` — Collections & Content Model
+
+**Exit:** collections round-trip losslessly through the Rust reducer, native and Wasm output stay byte-identical, and legacy files keep building without writes.
+
+- #104 collections in the canonical IR.
+- #105 generated TypeScript types and JSON Schema for collections.
+- #106 collection list and detail pages.
+
+### `v0.5.0-beta.1` — Blog, Search & Media Content
+
+**Exit:** the fictional demo gains a blog and gallery that pass the a11y and header gates.
+
+- #107 blog collection (posts, tags, categories, authors) with RSS/Atom.
+- #108 galleries with a no-JS fallback, privacy-enhanced click-to-load embeds and downloads.
+- #109 static site search index generated at compile.
+- #110 generic events promoted from the hospitality pack to core.
+
+### `v0.5.0` — Multilingual, Scheduling & Restore Points
+
+**Exit:** a scheduled post publishes on time on a cardless account, and a restore returns a site to an earlier revision with an audited trail.
+
+- #111 per-locale pages with hreflang and a locale switcher.
+- #112 scheduled publishing through Cron Triggers and the #64 pipeline.
+- #113 moderated, Turnstile-protected comments.
+- #114 site-wide restore points over #62 revisions.
+- #115 extended JSON-LD (Article, Event, FAQ).
+
+---
+
+## `v0.6.0` — Growth
+
+**Goal:** Capture and act on visitor interest without breaking the cookie-free default. Issues are not yet filed for these milestones.
+
+- `v0.6.0-alpha.1` — Inbox, Contacts & Webhooks. **Exit:** submissions are tenant-scoped, exportable and redacted in logs; webhooks (using the #65 scoped tokens) are signed and retried safely.
+- `v0.6.0-beta.1` — Analytics & Consent. **Exit:** the default site sets no cookies and ships no third-party scripts.
+- `v0.6.0` — Campaigns & Engagement. **Exit:** a campaign sends through a bring-your-own provider and never re-subscribes an unsubscribed contact.
+
+---
+
+## `v0.7.0` — Commerce
+
+**Goal:** Full commerce on a shared visitor identity layer (OAuth-only by default, magic-link email opt-in with a bring-your-own provider) that v0.9.0 Members reuses. Issues are not yet filed.
+
+- `v0.7.0-alpha.1` — Visitor Identity & Catalog. **Exit:** visitor sign-in works on a cardless account and catalog pages pass the a11y gates.
+- `v0.7.0-beta.1` — Cart, Payments & Fulfilment. **Exit:** a test-mode order completes end to end with webhook-verified state and atomic inventory decrement.
+- `v0.7.0` — Orders, Subscriptions & Growth. **Exit:** refunds and subscriptions are verified in Stripe test mode and the full store passes the a11y and header gates.
+
+---
+
+## `v0.8.0` — Services & bookings
+
+**Goal:** Promote hospitality scheduling to a generic core bookings feature. Issues are not yet filed.
+
+- `v0.8.0-beta.1` — Core Bookings. **Exit:** the hospitality pack runs on the core bookings API with no regressions.
+- `v0.8.0` — Paid Bookings & Reminders. **Exit:** a deposit booking completes in Stripe test mode and reminders respect consent.
+
+---
+
+## `v0.9.0` — Members
+
+**Goal:** Member features on the v0.7.0 visitor identity layer. Issues are not yet filed.
+
+- `v0.9.0-beta.1` — Gated Content & Memberships. **Exit:** gated content is never served to unauthorised visitors, verified by tests.
+- `v0.9.0` — Community, Courses & Loyalty. **Exit:** moderation, rate limits and a11y gates pass for all member-generated content.
+
+---
+
+## `v0.10.0` — Migration
+
+**Goal:** Move existing sites into Solo. Builds on the v0.4.0 import pipeline. Issues are not yet filed.
+
+- `v0.10.0-beta.1` — Builder Import Adapters (WordPress WXR, Squarespace, Shopify, Wix). **Exit:** fictional fixture exports from each source import deterministically into editable drafts with a migration report.
+- `v0.10.0` — URL Mapping & GitHub Sync. GitHub repository sync is in scope here by maintainer decision; #80 still keeps GitHub integration out of v0.3.0. **Exit:** an imported site keeps its old URLs working through generated redirects, and repo sync round-trips without data loss.
+
+---
+
+## `v0.11.0` — Onboarding & operations
+
+**Goal:** Make setup and day-two operations approachable. Separate from v0.10.0. Issues are not yet filed.
+
+- `v0.11.0-beta.1` — Setup Wizard & Domains. **Exit:** a non-technical tester publishes to a custom domain on a fresh cardless account using only the wizard.
+- `v0.11.0` — Operations & Support. **Exit:** backup and restore are verified end to end and the installable PWA Studio passes the a11y gates.
+
+---
+
+## `v1.0.0`
+
+- `v1.0.0-rc.1` — Audits & API Freeze. External security and accessibility audits, a frozen public pack API, and IR upgrade and migration guarantees. **Exit:** audit findings are resolved or documented and the pack API and IR compatibility policy are published.
+- `v1.0.0` — Initial Release. User guides, support process and response policy, and a signed tag-only release from a verified squash commit on `main`. **Exit:** all prior milestone exits hold on the release commit.
+
+### Ground rules for v0.5.0 onward
+
+- The cardless default keeps working. Paid services are optional and bring-your-own-key.
+- Generic features live in core, vertical features in packs.
+- Every public form gets Turnstile and the WCAG 2.2 AA gates.
+- Cloudflare quotas stay assumptions until verified.
+
+---
+
 ## Post-launch and separate tracks
 
 - #73 evaluate third-party data-only pack loading (not a launch dependency, no milestone). Existing statically linked Rust packs are covered by #74 and #78. Whether executable component plugins are deferred to v0.4+ is part of that evaluation.
 - Hospitality pack feature ports (`v0.2 — Hospitality pack feature ports`: #43 events calendar, #44 call and booking scheduling, #45 sandbox Stripe checkout) are tracked separately from the Studio milestones above.
+- Post-1.0 industry packs, tracked with the GitHub label `post-1.0 pack`: salon/spa, contractor/trades, nonprofit, professional services, fitness, retail, creator/portfolio, real estate and medical (non-PHI).
+- A curated, data-only pack registry follows the #73 evaluation, after 1.0.
+
+### Non-goals
+
+- POS hardware, an ad campaign manager, domain reselling and hosted email mailboxes (Cloudflare Email Routing forwarding is used instead).
+- Native mobile apps (an installable PWA Studio is the plan).
+- A hosted stock media catalog.
+- AI assist is not planned.
+- Custom code in the editor: the canvas stays script-free, and custom code is possible only via export.
+- One-click third-party code extensions (deferred).
 
 ---
 
