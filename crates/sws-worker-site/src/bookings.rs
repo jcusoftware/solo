@@ -31,6 +31,20 @@ pub fn slot_at<E>(
     )
 }
 
+/// Workers rate-limit binding guarding `GET /api/bookings/slots`.
+pub const SLOTS_LIMIT_BINDING: &str = "BOOKING_SLOTS_LIMIT";
+
+/// Maps the slot-listing rate-limit check to a rejection (`status`, error code),
+/// or `None` when the request may proceed. `check` is `None` when the binding is
+/// missing or the limiter call failed: fail closed rather than serve unlimited.
+pub fn slots_limit_rejection(check: Option<bool>) -> Option<(u16, &'static str)> {
+    match check {
+        Some(true) => None,
+        Some(false) => Some((429, "rate_limited")),
+        None => Some((503, "rate_limit_unavailable")),
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 pub mod wasm {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -47,7 +61,7 @@ pub mod wasm {
         web_sys::WorkerGlobalScope,
     };
 
-    use super::{Interval, overlaps, slot_at};
+    use super::{Interval, SLOTS_LIMIT_BINDING, overlaps, slot_at, slots_limit_rejection};
     use crate::google_auth::wasm::{access_token, fetch_json};
     use crate::timestamp::google_datetime_seconds;
     use crate::zoom::wasm as zoom;
@@ -606,9 +620,17 @@ pub mod wasm {
             if is_slots {
                 let ip = req.headers().get("CF-Connecting-IP")?;
                 let key = format!("{}:{}", cfg.tenant, ip.as_deref().unwrap_or("unknown"));
-                if !env.rate_limiter("BOOKING_SLOTS_LIMIT")?.limit(key).await?.success {
-                    let response = reject(429, "rate_limited")?;
-                    response.headers().set("Retry-After", "60")?;
+                let check = match env.rate_limiter(SLOTS_LIMIT_BINDING) {
+                    Ok(limiter) => limiter.limit(key).await.ok().map(|outcome| outcome.success),
+                    Err(_) => None,
+                };
+                if let Some((status, code)) = slots_limit_rejection(check) {
+                    let response = reject(status, code)?;
+                    if check.is_none() {
+                        worker::console_error!("{SLOTS_LIMIT_BINDING} rate limiter unavailable");
+                    } else {
+                        response.headers().set("Retry-After", "60")?;
+                    }
                     return Ok(response);
                 }
                 slots(&cfg, env, &url, &clock, now).await
@@ -701,5 +723,35 @@ mod tests {
             },
             0
         ));
+    }
+
+    #[test]
+    fn slots_limit_fails_closed_when_the_binding_is_unavailable() {
+        assert_eq!(slots_limit_rejection(Some(true)), None);
+        assert_eq!(
+            slots_limit_rejection(Some(false)),
+            Some((429, "rate_limited"))
+        );
+        assert_eq!(
+            slots_limit_rejection(None),
+            Some((503, "rate_limit_unavailable"))
+        );
+    }
+
+    #[test]
+    fn wrangler_configs_declare_the_slots_limit_binding() {
+        let needle = format!("\"name\": \"{SLOTS_LIMIT_BINDING}\"");
+        for (path, config) in [
+            ("wrangler.jsonc", include_str!("../../../wrangler.jsonc")),
+            (
+                "deploy/cloudflare/wrangler.site.example.jsonc",
+                include_str!("../../../deploy/cloudflare/wrangler.site.example.jsonc"),
+            ),
+        ] {
+            assert!(
+                config.contains("\"ratelimits\"") && config.contains(&needle),
+                "{path} must declare the {SLOTS_LIMIT_BINDING} ratelimits binding"
+            );
+        }
     }
 }
