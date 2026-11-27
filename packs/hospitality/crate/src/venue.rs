@@ -1,11 +1,15 @@
 //! Hospitality venue manifest types, validation, and schema.org JSON-LD builder.
 //!
-//! Mirrors `packs/hospitality/schema/venue.schema.json`.
+//! `packs/hospitality/schema/venue.schema.json` is generated from these types
+//! (`jsonschema` feature, see [`schema`]); regenerate it with `npm run codegen`.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+
+#[cfg(feature = "jsonschema")]
+pub mod schema;
 
 pub const DAYS: [&str; 7] = [
     "monday",
@@ -18,13 +22,19 @@ pub const DAYS: [&str; 7] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "jsonschema", schemars(title = "SWS venue manifest", description = "Tenant-agnostic hospitality manifest consumed by sws-pack-hospitality and sws-cli.", extend("required" = ["schema_version", "slug", "name", "business_types", "nap", "hours", "brand", "modules", "integrations", "menu"])))]
 pub struct VenueManifest {
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("const" = 1)))]
     pub schema_version: u32,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9]+(-[a-z0-9]+)*$")))]
     pub slug: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minLength" = 1, "maxLength" = 120)))]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::legal_disclaimer"))]
     pub legal_disclaimer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fictional: Option<bool>,
@@ -34,10 +44,12 @@ pub struct VenueManifest {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category_label: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::business_types"))]
     pub business_types: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuisine: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^\\${1,4}$")))]
     pub price_range: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
@@ -46,15 +58,18 @@ pub struct VenueManifest {
     pub nap: Nap,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo: Option<Geo>,
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::hours"))]
     pub hours: BTreeMap<String, DayHours>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holiday_overrides: Vec<HolidayOverride>,
     #[serde(default)]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::booking_url"))]
     pub booking_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub venue_accessibility: Vec<String>,
     pub brand: Brand,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::modules"))]
     pub modules: BTreeMap<String, ModuleFlag>,
     pub integrations: Integrations,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,48 +89,66 @@ pub struct VenueManifest {
 
 /// One fixed-price sandbox checkout catalog entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct CheckoutItem {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z][a-z0-9-]{0,31}$")))]
     pub id: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minLength" = 1)))]
     pub name: String,
     /// USD cents (50..=10000); the demo never takes variable amounts.
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = 50, "maximum" = 10000)))]
     pub cents: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct CheckoutConfig {
     /// 2–5 one-time pickup items.
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minItems" = 2, "maxItems" = 5)))]
     pub items: Vec<CheckoutItem>,
     /// Exactly one fixed monthly subscription item.
     pub subscription: CheckoutItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Nap {
     pub name: String,
     pub address: Address,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^\\+[0-9-]{7,20}$")))]
     pub phone: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("format" = "email")))]
     pub email: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^https://")))]
     pub website: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Address {
     pub street: String,
     pub locality: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[A-Z]{2}$")))]
     pub region: String,
     pub postal_code: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[A-Z]{2}$")))]
     pub country: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Geo {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = -90, "maximum" = 90)))]
     pub latitude: f64,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = -180, "maximum" = 180)))]
     pub longitude: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approximate: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::day_hours"))]
 pub struct DayHours {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opens: Option<String>,
@@ -126,41 +159,53 @@ pub struct DayHours {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "jsonschema", schemars(extend("oneOf" = [{"required": ["closed"], "properties": {"closed": {"const": true}}, "not": {"anyOf": [{"required": ["opens"]}, {"required": ["closes"]}]}}, {"required": ["opens", "closes"], "properties": {"closed": {"const": false}}}])))]
 pub struct HolidayOverride {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
     pub date: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^([01][0-9]|2[0-3]):[0-5][0-9]$")))]
     pub opens: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^([01][0-9]|2[0-3]):[0-5][0-9]$")))]
     pub closes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Brand {
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::palette"))]
     pub palette: BTreeMap<String, String>,
     pub contrast: ContrastConfig,
     pub fonts: Fonts,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ContrastConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wcag_target: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minItems" = 1)))]
     pub pairs: Vec<ContrastPair>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ContrastPair {
     pub foreground: String,
     pub background: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = 4.5)))]
     pub ratio: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Fonts {
     pub body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,6 +213,7 @@ pub struct Fonts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ModuleFlag {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,9 +221,11 @@ pub struct ModuleFlag {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Integrations {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toast: Option<ToastConfig>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("enum" = ["walk_in_only", "opentable", "resy"])))]
     pub seating_policy: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opentable: Option<OpenTableConfig>,
@@ -190,30 +238,38 @@ pub struct Integrations {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ToastConfig {
     pub enabled: bool,
     #[serde(default)]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::nullable_string"))]
     pub restaurant_guid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct OpenTableConfig {
     #[serde(default)]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::nullable_string"))]
     pub restaurant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ResyConfig {
     #[serde(default)]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::nullable_string"))]
     pub venue_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct InKindConfig {
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct TurnstileConfig {
     pub site_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,10 +277,13 @@ pub struct TurnstileConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct NewsletterConfig {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("maxLength" = 500)))]
     pub blurb: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("maxLength" = 500)))]
     pub consent_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privacy_note: Option<String>,
@@ -232,12 +291,17 @@ pub struct NewsletterConfig {
 
 /// Event source for the public events calendar (issue #43 port).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EventsSource {
-    /// Manual rows / D1-managed records only.
+    // Plain comments (not `///`): doc comments on variants make schemars emit
+    // `oneOf` of `const`s instead of the flat `enum` the schema has always had.
+    //
+    // D1OrCms: manual rows / D1-managed records only.
     D1OrCms,
-    /// Scheduled Google Calendar snapshot import (config-gated; secrets are
-    /// provisioned in the Worker environment only, never in the manifest).
+    // GoogleCalendarSync: scheduled Google Calendar snapshot import
+    // (config-gated; secrets are provisioned in the Worker environment only,
+    // never in the manifest).
     GoogleCalendarSync,
 }
 
@@ -246,17 +310,22 @@ pub enum EventsSource {
 /// `google_calendar_id` is declarative only: the Worker reads the actual
 /// calendar from its `GOOGLE_SYNC_CALENDAR_ID` secret at sync time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "jsonschema", schemars(extend("required" = ["enabled", "source", "google_calendar_id", "timezone"], "if" = {"properties": {"enabled": {"const": true}, "source": {"const": "google_calendar_sync"}}}, "then" = {"properties": {"google_calendar_id": {"type": "string", "pattern": "\\S"}}})))]
 pub struct EventsConfig {
     pub enabled: bool,
     pub source: EventsSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::events_calendar_id"))]
     pub google_calendar_id: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minLength" = 1)))]
     pub timezone: String,
 }
 
 /// Scheduling configuration. Native call booking (issue #44) adds its own
 /// section under `scheduling` on top of `events`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct SchedulingConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<EventsConfig>,
@@ -272,19 +341,28 @@ pub struct SchedulingConfig {
 /// the Worker reads the actual calendar from its
 /// `GOOGLE_BOOKING_CALENDAR_ID` secret at request time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct BookingsConfig {
     pub enabled: bool,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minLength" = 3, "maxLength" = 254, "format" = "email")))]
     pub google_workspace_calendar_id: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = 5, "maximum" = 240)))]
     pub slot_duration_minutes: u16,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = 0, "maximum" = 1440)))]
     pub buffer_minutes: u16,
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::working_hours"))]
     pub working_hours: BTreeMap<String, [String; 2]>,
     pub auto_zoom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct HappyHour {
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::happy_hour_days"))]
     pub days: Vec<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^([01][0-9]|2[0-3]):[0-5][0-9]$")))]
     pub start: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^([01][0-9]|2[0-3]):[0-5][0-9]$")))]
     pub end: String,
     pub offers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -292,42 +370,59 @@ pub struct HappyHour {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Menu {
     pub name: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[A-Z]{3}$")))]
     pub currency: String,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minItems" = 1)))]
     pub sections: Vec<MenuSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct MenuSection {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("pattern" = "^[a-z0-9]+(-[a-z0-9]+)*$")))]
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("maxLength" = 500)))]
     pub description: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minItems" = 1)))]
     pub items: Vec<MenuItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct MenuItem {
+    #[cfg_attr(feature = "jsonschema", schemars(extend("minLength" = 1, "maxLength" = 120)))]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("maxLength" = 500)))]
     pub description: Option<String>,
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::menu_price"))]
     pub price: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("maxLength" = 120)))]
     pub price_note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contains_alcohol: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::dietary"))]
     pub dietary: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct SeoConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("maxLength" = 70)))]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "jsonschema", schemars(extend("maxLength" = 160)))]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "jsonschema", schemars(schema_with = "schema::routes"))]
     pub routes: Vec<String>,
 }
 

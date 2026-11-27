@@ -22,6 +22,7 @@ fn default_form_method() -> String {
 
 /// Complete, domain-agnostic intermediate representation of a static/edge website.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct SiteDocument {
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
@@ -76,6 +77,7 @@ impl Default for SiteDocument {
 
 /// Design system tokens for colors, typography, spacing, radii, and contrast checks.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct DesignTokens {
     #[serde(default)]
     pub colors: BTreeMap<String, String>,
@@ -91,6 +93,7 @@ pub struct DesignTokens {
 
 /// Font stack tokens for body, heading, and monospace text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct FontTokens {
     pub body: String,
     #[serde(default)]
@@ -111,6 +114,7 @@ impl Default for FontTokens {
 
 /// Declared foreground/background color token pair with minimum WCAG contrast ratio.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ContrastPair {
     pub foreground: String,
     pub background: String,
@@ -121,6 +125,7 @@ pub struct ContrastPair {
 
 /// Responsive media-query breakpoint definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Breakpoint {
     pub id: String,
     pub media_query: String,
@@ -130,6 +135,7 @@ pub struct Breakpoint {
 
 /// Deterministic CSS rule emitted by the IR compiler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct IrStyleRule {
     pub id: String,
     pub selector: String,
@@ -143,6 +149,7 @@ pub struct IrStyleRule {
 
 /// Reusable template component definition with typed props and named slots.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ComponentDef {
     pub name: String,
     #[serde(default)]
@@ -155,6 +162,7 @@ pub struct ComponentDef {
 
 /// Specification for a single component prop.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct PropSpec {
     #[serde(default)]
     pub kind: PropKind,
@@ -168,6 +176,7 @@ pub struct PropSpec {
 
 /// Supported value types for component props.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PropKind {
     #[default]
@@ -181,6 +190,7 @@ pub enum PropKind {
 
 /// Progressive-enhancement form definition bound to Turnstile and edge handlers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct FormSchema {
     pub id: String,
     #[serde(default)]
@@ -195,6 +205,7 @@ pub struct FormSchema {
 
 /// Field specification within a [`FormSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct FormFieldSchema {
     pub name: String,
     #[serde(default)]
@@ -222,6 +233,7 @@ pub struct FormFieldSchema {
 
 /// Supported form field control types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FormFieldKind {
     Text,
@@ -238,6 +250,7 @@ pub enum FormFieldKind {
 
 /// Selectable option for [`FormFieldKind::Select`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct FormFieldOption {
     pub value: String,
     pub label: String,
@@ -245,6 +258,7 @@ pub struct FormFieldOption {
 
 /// Individual static or parameterized page in a [`SiteDocument`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Page {
     pub id: String,
     pub route: RoutePattern,
@@ -267,6 +281,7 @@ pub struct Page {
 
 /// Route pattern for a [`Page`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RoutePattern {
     Static {
@@ -281,6 +296,7 @@ pub enum RoutePattern {
 
 /// Structured JSON-LD script block attached to a [`Page`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct JsonLdBlock {
     #[serde(default)]
     pub id: Option<String>,
@@ -289,6 +305,7 @@ pub struct JsonLdBlock {
 
 /// Site-wide SEO, robots.txt, and sitemap configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct SeoMeta {
     #[serde(default)]
     pub title_template: Option<String>,
@@ -304,6 +321,7 @@ pub struct SeoMeta {
 
 /// External or bundled script reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ScriptRef {
     pub src: String,
     #[serde(default)]
@@ -314,6 +332,7 @@ pub struct ScriptRef {
 
 /// Renderable DOM/template node inside a [`Page`] or [`ComponentDef`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
     Element {

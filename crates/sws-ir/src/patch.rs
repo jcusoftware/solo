@@ -72,6 +72,7 @@ impl std::error::Error for IrError {}
 
 /// Declarative patch operation applied to a [`SiteDocument`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum IrPatch {
     SetSiteMeta {

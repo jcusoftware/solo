@@ -7,14 +7,23 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
+default-run = "solo"
 
 [[bin]]
 name = "solo"
 path = "src/main.rs"
 
+# Host-only generator for @solo-website-system/ir-types and the pack schema.
+# Kept out of `solo` itself: it needs the `codegen` feature.
+[[bin]]
+name = "sws-codegen"
+path = "src/bin/sws-codegen.rs"
+required-features = ["codegen"]
+
 [features]
 default = []
 pack-hospitality = ["dep:sws-pack-hospitality"]
+codegen = ["dep:sws-codegen", "sws-pack-hospitality?/jsonschema"]
 
 [dependencies]
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
@@ -27,3 +36,4 @@ sws-plugin = { path = "../sws-plugin" }
 sws-compiler = { path = "../sws-compiler" }
 sws-security = { path = "../sws-security" }
 sws-pack-hospitality = { path = "../../packs/hospitality/crate", optional = true }
+sws-codegen = { path = "../sws-codegen", optional = true }

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/sws-ir",
+    "crates/sws-codegen",
     "crates/sws-css",
     "crates/sws-security",
     "crates/sws-plugin",

@@ -1,348 +1,938 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://solo-website-system.example/packs/hospitality/schema/venue.schema.json",
-  "title": "SWS venue manifest",
-  "description": "Tenant-agnostic hospitality manifest consumed by sws-pack-hospitality and sws-cli.",
-  "type": "object",
-  "required": ["schema_version", "slug", "name", "business_types", "nap", "hours", "brand", "modules", "integrations", "menu"],
-  "additionalProperties": false,
   "$defs": {
-    "checkoutItem": {
-      "type": "object",
+    "Address": {
       "additionalProperties": false,
-      "required": ["id", "name", "cents"],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
-        "name": { "type": "string", "minLength": 1 },
-        "cents": { "type": "integer", "minimum": 50, "maximum": 10000 }
-      }
+        "country": {
+          "pattern": "^[A-Z]{2}$",
+          "type": "string"
+        },
+        "locality": {
+          "type": "string"
+        },
+        "postal_code": {
+          "type": "string"
+        },
+        "region": {
+          "pattern": "^[A-Z]{2}$",
+          "type": "string"
+        },
+        "street": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "street",
+        "locality",
+        "region",
+        "postal_code",
+        "country"
+      ],
+      "type": "object"
     },
-    "hhmm": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
-    "hex": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
-    "price": { "type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$" },
-    "day": { "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] },
-    "dayHours": {
+    "BookingsConfig": {
+      "additionalProperties": false,
+      "description": "Call booking configuration (`scheduling.bookings`).\n\nSlots are derived from `working_hours` in the venue's IANA zone\n(`scheduling.events.timezone`, which bookings require even when public\nevents stay disabled). `google_workspace_calendar_id` is declarative only:\nthe Worker reads the actual calendar from its\n`GOOGLE_BOOKING_CALENDAR_ID` secret at request time.",
+      "properties": {
+        "auto_zoom": {
+          "type": "boolean"
+        },
+        "buffer_minutes": {
+          "maximum": 1440,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "google_workspace_calendar_id": {
+          "format": "email",
+          "maxLength": 254,
+          "minLength": 3,
+          "type": "string"
+        },
+        "slot_duration_minutes": {
+          "maximum": 240,
+          "minimum": 5,
+          "type": "integer"
+        },
+        "working_hours": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "patternProperties": {
+            "^(mon|tue|wed|thu|fri|sat|sun)$": {
+              "items": {
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "enabled",
+        "google_workspace_calendar_id",
+        "slot_duration_minutes",
+        "buffer_minutes",
+        "working_hours",
+        "auto_zoom"
+      ],
+      "type": "object"
+    },
+    "Brand": {
+      "additionalProperties": false,
+      "properties": {
+        "contrast": {
+          "$ref": "#/$defs/ContrastConfig"
+        },
+        "fonts": {
+          "$ref": "#/$defs/Fonts"
+        },
+        "palette": {
+          "additionalProperties": {
+            "pattern": "^#[0-9A-Fa-f]{6}$",
+            "type": "string"
+          },
+          "required": [
+            "background",
+            "text",
+            "accent"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "palette",
+        "contrast",
+        "fonts"
+      ],
+      "type": "object"
+    },
+    "CheckoutConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "2–5 one-time pickup items.",
+          "items": {
+            "$ref": "#/$defs/CheckoutItem"
+          },
+          "maxItems": 5,
+          "minItems": 2,
+          "type": "array"
+        },
+        "subscription": {
+          "$ref": "#/$defs/CheckoutItem",
+          "description": "Exactly one fixed monthly subscription item."
+        }
+      },
+      "required": [
+        "items",
+        "subscription"
+      ],
+      "type": "object"
+    },
+    "CheckoutItem": {
+      "additionalProperties": false,
+      "description": "One fixed-price sandbox checkout catalog entry.",
+      "properties": {
+        "cents": {
+          "description": "USD cents (50..=10000); the demo never takes variable amounts.",
+          "maximum": 10000,
+          "minimum": 50,
+          "type": "integer"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "cents"
+      ],
+      "type": "object"
+    },
+    "ContrastConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "pairs": {
+          "items": {
+            "$ref": "#/$defs/ContrastPair"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "wcag_target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairs"
+      ],
+      "type": "object"
+    },
+    "ContrastPair": {
+      "additionalProperties": false,
+      "properties": {
+        "background": {
+          "type": "string"
+        },
+        "foreground": {
+          "type": "string"
+        },
+        "ratio": {
+          "minimum": 4.5,
+          "type": "number"
+        },
+        "usage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "foreground",
+        "background",
+        "ratio"
+      ],
+      "type": "object"
+    },
+    "DayHours": {
       "oneOf": [
         {
-          "type": "object",
-          "required": ["opens", "closes"],
           "additionalProperties": false,
-          "properties": { "opens": { "$ref": "#/$defs/hhmm" }, "closes": { "$ref": "#/$defs/hhmm" } }
+          "properties": {
+            "closes": {
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+              "type": "string"
+            },
+            "opens": {
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "opens",
+            "closes"
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
-          "required": ["closed"],
           "additionalProperties": false,
-          "properties": { "closed": { "const": true } }
+          "properties": {
+            "closed": {
+              "const": true
+            }
+          },
+          "required": [
+            "closed"
+          ],
+          "type": "object"
         }
       ]
     },
-    "module": {
-      "type": "object",
-      "required": ["enabled"],
+    "EventsConfig": {
       "additionalProperties": false,
-      "properties": { "enabled": { "type": "boolean" }, "name": { "type": "string" } }
-    },
-    "menuItem": {
-      "type": "object",
-      "required": ["name", "price"],
-      "additionalProperties": false,
+      "description": "Public events calendar configuration (`scheduling.events`).\n\n`google_calendar_id` is declarative only: the Worker reads the actual\ncalendar from its `GOOGLE_SYNC_CALENDAR_ID` secret at sync time.",
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          },
+          "source": {
+            "const": "google_calendar_sync"
+          }
+        }
+      },
       "properties": {
-        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "description": { "type": "string", "maxLength": 500 },
-        "price": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "google_calendar_id": {
           "oneOf": [
-            { "$ref": "#/$defs/price" },
-            { "type": "null" }
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
-        "price_note": { "type": "string", "maxLength": 120 },
-        "contains_alcohol": { "type": "boolean" },
-        "dietary": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": { "enum": ["vegan", "vegetarian", "gluten-free", "dairy-free", "halal", "kosher", "low-salt"] }
-        }
-      }
-    }
-  },
-  "properties": {
-    "$schema": { "type": "string" },
-    "schema_version": { "const": 1 },
-    "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
-    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-    "legal_disclaimer": { "type": ["string", "null"], "description": "Shown visibly on every page when present." },
-    "fictional": { "type": "boolean" },
-    "tagline": { "type": "string" },
-    "description": { "type": "string" },
-    "category_label": { "type": "string" },
-    "business_types": {
-      "type": "array",
-      "minItems": 1,
-      "items": { "type": "string", "pattern": "^[A-Z][A-Za-z]+$", "description": "schema.org LocalBusiness subtype" }
-    },
-    "cuisine": { "type": "array", "items": { "type": "string" } },
-    "price_range": { "type": "string", "pattern": "^\\${1,4}$" },
-    "locale": { "type": "string" },
-    "timezone": { "type": "string" },
-    "nap": {
-      "type": "object",
-      "required": ["name", "address", "phone", "email", "website"],
-      "additionalProperties": false,
-      "properties": {
-        "name": { "type": "string" },
-        "address": {
-          "type": "object",
-          "required": ["street", "locality", "region", "postal_code", "country"],
-          "additionalProperties": false,
-          "properties": {
-            "street": { "type": "string" },
-            "locality": { "type": "string" },
-            "region": { "type": "string", "pattern": "^[A-Z]{2}$" },
-            "postal_code": { "type": "string" },
-            "country": { "type": "string", "pattern": "^[A-Z]{2}$" }
-          }
+        "source": {
+          "$ref": "#/$defs/EventsSource"
         },
-        "phone": { "type": "string", "pattern": "^\\+[0-9-]{7,20}$" },
-        "email": { "type": "string", "format": "email" },
-        "website": { "type": "string", "pattern": "^https://" }
-      }
-    },
-    "geo": {
-      "type": "object",
-      "required": ["latitude", "longitude"],
-      "additionalProperties": false,
-      "properties": {
-        "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
-        "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
-        "approximate": { "type": "boolean" }
-      }
-    },
-    "hours": {
-      "type": "object",
-      "required": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
-      "additionalProperties": false,
-      "patternProperties": { "^(mon|tues|wednes|thurs|fri|satur|sun)day$": { "$ref": "#/$defs/dayHours" } }
-    },
-    "holiday_overrides": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["date", "label"],
-        "additionalProperties": false,
+        "timezone": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "source",
+        "google_calendar_id",
+        "timezone"
+      ],
+      "then": {
         "properties": {
-          "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-          "label": { "type": "string" },
-          "closed": { "type": "boolean" },
-          "opens": { "$ref": "#/$defs/hhmm" },
-          "closes": { "$ref": "#/$defs/hhmm" }
-        },
-        "oneOf": [
-          {
-            "required": ["closed"],
-            "properties": { "closed": { "const": true } },
-            "not": { "anyOf": [{ "required": ["opens"] }, { "required": ["closes"] }] }
-          },
-          {
-            "required": ["opens", "closes"],
-            "properties": { "closed": { "const": false } }
-          }
-        ]
-      }
-    },
-    "booking_url": { "type": ["string", "null"], "pattern": "^https://" },
-    "venue_accessibility": { "type": "array", "items": { "type": "string" } },
-    "brand": {
-      "type": "object",
-      "required": ["palette", "contrast", "fonts"],
-      "additionalProperties": false,
-      "properties": {
-        "palette": {
-          "type": "object",
-          "required": ["background", "text", "accent"],
-          "additionalProperties": { "$ref": "#/$defs/hex" }
-        },
-        "contrast": {
-          "type": "object",
-          "required": ["pairs"],
-          "additionalProperties": false,
-          "properties": {
-            "wcag_target": { "type": "string" },
-            "pairs": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": ["foreground", "background", "ratio"],
-                "additionalProperties": false,
-                "properties": {
-                  "foreground": { "type": "string", "description": "palette key" },
-                  "background": { "type": "string", "description": "palette key" },
-                  "ratio": { "type": "number", "minimum": 4.5 },
-                  "usage": { "type": "string" }
-                }
-              }
-            }
-          }
-        },
-        "fonts": {
-          "type": "object",
-          "required": ["body"],
-          "additionalProperties": false,
-          "properties": {
-            "body": { "type": "string", "description": "System font stack only; no web fonts." },
-            "heading": { "type": "string" }
+          "google_calendar_id": {
+            "pattern": "\\S",
+            "type": "string"
           }
         }
-      }
+      },
+      "type": "object"
     },
-    "modules": {
-      "type": "object",
-      "additionalProperties": false,
-      "patternProperties": { "^M([1-9]|10)$": { "$ref": "#/$defs/module" } }
+    "EventsSource": {
+      "description": "Event source for the public events calendar (issue #43 port).",
+      "enum": [
+        "d1_or_cms",
+        "google_calendar_sync"
+      ],
+      "type": "string"
     },
-    "integrations": {
-      "type": "object",
-      "required": ["seating_policy"],
+    "Fonts": {
       "additionalProperties": false,
       "properties": {
-        "toast": {
-          "type": "object",
-          "required": ["enabled"],
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "restaurant_guid": { "type": ["string", "null"] }
-          }
+        "body": {
+          "type": "string"
         },
-        "seating_policy": { "enum": ["walk_in_only", "opentable", "resy"] },
+        "heading": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "type": "object"
+    },
+    "Geo": {
+      "additionalProperties": false,
+      "properties": {
+        "approximate": {
+          "type": "boolean"
+        },
+        "latitude": {
+          "maximum": 90,
+          "minimum": -90,
+          "type": "number"
+        },
+        "longitude": {
+          "maximum": 180,
+          "minimum": -180,
+          "type": "number"
+        }
+      },
+      "required": [
+        "latitude",
+        "longitude"
+      ],
+      "type": "object"
+    },
+    "HappyHour": {
+      "additionalProperties": false,
+      "properties": {
+        "days": {
+          "items": {
+            "enum": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday",
+              "saturday",
+              "sunday"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "end": {
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "offers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "start": {
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "days",
+        "start",
+        "end",
+        "offers"
+      ],
+      "type": "object"
+    },
+    "HolidayOverride": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "opens"
+                ]
+              },
+              {
+                "required": [
+                  "closes"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "closed": {
+              "const": true
+            }
+          },
+          "required": [
+            "closed"
+          ]
+        },
+        {
+          "properties": {
+            "closed": {
+              "const": false
+            }
+          },
+          "required": [
+            "opens",
+            "closes"
+          ]
+        }
+      ],
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        },
+        "closes": {
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        },
+        "date": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "opens": {
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "date",
+        "label"
+      ],
+      "type": "object"
+    },
+    "InKindConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "Integrations": {
+      "additionalProperties": false,
+      "properties": {
+        "inkind": {
+          "$ref": "#/$defs/InKindConfig"
+        },
         "opentable": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": { "restaurant_id": { "type": ["string", "null"] } }
+          "$ref": "#/$defs/OpenTableConfig"
         },
         "resy": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": { "venue_id": { "type": ["string", "null"] } }
+          "$ref": "#/$defs/ResyConfig"
         },
-        "inkind": {
-          "type": "object",
-          "required": ["enabled"],
-          "additionalProperties": false,
-          "properties": { "enabled": { "type": "boolean" } }
+        "seating_policy": {
+          "enum": [
+            "walk_in_only",
+            "opentable",
+            "resy"
+          ],
+          "type": "string"
+        },
+        "toast": {
+          "$ref": "#/$defs/ToastConfig"
         },
         "turnstile": {
-          "type": "object",
-          "required": ["site_key"],
-          "additionalProperties": false,
-          "properties": { "site_key": { "type": "string" }, "test_key": { "type": "boolean" } }
+          "$ref": "#/$defs/TurnstileConfig"
         }
-      }
+      },
+      "required": [
+        "seating_policy"
+      ],
+      "type": "object"
     },
-    "newsletter": {
-      "type": "object",
-      "required": ["enabled", "consent_text"],
+    "Menu": {
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "blurb": { "type": "string", "maxLength": 500 },
-        "consent_text": { "type": "string", "maxLength": 500 },
-        "privacy_note": { "type": "string" }
-      }
-    },
-    "scheduling": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "events": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "source", "google_calendar_id", "timezone"],
-          "if": { "properties": { "enabled": { "const": true }, "source": { "const": "google_calendar_sync" } } },
-          "then": { "properties": { "google_calendar_id": { "type": "string", "pattern": "\\S" } } },
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "source": { "enum": ["d1_or_cms", "google_calendar_sync"] },
-            "google_calendar_id": { "type": ["string", "null"], "minLength": 1 },
-            "timezone": { "type": "string", "minLength": 1 }
-          }
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "type": "string"
         },
-        "bookings": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "google_workspace_calendar_id", "slot_duration_minutes", "buffer_minutes", "working_hours", "auto_zoom"],
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "google_workspace_calendar_id": { "type": "string", "minLength": 3, "maxLength": 254, "format": "email" },
-            "slot_duration_minutes": { "type": "integer", "minimum": 5, "maximum": 240 },
-            "buffer_minutes": { "type": "integer", "minimum": 0, "maximum": 1440 },
-            "working_hours": {
-              "type": "object", "minProperties": 1, "additionalProperties": false,
-              "patternProperties": {
-                "^(mon|tue|wed|thu|fri|sat|sun)$": {
-                  "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/hhmm" }
-                }
-              }
-            },
-            "auto_zoom": { "type": "boolean" }
-          }
+        "name": {
+          "type": "string"
+        },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/MenuSection"
+          },
+          "minItems": 1,
+          "type": "array"
         }
-      }
+      },
+      "required": [
+        "name",
+        "currency",
+        "sections"
+      ],
+      "type": "object"
     },
-    "happy_hour": {
-      "type": "object",
-      "required": ["days", "start", "end", "offers"],
+    "MenuItem": {
       "additionalProperties": false,
       "properties": {
-        "days": { "type": "array", "items": { "$ref": "#/$defs/day" }, "uniqueItems": true },
-        "start": { "$ref": "#/$defs/hhmm" },
-        "end": { "$ref": "#/$defs/hhmm" },
-        "offers": { "type": "array", "items": { "type": "string" } },
-        "notes": { "type": "string" }
-      }
+        "contains_alcohol": {
+          "type": "boolean"
+        },
+        "description": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "dietary": {
+          "items": {
+            "enum": [
+              "vegan",
+              "vegetarian",
+              "gluten-free",
+              "dairy-free",
+              "halal",
+              "kosher",
+              "low-salt"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        "price": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9]+\\.[0-9]{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_note": {
+          "maxLength": 120,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "price"
+      ],
+      "type": "object"
+    },
+    "MenuSection": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/MenuItem"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "items"
+      ],
+      "type": "object"
+    },
+    "ModuleFlag": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "Nap": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/Address"
+        },
+        "email": {
+          "format": "email",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "phone": {
+          "pattern": "^\\+[0-9-]{7,20}$",
+          "type": "string"
+        },
+        "website": {
+          "pattern": "^https://",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "address",
+        "phone",
+        "email",
+        "website"
+      ],
+      "type": "object"
+    },
+    "NewsletterConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "blurb": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "consent_text": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "privacy_note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "consent_text"
+      ],
+      "type": "object"
+    },
+    "OpenTableConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "restaurant_id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ResyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "venue_id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SchedulingConfig": {
+      "additionalProperties": false,
+      "description": "Scheduling configuration. Native call booking (issue #44) adds its own\nsection under `scheduling` on top of `events`.",
+      "properties": {
+        "bookings": {
+          "$ref": "#/$defs/BookingsConfig"
+        },
+        "events": {
+          "$ref": "#/$defs/EventsConfig"
+        }
+      },
+      "type": "object"
+    },
+    "SeoConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 160,
+          "type": "string"
+        },
+        "routes": {
+          "items": {
+            "pattern": "^/",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 70,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ToastConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "restaurant_guid": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "TurnstileConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "site_key": {
+          "type": "string"
+        },
+        "test_key": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "site_key"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://solo-website-system.example/packs/hospitality/schema/venue.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Tenant-agnostic hospitality manifest consumed by sws-pack-hospitality and sws-cli.",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "booking_url": {
+      "oneOf": [
+        {
+          "pattern": "^https://",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "brand": {
+      "$ref": "#/$defs/Brand"
+    },
+    "business_types": {
+      "items": {
+        "description": "schema.org LocalBusiness subtype",
+        "pattern": "^[A-Z][A-Za-z]+$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "category_label": {
+      "type": "string"
     },
     "checkout": {
-      "type": "object",
+      "$ref": "#/$defs/CheckoutConfig",
+      "description": "Optional sandbox demo checkout configuration; absent means the venue\nrenders no checkout pages, catalog, or nav links at all."
+    },
+    "cuisine": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "description": {
+      "type": "string"
+    },
+    "fictional": {
+      "type": "boolean"
+    },
+    "geo": {
+      "$ref": "#/$defs/Geo"
+    },
+    "happy_hour": {
+      "$ref": "#/$defs/HappyHour"
+    },
+    "holiday_overrides": {
+      "items": {
+        "$ref": "#/$defs/HolidayOverride"
+      },
+      "type": "array"
+    },
+    "hours": {
       "additionalProperties": false,
-      "required": ["items", "subscription"],
-      "properties": {
-        "items": { "type": "array", "minItems": 2, "maxItems": 5, "items": { "$ref": "#/$defs/checkoutItem" } },
-        "subscription": { "$ref": "#/$defs/checkoutItem" }
-      }
+      "patternProperties": {
+        "^(mon|tues|wednes|thurs|fri|satur|sun)day$": {
+          "$ref": "#/$defs/DayHours"
+        }
+      },
+      "required": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday"
+      ],
+      "type": "object"
+    },
+    "integrations": {
+      "$ref": "#/$defs/Integrations"
+    },
+    "legal_disclaimer": {
+      "description": "Shown visibly on every page when present.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "locale": {
+      "type": "string"
     },
     "menu": {
-      "type": "object",
-      "required": ["name", "currency", "sections"],
+      "$ref": "#/$defs/Menu"
+    },
+    "modules": {
       "additionalProperties": false,
-      "properties": {
-        "name": { "type": "string" },
-        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-        "sections": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "object",
-            "required": ["id", "name", "items"],
-            "additionalProperties": false,
-            "properties": {
-              "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
-              "name": { "type": "string" },
-              "description": { "type": "string", "maxLength": 500 },
-              "items": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/menuItem" } }
-            }
-          }
+      "patternProperties": {
+        "^M([1-9]|10)$": {
+          "$ref": "#/$defs/ModuleFlag"
         }
-      }
+      },
+      "type": "object"
+    },
+    "name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+    },
+    "nap": {
+      "$ref": "#/$defs/Nap"
+    },
+    "newsletter": {
+      "$ref": "#/$defs/NewsletterConfig"
+    },
+    "price_range": {
+      "pattern": "^\\${1,4}$",
+      "type": "string"
+    },
+    "scheduling": {
+      "$ref": "#/$defs/SchedulingConfig"
+    },
+    "schema_version": {
+      "const": 1,
+      "minimum": 0,
+      "type": "integer"
     },
     "seo": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "title": { "type": "string", "maxLength": 70 },
-        "description": { "type": "string", "maxLength": 160 },
-        "routes": { "type": "array", "items": { "type": "string", "pattern": "^/" } }
-      }
+      "$ref": "#/$defs/SeoConfig"
+    },
+    "slug": {
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "tagline": {
+      "type": "string"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "venue_accessibility": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     }
-  }
+  },
+  "required": [
+    "schema_version",
+    "slug",
+    "name",
+    "business_types",
+    "nap",
+    "hours",
+    "brand",
+    "modules",
+    "integrations",
+    "menu"
+  ],
+  "title": "SWS venue manifest",
+  "type": "object"
 }

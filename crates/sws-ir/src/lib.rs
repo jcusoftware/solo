@@ -5,6 +5,8 @@
 //! forms, patches, validation, and JSON Schema metadata.
 
 pub mod edit;
+#[cfg(feature = "jsonschema")]
+pub mod jsonschema;
 pub mod patch;
 pub mod schema;
 pub mod types;

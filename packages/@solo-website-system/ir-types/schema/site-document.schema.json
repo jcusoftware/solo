@@ -1,0 +1,869 @@
+{
+  "$defs": {
+    "Breakpoint": {
+      "additionalProperties": false,
+      "description": "Responsive media-query breakpoint definition.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "media_query": {
+          "type": "string"
+        },
+        "min_width": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "media_query"
+      ],
+      "type": "object"
+    },
+    "ComponentDef": {
+      "additionalProperties": false,
+      "description": "Reusable template component definition with typed props and named slots.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "props": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PropSpec"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "slots": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "template": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ContrastPair": {
+      "additionalProperties": false,
+      "description": "Declared foreground/background color token pair with minimum WCAG contrast ratio.",
+      "properties": {
+        "background": {
+          "type": "string"
+        },
+        "foreground": {
+          "type": "string"
+        },
+        "min_ratio": {
+          "type": "number"
+        },
+        "usage": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "foreground",
+        "background",
+        "min_ratio"
+      ],
+      "type": "object"
+    },
+    "DesignTokens": {
+      "additionalProperties": false,
+      "description": "Design system tokens for colors, typography, spacing, radii, and contrast checks.",
+      "properties": {
+        "colors": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "contrast_pairs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContrastPair"
+          },
+          "type": "array"
+        },
+        "fonts": {
+          "$ref": "#/$defs/FontTokens",
+          "default": {
+            "body": "system-ui, sans-serif",
+            "heading": null,
+            "mono": null
+          }
+        },
+        "radii": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "spacing": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "FontTokens": {
+      "additionalProperties": false,
+      "description": "Font stack tokens for body, heading, and monospace text.",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "heading": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mono": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "type": "object"
+    },
+    "FormFieldKind": {
+      "description": "Supported form field control types.",
+      "enum": [
+        "text",
+        "textarea",
+        "email",
+        "phone",
+        "date",
+        "integer",
+        "select",
+        "checkbox",
+        "hidden",
+        "route"
+      ],
+      "type": "string"
+    },
+    "FormFieldOption": {
+      "additionalProperties": false,
+      "description": "Selectable option for [`FormFieldKind::Select`].",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "type": "object"
+    },
+    "FormFieldSchema": {
+      "additionalProperties": false,
+      "description": "Field specification within a [`FormSchema`].",
+      "properties": {
+        "autocomplete": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_value": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "help_text": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/FormFieldKind"
+        },
+        "label": {
+          "default": "",
+          "type": "string"
+        },
+        "max": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_chars": {
+          "default": null,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FormFieldOption"
+          },
+          "type": "array"
+        },
+        "placeholder": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FormSchema": {
+      "additionalProperties": false,
+      "description": "Progressive-enhancement form definition bound to Turnstile and edge handlers.",
+      "properties": {
+        "action": {
+          "default": "",
+          "type": "string"
+        },
+        "fields": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FormFieldSchema"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "default": "POST",
+          "type": "string"
+        },
+        "turnstile_action": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "IrStyleRule": {
+      "additionalProperties": false,
+      "description": "Deterministic CSS rule emitted by the IR compiler.",
+      "properties": {
+        "breakpoint": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declarations": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "pseudo": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "selector"
+      ],
+      "type": "object"
+    },
+    "JsonLdBlock": {
+      "additionalProperties": false,
+      "description": "Structured JSON-LD script block attached to a [`Page`].",
+      "properties": {
+        "data": true,
+        "id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "Node": {
+      "description": "Renderable DOM/template node inside a [`Page`] or [`ComponentDef`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "attrs": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "children": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "classes": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "style_refs": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "type": {
+              "const": "element",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tag"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fallback": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_ref",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "component": {
+              "type": "string"
+            },
+            "props": {
+              "additionalProperties": true,
+              "default": {},
+              "type": "object"
+            },
+            "slots": {
+              "additionalProperties": {
+                "items": {
+                  "$ref": "#/$defs/Node"
+                },
+                "type": "array"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "type": {
+              "const": "component_instance",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "component"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "else_nodes": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "expr": {
+              "type": "string"
+            },
+            "then_nodes": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "conditional",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "expr"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "collection_expr": {
+              "type": "string"
+            },
+            "item_var": {
+              "type": "string"
+            },
+            "type": {
+              "const": "loop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "item_var",
+            "collection_expr"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Page": {
+      "additionalProperties": false,
+      "description": "Individual static or parameterized page in a [`SiteDocument`].",
+      "properties": {
+        "body": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "canonical": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_not_found": {
+          "default": false,
+          "type": "boolean"
+        },
+        "json_ld": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/JsonLdBlock"
+          },
+          "type": "array"
+        },
+        "noindex": {
+          "default": false,
+          "type": "boolean"
+        },
+        "route": {
+          "$ref": "#/$defs/RoutePattern"
+        },
+        "scripts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptRef"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route",
+        "title"
+      ],
+      "type": "object"
+    },
+    "PropKind": {
+      "description": "Supported value types for component props.",
+      "enum": [
+        "string",
+        "number",
+        "boolean",
+        "array",
+        "object",
+        "json"
+      ],
+      "type": "string"
+    },
+    "PropSpec": {
+      "additionalProperties": false,
+      "description": "Specification for a single component prop.",
+      "properties": {
+        "default": {
+          "default": null
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/PropKind",
+          "default": "string"
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RoutePattern": {
+      "description": "Route pattern for a [`Page`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "static",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "dynamic",
+              "type": "string"
+            },
+            "params": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pattern": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pattern"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ScriptRef": {
+      "additionalProperties": false,
+      "description": "External or bundled script reference.",
+      "properties": {
+        "async_load": {
+          "default": false,
+          "type": "boolean"
+        },
+        "defer": {
+          "default": false,
+          "type": "boolean"
+        },
+        "src": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "src"
+      ],
+      "type": "object"
+    },
+    "SeoMeta": {
+      "additionalProperties": false,
+      "description": "Site-wide SEO, robots.txt, and sitemap configuration.",
+      "properties": {
+        "default_description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "robots_allow": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "robots_disallow": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sitemap_routes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title_template": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://solo-website-system.example/schemas/site-document.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Complete, domain-agnostic intermediate representation of a static/edge website.",
+  "properties": {
+    "base_url": {
+      "type": "string"
+    },
+    "breakpoints": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Breakpoint"
+      },
+      "type": "array"
+    },
+    "components": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ComponentDef"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "data": {
+      "additionalProperties": true,
+      "default": {},
+      "type": "object"
+    },
+    "forms": {
+      "additionalProperties": {
+        "$ref": "#/$defs/FormSchema"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "locale": {
+      "default": "en-US",
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "default": {},
+      "type": "object"
+    },
+    "name": {
+      "type": "string"
+    },
+    "pages": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Page"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "default": 1,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "scripts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ScriptRef"
+      },
+      "type": "array"
+    },
+    "seo": {
+      "$ref": "#/$defs/SeoMeta",
+      "default": {
+        "default_description": null,
+        "robots_allow": [],
+        "robots_disallow": [],
+        "sitemap_routes": [],
+        "title_template": null
+      }
+    },
+    "slug": {
+      "type": "string"
+    },
+    "styles": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/IrStyleRule"
+      },
+      "type": "array"
+    },
+    "tokens": {
+      "$ref": "#/$defs/DesignTokens",
+      "default": {
+        "colors": {},
+        "contrast_pairs": [],
+        "fonts": {
+          "body": "system-ui, sans-serif",
+          "heading": null,
+          "mono": null
+        },
+        "radii": {},
+        "spacing": {}
+      }
+    }
+  },
+  "required": [
+    "slug",
+    "name",
+    "base_url"
+  ],
+  "title": "SiteDocument",
+  "type": "object"
+}
