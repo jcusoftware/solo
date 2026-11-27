@@ -85,7 +85,7 @@ crates/                       Open-source SWS Rust engine (MIT OR Apache-2.0)
   sws-wasm/                   Browser Wasm bindings for live visual canvas & preview
   sws-cli/                    `solo` CLI & MCP server for local/CI workflows
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          planned v0.2.0 — optional Studio control-plane Worker (Durable Objects, D1; R2 opt-in)
+  sws-worker-studio/          optional Studio control-plane Worker — scaffold only (D1 workspace registry, request bounds); Durable Objects and R2 opt-in land later in v0.2.0
 
 apps/                         planned v0.3.0 — thin TypeScript Builder shell and sandboxed canvas (MIT OR Apache-2.0)
   builder/                    Visual website builder shell (properties, tokens, publish)

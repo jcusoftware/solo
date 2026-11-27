@@ -27,7 +27,7 @@ Domain verticals are isolated in pluggable packs (`packs/*`). The first open-sou
 ====================================================================================================
  PLANE 2: CONTROL PLANE (planned v0.2.0 Studio — optional, Cloudflare Workers)
 ====================================================================================================
-  `sws-worker-studio` (Rust → wasm32; planned, not yet present)
+  `sws-worker-studio` (Rust → wasm32; scaffold present: D1 registry + request bounds + /api/health; DOs, R2, Queues and auth are later issues)
     ├── SQLite Durable Objects (hibernating, one command session per site)
     │     └── per-site snapshot + monotonic command log + expiring soft presence
     │         (command log, not CRDT; see §10)
@@ -82,7 +82,7 @@ crates/                       Open-source Rust workspace (MIT OR Apache-2.0)
   sws-wasm/                   wasm-bindgen target for browser visual canvas
   sws-cli/                    `solo` CLI + MCP server
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          planned v0.2.0 — optional studio control-plane Worker (Durable Objects, D1; Queues and R2 opt-in/conditional)
+  sws-worker-studio/          optional studio control-plane Worker — scaffold only (D1 registry, request bounds; Durable Objects, Queues and R2 opt-in/conditional, later issues)
 
 apps/                         planned v0.3.0 — thin TypeScript Builder shell and canvas (MIT OR Apache-2.0); directory names are an open assumption
   builder/                    Editor shell (inspector, tree, diagnostics, save/publish/export dialogs)
@@ -101,10 +101,10 @@ core/                         Tenant-agnostic rendered demo output & CLI tools (
   public/                     Deterministic rendered static output + _headers
   tools/                      CLI utilities (header parity check)
 
-D1 migrations live at `crates/sws-worker-site/migrations/` (`0001_init.sql`, `0002_public_events.sql`, `0003_event_sync.sql`, `0004_scheduling_bookings.sql`).
+D1 migrations live at `crates/sws-worker-site/migrations/` (`0001_init.sql`, `0002_public_events.sql`, `0003_event_sync.sql`, `0004_scheduling_bookings.sql`). The Studio registry has its own migration directory, `crates/sws-worker-studio/migrations/` (`0001_registry.sql`), applied to a separate `STUDIO_DB` database via `wrangler.studio.jsonc`.
 ```
 
-Entries above marked *planned* are targets, not present directories: `packages/@solo-website-system/ir-types` arrives in v0.2.0-alpha.1 (#56), `sws-worker-studio/` in the v0.2.0 line (v0.2.0-beta.1, #61), and `apps/` (builder, canvas) in v0.3.0. Today's repository contains `crates/`, `packs/`, `integrations/`, `core/` (output + tools only), `sites/`, `docs/` and `tests/`.
+Entries above marked *planned* are targets, not present directories: `packages/@solo-website-system/ir-types` arrives in v0.2.0-alpha.1 (#56), and `apps/` (builder, canvas) in v0.3.0. Today's repository contains `crates/`, `packs/`, `integrations/`, `core/` (output + tools only), `sites/`, `docs/` and `tests/`.
 
 ### Multi-track release model
 
@@ -223,6 +223,7 @@ See the `cloudflare-rust-headers` skill.
 | Date | Hours | Cumulative | Issue | Outcome |
 | --- | --- | --- | --- | --- |
 | 2026-11-24 | 0 | 0 | Phase 0 scaffold: `cargo test`, `cargo check --target wasm32`, `worker-build` and `wrangler dev` all working first time | — |
+| 2026-11-27 | 0 | 0 | #61 Studio Worker scaffold: wasm32 clippy, `worker-build --release`, local D1 migration and `wrangler dev` all worked first time; no toolchain debugging | — |
 
 ---
 
@@ -323,7 +324,7 @@ The separate `v0.2 — Hospitality pack feature ports` GitHub milestone (#43, #4
 ### Names and baseline
 
 - `workers-rs` baseline: `worker` 0.9 (`Cargo.toml`, `Cargo.lock`) with `worker-build` 0.9. It is not downgraded.
-- The GitHub milestone names above are canonical. `sws-worker-studio` is the planned Studio Worker crate name; `sws-worker-site` remains the visitor Worker.
+- The GitHub milestone names above are canonical. `sws-worker-studio` is the Studio Worker crate (scaffolded in #61: D1 registry, request bounds, `/api/health`; configured separately via `wrangler.studio.jsonc`); `sws-worker-site` remains the visitor Worker.
 - Related runbook: `docs/WASM_TOOLCHAIN.md` (#57).
 
 ### Merge and release discipline

@@ -1,0 +1,36 @@
+// Local/dev Wrangler config for the optional Studio Worker (sws-worker-studio).
+// Deliberately SEPARATE from ./wrangler.jsonc (the visitor Worker): different
+// Worker name, build output, D1 binding/database, and local state directory
+// (`--persist-to .wrangler/studio-state` in the npm scripts), so nothing is shared.
+// Production template: deploy/cloudflare/wrangler.studio.example.jsonc.
+// Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sws-studio-control-plane",
+	"main": "crates/sws-worker-studio/build/index.js",
+	"compatibility_date": "2026-11-01",
+	"workers_dev": true,
+	"build": {
+		// Requires: cargo install worker-build@0.9.0 --locked (pinned in wasm-toolchain.json).
+		"command": "node scripts/build-wasm.mjs --profile release --crate crates/sws-worker-studio",
+		"watch_dir": "crates/sws-worker-studio/src"
+	},
+	"d1_databases": [
+		{
+			"binding": "STUDIO_DB",
+			"database_name": "sws-studio-db",
+			"migrations_dir": "crates/sws-worker-studio/migrations",
+			// Local placeholder ID; replace with your `wrangler d1 create` output before deploying.
+			"database_id": "00000000-0000-0000-0000-000000000000"
+		}
+	],
+	// Non-secret vars only. Secrets (SESSION_SIGNING_KEY, GITHUB_OAUTH_CLIENT_SECRET, ...)
+	// belong in `.dev.vars` locally or `wrangler secret put` in production (#65).
+	"vars": {
+		"STUDIO_VERSION": "0.2.0-dev",
+		"STUDIO_PUBLIC_ORIGIN": "http://127.0.0.1:8788"
+	},
+	"observability": {
+		"enabled": true
+	}
+}

@@ -9,6 +9,7 @@ members = [
     "crates/sws-cli",
     "crates/sws-wasm",
     "crates/sws-worker-site",
+    "crates/sws-worker-studio",
     "packs/hospitality/crate",
 ]
 resolver = "3"

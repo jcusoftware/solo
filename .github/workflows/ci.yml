@@ -36,7 +36,7 @@ jobs:
           cargo test --workspace --locked
           cargo test -p sws-cli --features pack-hospitality --locked
       - name: cargo clippy (wasm32)
-        run: cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -p sws-worker-studio -- -D warnings
 
   export-bundle:
     name: export bundle (compiled + executed)

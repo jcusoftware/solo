@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Scaffolded the optional Studio Worker `crates/sws-worker-studio` (#61): D1 workspace registry migration (`0001_registry.sql`), tenant-scoped repository SQL, strict request bounds, `GET|HEAD /api/health`, and a separate `wrangler.studio.jsonc` with its own local D1 state (`npm run studio:dev`, `studio:db:migrate:local`, `test:studio`).
+- Renamed `STUDIO_ORIGIN` to `STUDIO_PUBLIC_ORIGIN` in the Studio example config, which is now cardless by default (D1 + vars; R2, Queues and Durable Objects are commented opt-ins).
+
 ## [0.1.2] - 2026-11-25
 
 Everything since the v0.1.1 tag lands here: the milestone-1 review remediation

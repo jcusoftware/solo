@@ -6,7 +6,7 @@ This repository is the open-source Solo (Solo Website System, SWS) workspace. Th
 
 | Path | Zone | Contents | License |
 | --- | --- | --- | --- |
-| `crates/`, `core/` | A (public) | Reusable SWS core engine (`sws-ir`, `sws-css`, `sws-compiler`, `sws-plugin`, `sws-security`, `sws-cli`, `sws-wasm`, `sws-worker-site`), D1 migrations, tenant-agnostic tools (`core/tools`), rendered demo output (`core/public`) | `MIT OR Apache-2.0` |
+| `crates/`, `core/` | A (public) | Reusable SWS core engine (`sws-ir`, `sws-css`, `sws-compiler`, `sws-plugin`, `sws-security`, `sws-cli`, `sws-wasm`, `sws-worker-site`, `sws-worker-studio`), D1 migrations, tenant-agnostic tools (`core/tools`), rendered demo output (`core/public`) | `MIT OR Apache-2.0` |
 | `packs/hospitality/` | A (public) | Open-source reference hospitality pack (schema, crate, VA ABC lint, and fictional `packs/hospitality/demo/venue.json`) | `MIT OR Apache-2.0` |
 | `sites/` | A (public) | Static landing (`sws-landing`) and docs (`sws-docs`) generator and output | `MIT OR Apache-2.0` |
 | `integrations/` | A (public, tracked) | Standalone integrations (Devvit subreddit release bot) | Per-package: `integrations/devvit-release-bot` is `BSD-3-Clause` |
@@ -89,7 +89,7 @@ This covers 3 VAC 5-20-10 to -100 and 3 VAC 5-50-160. Re-verify the rules agains
 | Negative ABC fixture check | `npm run lint:abc:fixture-negative` (also inside `npm run verify`) |
 | Local D1 migrate | `npm run db:migrate:local` |
 | Local dev server (builds Worker) | `npm run dev` → http://127.0.0.1:8787 |
-| Rust tests / wasm clippy | `cargo test --workspace --locked` / `cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -- -D warnings` |
+| Rust tests / wasm clippy | `cargo test --workspace --locked` / `cargo clippy --locked --target wasm32-unknown-unknown -p sws-security -p sws-worker-site -p sws-wasm -p sws-worker-studio -- -D warnings` |
 | License gate | `cargo deny check` |
 | a11y + header E2E | `npm run test:a11y` (set `BASE_URL` to reuse a running server) |
 | Lighthouse | `npm run lhci` (needs a running server) |
