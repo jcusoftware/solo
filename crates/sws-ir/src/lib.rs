@@ -4,6 +4,7 @@
 //! for describing static and edge-rendered sites, design tokens, components,
 //! forms, patches, validation, and JSON Schema metadata.
 
+pub mod edit;
 pub mod patch;
 pub mod schema;
 pub mod types;
@@ -61,14 +62,17 @@ mod tests {
                 props: card_props,
                 slots: vec!["default".to_string()],
                 template: vec![Node::Element {
+                    uid: None,
                     id: Some("card-root".to_string()),
                     tag: "section".to_string(),
                     attrs: BTreeMap::new(),
                     classes: vec!["card".to_string()],
                     style_refs: vec!["card-box".to_string()],
                     children: vec![Node::SlotRef {
+                        uid: None,
                         name: "default".to_string(),
                         fallback: vec![Node::Text {
+                            uid: None,
                             value: "Fallback".to_string(),
                         }],
                     }],
@@ -130,12 +134,14 @@ mod tests {
         comp_slots.insert(
             "default".to_string(),
             vec![Node::Element {
+                uid: None,
                 id: Some("hero-copy".to_string()),
                 tag: "p".to_string(),
                 attrs: BTreeMap::new(),
                 classes: Vec::new(),
                 style_refs: Vec::new(),
                 children: vec![Node::Text {
+                    uid: None,
                     value: "Hello world".to_string(),
                 }],
             }],
@@ -206,6 +212,7 @@ mod tests {
                     }],
                     body: vec![
                         Node::Element {
+                            uid: None,
                             id: Some("main-title".to_string()),
                             tag: "h1".to_string(),
                             attrs: BTreeMap::from([(
@@ -215,33 +222,41 @@ mod tests {
                             classes: vec!["title".to_string()],
                             style_refs: Vec::new(),
                             children: vec![Node::Text {
+                                uid: None,
                                 value: "Acme Studio".to_string(),
                             }],
                         },
                         Node::ComponentInstance {
+                            uid: None,
                             component: "card".to_string(),
                             props: comp_props,
                             slots: comp_slots,
                         },
                         Node::Conditional {
+                            uid: None,
                             expr: "show_banner".to_string(),
                             then_nodes: vec![Node::Text {
+                                uid: None,
                                 value: "Open".to_string(),
                             }],
                             else_nodes: vec![Node::Text {
+                                uid: None,
                                 value: "Closed".to_string(),
                             }],
                         },
                         Node::Loop {
+                            uid: None,
                             item_var: "item".to_string(),
                             collection_expr: "items".to_string(),
                             body: vec![Node::Element {
+                                uid: None,
                                 id: None,
                                 tag: "li".to_string(),
                                 attrs: BTreeMap::new(),
                                 classes: Vec::new(),
                                 style_refs: Vec::new(),
                                 children: vec![Node::Text {
+                                    uid: None,
                                     value: "{{item}}".to_string(),
                                 }],
                             }],
@@ -524,12 +539,14 @@ mod tests {
                 parent_id: Some("main-title".to_string()),
                 index: Some(0),
                 node: Node::Element {
+                    uid: None,
                     id: Some("badge".to_string()),
                     tag: "span".to_string(),
                     attrs: BTreeMap::new(),
                     classes: Vec::new(),
                     style_refs: Vec::new(),
                     children: vec![Node::Text {
+                        uid: None,
                         value: "New".to_string(),
                     }],
                 },
@@ -543,6 +560,7 @@ mod tests {
                 parent_id: None,
                 index: None,
                 node: Node::Element {
+                    uid: None,
                     id: Some("footer-note".to_string()),
                     tag: "p".to_string(),
                     attrs: BTreeMap::new(),
@@ -563,6 +581,7 @@ mod tests {
                     parent_id: None,
                     index: Some(999),
                     node: Node::Text {
+                        uid: None,
                         value: "nope".to_string()
                     }
                 }
@@ -653,6 +672,7 @@ mod tests {
             json_ld: Vec::new(),
             scripts: Vec::new(),
             body: vec![Node::ComponentInstance {
+                uid: None,
                 component: "nonexistent-comp".to_string(),
                 props: BTreeMap::new(),
                 slots: BTreeMap::new(),
@@ -814,10 +834,12 @@ mod tests {
         // Deeply nested IR trees hit MAX_IR_NODE_DEPTH cleanly without stack overflow
         let mut deep_doc = sample_doc();
         let mut leaf = Node::Text {
+            uid: None,
             value: "leaf".to_string(),
         };
         for _ in 0..140 {
             leaf = Node::Element {
+                uid: None,
                 id: None,
                 tag: "div".to_string(),
                 attrs: BTreeMap::new(),

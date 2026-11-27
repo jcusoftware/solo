@@ -2030,6 +2030,7 @@ fn el<'a>(
         attr_map.insert(k.to_string(), v.to_string());
     }
     Node::Element {
+        uid: None,
         id: id.map(str::to_string),
         tag: tag.to_string(),
         attrs: attr_map,
@@ -2041,6 +2042,7 @@ fn el<'a>(
 
 fn text(value: &str) -> Node {
     Node::Text {
+        uid: None,
         value: value.to_string(),
     }
 }

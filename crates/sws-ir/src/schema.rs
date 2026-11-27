@@ -419,6 +419,7 @@ fn def_node() -> Value {
                 "required": ["type", "tag"],
                 "properties": {
                     "type": { "const": "element" },
+                    "uid": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                     "id": { "type": ["string", "null"] },
                     "tag": { "type": "string", "minLength": 1 },
                     "attrs": {
@@ -445,6 +446,7 @@ fn def_node() -> Value {
                 "required": ["type", "value"],
                 "properties": {
                     "type": { "const": "text" },
+                    "uid": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                     "value": { "type": "string" }
                 }
             },
@@ -454,6 +456,7 @@ fn def_node() -> Value {
                 "required": ["type", "name"],
                 "properties": {
                     "type": { "const": "slot_ref" },
+                    "uid": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                     "name": { "type": "string", "minLength": 1 },
                     "fallback": {
                         "type": "array",
@@ -467,6 +470,7 @@ fn def_node() -> Value {
                 "required": ["type", "component"],
                 "properties": {
                     "type": { "const": "component_instance" },
+                    "uid": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                     "component": { "type": "string", "minLength": 1 },
                     "props": {
                         "type": "object",
@@ -487,6 +491,7 @@ fn def_node() -> Value {
                 "required": ["type", "expr"],
                 "properties": {
                     "type": { "const": "conditional" },
+                    "uid": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                     "expr": { "type": "string", "minLength": 1 },
                     "then_nodes": {
                         "type": "array",
@@ -504,6 +509,7 @@ fn def_node() -> Value {
                 "required": ["type", "item_var", "collection_expr"],
                 "properties": {
                     "type": { "const": "loop" },
+                    "uid": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                     "item_var": { "type": "string", "minLength": 1 },
                     "collection_expr": { "type": "string", "minLength": 1 },
                     "body": {

@@ -404,6 +404,7 @@ mod tests {
                     )]),
                     slots: Vec::new(),
                     template: vec![Node::Element {
+                        uid: None,
                         id: None,
                         tag: "div".to_string(),
                         attrs: BTreeMap::new(),
@@ -640,6 +641,7 @@ mod tests {
             props: BTreeMap::new(),
             slots: Vec::new(),
             template: vec![Node::Element {
+                uid: None,
                 id: None,
                 tag: "div".to_string(),
                 attrs: BTreeMap::new(),

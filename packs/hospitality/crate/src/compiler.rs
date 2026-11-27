@@ -1176,7 +1176,7 @@ pub fn checkout_extra_files(v: &VenueManifest) -> BTreeMap<String, String> {
 }
 
 fn txt(s: impl Into<String>) -> Node {
-    Node::Text { value: s.into() }
+    Node::Text { uid: None, value: s.into() }
 }
 
 fn el(tag: &str, classes: &[&str], attrs: &[(&str, &str)], children: Vec<Node>) -> Node {
@@ -1185,6 +1185,7 @@ fn el(tag: &str, classes: &[&str], attrs: &[(&str, &str)], children: Vec<Node>) 
         attr_map.insert((*k).to_string(), (*v).to_string());
     }
     Node::Element {
+        uid: None,
         id: None,
         tag: tag.to_string(),
         attrs: attr_map,
@@ -2737,7 +2738,7 @@ mod tests {
 
         fn text_of(node: &Node) -> String {
             match node {
-                Node::Text { value } => value.clone(),
+                Node::Text { value, .. } => value.clone(),
                 Node::Element { children, .. } => children.iter().map(text_of).collect(),
                 _ => String::new(),
             }

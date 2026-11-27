@@ -235,6 +235,7 @@ pub fn apply_patch(doc: &mut SiteDocument, patch: &IrPatch) -> Result<(), IrErro
                 unreachable!("find_element_mut only returns Node::Element");
             };
             *children = vec![Node::Text {
+                uid: None,
                 value: text.clone(),
             }];
             Ok(())

@@ -330,7 +330,7 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
         return;
     }
     match node {
-        Node::Text { value } => {
+        Node::Text { value, .. } => {
             out.push(ExpandedNode::Text(ctx.interpolate(value)));
         }
         Node::Element {
@@ -340,6 +340,7 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             classes,
             style_refs: _,
             children,
+            ..
         } => {
             let mut merged_attrs = BTreeMap::new();
             let mut merged_classes: Vec<String> = Vec::new();
@@ -388,6 +389,7 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             expr,
             then_nodes,
             else_nodes,
+            ..
         } => {
             let branch = if ctx.is_truthy(expr) {
                 then_nodes
@@ -400,6 +402,7 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             item_var,
             collection_expr,
             body,
+            ..
         } => {
             // Resolve the collection once as a shared handle (issue #13):
             // root-level entries cost only an `Rc` clone and items are bound
@@ -453,6 +456,7 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             component,
             props,
             slots,
+            ..
         } => {
             if ctx.depth >= MAX_COMPONENT_DEPTH {
                 ctx.limit_exceeded = true;
@@ -509,7 +513,7 @@ fn expand_single(ctx: &mut EvalContext<'_>, node: &Node, out: &mut Vec<ExpandedN
             ctx.slot_stack.pop();
             ctx.scopes.pop();
         }
-        Node::SlotRef { name, fallback } => {
+        Node::SlotRef { name, fallback, .. } => {
             let slot_metrics = ctx
                 .slot_stack
                 .last()
