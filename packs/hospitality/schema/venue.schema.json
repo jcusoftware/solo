@@ -184,9 +184,11 @@
       "additionalProperties": false,
       "properties": {
         "background": {
+          "description": "palette key",
           "type": "string"
         },
         "foreground": {
+          "description": "palette key",
           "type": "string"
         },
         "ratio": {
@@ -302,6 +304,7 @@
       "additionalProperties": false,
       "properties": {
         "body": {
+          "description": "System font stack only; no web fonts.",
           "type": "string"
         },
         "heading": {
@@ -898,6 +901,7 @@
     },
     "schema_version": {
       "const": 1,
+      "maximum": 4294967295,
       "minimum": 0,
       "type": "integer"
     },

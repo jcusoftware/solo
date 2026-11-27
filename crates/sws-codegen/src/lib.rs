@@ -14,6 +14,7 @@
 //! the pack crate and written by the `sws-codegen` binary in `sws-cli`, so
 //! this crate never depends on a vertical pack.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -30,10 +31,8 @@ pub mod validate;
 /// Repository-relative directory of the generated package.
 pub const PACKAGE_DIR: &str = "packages/@solo-website-system/ir-types";
 
-/// Canonical `$id` of the `SiteDocument` schema (kept from the original
-/// hand-written schema so existing references stay valid).
-pub const SITE_DOCUMENT_ID: &str =
-    "https://solo-website-system.example/schemas/site-document.v1.json";
+/// Canonical `$id` of the `SiteDocument` schema; defined once in `sws-ir`.
+pub use sws_ir::schema::SITE_DOCUMENT_ID;
 
 /// Canonical `$id` of the `IrPatch` schema.
 pub const IR_PATCH_ID: &str = "https://solo-website-system.example/schemas/ir-patch.v1.json";
@@ -121,6 +120,16 @@ pub fn core_artifacts() -> Result<Vec<Artifact>, String> {
         path: format!("{PACKAGE_DIR}/package.json"),
         contents: package_json(&roots),
     });
+    // The package declares `MIT OR Apache-2.0`, so it ships both license texts
+    // (copied from the repository root at compile time).
+    out.push(Artifact {
+        path: format!("{PACKAGE_DIR}/LICENSE-MIT"),
+        contents: include_str!("../../../LICENSE-MIT").to_string(),
+    });
+    out.push(Artifact {
+        path: format!("{PACKAGE_DIR}/LICENSE-APACHE"),
+        contents: include_str!("../../../LICENSE-APACHE").to_string(),
+    });
     Ok(out)
 }
 
@@ -154,7 +163,9 @@ fn package_json(roots: &[Root]) -> String {
   "files": [
     "index.d.ts",
     "schema/*.schema.json",
-    "README.md"
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "sideEffects": false
 }}
@@ -176,6 +187,10 @@ pub enum Mode {
 /// on-disk content differs from (or, in `Write` mode, was replaced by) the
 /// generated content.
 ///
+/// A `*.schema.json` file that sits next to a generated schema but is not
+/// itself generated is stale (a removed or renamed root): it is reported in
+/// `Check` mode and deleted in `Write` mode, so it cannot ship via `files`.
+///
 /// # Errors
 /// Returns any I/O error other than a missing file in `Check` mode.
 pub fn sync(repo_root: &Path, artifacts: &[Artifact], mode: Mode) -> io::Result<Vec<String>> {
@@ -196,6 +211,35 @@ pub fn sync(repo_root: &Path, artifacts: &[Artifact], mode: Mode) -> io::Result<
                 fs::create_dir_all(parent)?;
             }
             fs::write(&path, &a.contents)?;
+        }
+    }
+    let generated: BTreeSet<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+    let dirs: BTreeSet<&str> = artifacts
+        .iter()
+        .filter(|a| a.path.ends_with(".schema.json"))
+        .filter_map(|a| a.path.rsplit_once('/').map(|(dir, _)| dir))
+        .collect();
+    for dir in dirs {
+        let entries = match fs::read_dir(repo_root.join(dir)) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let mut stale = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let rel = format!("{dir}/{name}");
+            if name.ends_with(".schema.json") && !generated.contains(rel.as_str()) {
+                stale.push((rel, entry.path()));
+            }
+        }
+        stale.sort();
+        for (rel, path) in stale {
+            changed.push(rel);
+            if mode == Mode::Write {
+                fs::remove_file(path)?;
+            }
         }
     }
     Ok(changed)

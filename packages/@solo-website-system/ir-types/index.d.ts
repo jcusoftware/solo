@@ -481,7 +481,7 @@ export interface SeoMeta {
 }
 
 /**
- * Complete, domain-agnostic intermediate representation of a static/edge website.
+ * Deterministic intermediate representation for a Solo Website System (SWS) site.
  */
 export interface SiteDocument {
   base_url: string;

@@ -196,7 +196,9 @@ pub struct ContrastConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct ContrastPair {
+    /// palette key
     pub foreground: String,
+    /// palette key
     pub background: String,
     #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = 4.5)))]
     pub ratio: f64,
@@ -207,6 +209,7 @@ pub struct ContrastPair {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 pub struct Fonts {
+    /// System font stack only; no web fonts.
     pub body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heading: Option<String>,

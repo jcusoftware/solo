@@ -11,8 +11,8 @@
   "scripts": {
     "render": "cargo run -q -p sws-cli --features pack-hospitality -- build packs/hospitality/demo/venue.json core/public",
     "render:check": "cargo run -q -p sws-cli --features pack-hospitality -- build packs/hospitality/demo/venue.json core/public --check",
-    "codegen": "cargo run -q -p sws-cli --features pack-hospitality,codegen --bin sws-codegen",
-    "codegen:check": "cargo run -q -p sws-cli --features pack-hospitality,codegen --bin sws-codegen -- --check && cargo test -q -p sws-pack-hospitality --features jsonschema --locked --test venue_schema && cargo clippy --locked -p sws-cli --features pack-hospitality,codegen --all-targets -- -D warnings",
+    "codegen": "cargo run -q --locked -p sws-cli --features pack-hospitality,codegen --bin sws-codegen",
+    "codegen:check": "cargo run -q --locked -p sws-cli --features pack-hospitality,codegen --bin sws-codegen -- --check && cargo test -q -p sws-pack-hospitality --features jsonschema --locked --test venue_schema && cargo clippy --locked -p sws-cli --features pack-hospitality,codegen --all-targets -- -D warnings && cargo clippy --locked -p sws-pack-hospitality --features jsonschema --all-targets -- -D warnings",
     "sites:build": "node sites/build.mjs",
     "sites:check": "node sites/build.mjs --check",
     "sites:check:headers": "node core/tools/check-headers.mjs --headers-file sites/landing/public/_headers && node core/tools/check-headers.mjs --headers-file sites/docs/public/_headers",

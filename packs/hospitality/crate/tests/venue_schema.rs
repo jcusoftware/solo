@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 use sws_codegen::validate::{unsupported_keywords, validate};
 use sws_pack_hospitality::compiler::HospitalityPlugin;
+use sws_pack_hospitality::venue::VenueManifest;
 use sws_pack_hospitality::venue::schema::venue_schema;
 use sws_plugin::SwsPlugin;
 
@@ -799,6 +800,8 @@ fn structural_mutations_agree_with_the_legacy_schema() {
         json!("zz"),
         json!([]),
         json!({}),
+        json!(1.5),
+        json!(4_294_967_296_u64),
     ];
     let (mut checked, mut rejected) = (0, 0);
     for path in paths.iter().filter(|p| !p.is_empty()) {
@@ -812,6 +815,12 @@ fn structural_mutations_agree_with_the_legacy_schema() {
         }
         for doc in cases {
             let (a, b) = (ok(&old, &doc), ok(&new, &doc));
+            // Deliberate difference: `schema_version` is a `u32`, so the
+            // generated schema bounds it at u32::MAX like serde does.
+            if path == "/schema_version" && doc["schema_version"] == json!(4_294_967_296_u64) {
+                assert!(!b, "generated schema rejects a value above u32::MAX");
+                continue;
+            }
             assert_eq!(
                 a,
                 b,
@@ -833,10 +842,18 @@ fn structural_mutations_agree_with_the_legacy_schema() {
     );
 }
 
-/// Constraint inventory: every distinct (keyword, value) the legacy schema
-/// uses must also appear in the generated schema.
-fn constraint_inventory(schema: &Value) -> BTreeSet<String> {
+/// Constraint inventory: every (instance location, keyword, value) a schema
+/// uses, including `type`. `$ref`s are resolved, so the hand-written schema
+/// (inline / differently named `$defs`) and the generated one (derived
+/// `$defs`) are compared by where a constraint applies in the *document*
+/// (`/nap/phone`, `/menu/sections/[]/id`), not by how the schema is factored.
+/// A constraint that moved to another field is therefore a difference.
+/// Combinator branches are tagged (`|oneOf`, `|not`, `|if`), and only real
+/// schema positions are walked, so a property that is itself named `required`
+/// is a name, not a keyword.
+fn constraint_inventory(root: &Value) -> BTreeSet<String> {
     const KEYWORDS: &[&str] = &[
+        "type",
         "pattern",
         "enum",
         "const",
@@ -850,52 +867,119 @@ fn constraint_inventory(schema: &Value) -> BTreeSet<String> {
         "format",
         "minProperties",
         "required",
-        "if",
-        "then",
-        "not",
     ];
-    fn walk(v: &Value, out: &mut BTreeSet<String>) {
-        match v {
-            Value::Object(m) => {
-                for (k, child) in m {
-                    if KEYWORDS.contains(&k.as_str()) {
-                        // `required` / `enum` are compared as sorted sets
-                        let canon = match child {
-                            Value::Array(a) if k == "required" || k == "enum" => {
-                                let mut items: Vec<String> =
-                                    a.iter().map(Value::to_string).collect();
-                                items.sort();
-                                format!("[{}]", items.join(","))
-                            }
-                            other => other.to_string(),
-                        };
-                        out.insert(format!("{k}={canon}"));
+    fn canon(k: &str, child: &Value) -> String {
+        match child {
+            // compared as sorted sets
+            Value::Array(a) if matches!(k, "required" | "enum" | "type") => {
+                let mut items: Vec<String> = a.iter().map(Value::to_string).collect();
+                items.sort();
+                format!("[{}]", items.join(","))
+            }
+            other => other.to_string(),
+        }
+    }
+    /// `oneOf: [S, {type: null}]` is the same constraint as `S` with
+    /// `type: [S.type, "null"]`; the legacy schema used the second spelling.
+    fn normalize_nullable(root: &Value, schema: &Value) -> Value {
+        let Value::Object(m) = schema else {
+            return schema.clone();
+        };
+        let Some(Value::Array(branches)) = m.get("oneOf") else {
+            return schema.clone();
+        };
+        let null = json!({"type": "null"});
+        let [a, b] = branches.as_slice() else {
+            return schema.clone();
+        };
+        let inner = if b == &null {
+            a
+        } else if a == &null {
+            b
+        } else {
+            return schema.clone();
+        };
+        let inner = match inner.get("$ref") {
+            Some(Value::String(r)) => r
+                .strip_prefix('#')
+                .and_then(|p| root.pointer(p))
+                .unwrap_or(inner),
+            _ => inner,
+        };
+        let Some(Value::String(t)) = inner.get("type") else {
+            return schema.clone();
+        };
+        let mut merged = m.clone();
+        merged.remove("oneOf");
+        for (k, v) in inner.as_object().into_iter().flatten() {
+            merged.insert(k.clone(), v.clone());
+        }
+        merged.insert("type".to_string(), json!([t, "null"]));
+        Value::Object(merged)
+    }
+    fn walk(root: &Value, schema: &Value, at: &str, depth: usize, out: &mut BTreeSet<String>) {
+        let schema = &normalize_nullable(root, schema);
+        let Value::Object(m) = schema else { return };
+        assert!(depth < 40, "schema nests (or refs) too deeply at {at}");
+        if let Some(Value::String(r)) = m.get("$ref") {
+            let target = r.strip_prefix('#').and_then(|p| root.pointer(p));
+            walk(root, target.expect("resolvable $ref"), at, depth + 1, out);
+        }
+        for (k, child) in m {
+            if KEYWORDS.contains(&k.as_str()) {
+                out.insert(format!("{at} {k}={}", canon(k, child)));
+            }
+            match k.as_str() {
+                "properties" => {
+                    for (name, sub) in child.as_object().into_iter().flatten() {
+                        walk(root, sub, &format!("{at}/{name}"), depth + 1, out);
                     }
-                    if k == "additionalProperties" && child == &Value::Bool(false) {
-                        out.insert("additionalProperties=false".to_string());
+                }
+                "patternProperties" => {
+                    for (pat, sub) in child.as_object().into_iter().flatten() {
+                        out.insert(format!("{at} patternProperties:{pat}"));
+                        walk(root, sub, &format!("{at}/<{pat}>"), depth + 1, out);
                     }
-                    if k == "patternProperties" {
-                        for pattern in child.as_object().into_iter().flat_map(|o| o.keys()) {
-                            out.insert(format!("patternProperties:{pattern}"));
+                }
+                "additionalProperties" => {
+                    if child == &Value::Bool(false) {
+                        out.insert(format!("{at} additionalProperties=false"));
+                    }
+                    walk(root, child, &format!("{at}/*"), depth + 1, out);
+                }
+                "items" => walk(root, child, &format!("{at}/[]"), depth + 1, out),
+                "not" | "if" | "then" | "else" => {
+                    walk(root, child, &format!("{at}|{k}"), depth + 1, out);
+                }
+                "oneOf" | "anyOf" | "allOf" => {
+                    if let Value::Array(branches) = child {
+                        out.insert(format!("{at} {k}[{} branches]", branches.len()));
+                        for b in branches {
+                            walk(root, b, &format!("{at}|{k}"), depth + 1, out);
                         }
                     }
-                    if k == "oneOf" {
-                        out.insert(format!(
-                            "oneOf[{} branches]",
-                            child.as_array().map_or(0, Vec::len)
-                        ));
-                    }
-                    walk(child, out);
                 }
+                _ => {}
             }
-            Value::Array(a) => a.iter().for_each(|c| walk(c, out)),
-            _ => {}
         }
     }
     let mut out = BTreeSet::new();
-    walk(schema, &mut out);
+    walk(root, root, "", 0, &mut out);
     out
 }
+
+/// Constraints only the generated schema has. All are redundant with a
+/// constraint both schemas share, so acceptance is identical (the targeted and
+/// structural tests prove it): `type: string` beside an `enum`, and the `u32`
+/// `type`/`minimum`/`maximum` beside `schema_version`'s `const: 1` (the
+/// `maximum` is the only one that is new information vs. serde's width).
+const ADDED_BY_GENERATED: &[&str] = &[
+    "/integrations/seating_policy type=\"string\"",
+    "/scheduling/events/source type=\"string\"",
+    "/schema_version maximum=4294967295",
+    "/schema_version minimum=0",
+    "/schema_version type=\"integer\"",
+];
 
 /// Differences that are intentional. The set is asserted exactly, so adding a
 /// new difference (or removing one) forces a conscious edit here.
@@ -911,6 +995,11 @@ fn every_legacy_constraint_is_present_in_the_generated_schema() {
         missing.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
         expected,
         "legacy constraints missing from the generated schema"
+    );
+    let added: Vec<String> = new.difference(&old).cloned().collect();
+    assert_eq!(
+        added, ADDED_BY_GENERATED,
+        "generated schema has constraints the legacy schema did not"
     );
     assert!(
         old.len() > 60,
@@ -958,4 +1047,98 @@ fn upgraded_demo_ir_with_stable_ids_validates_against_the_generated_schemas() {
     let report = serde_json::to_value(&report).expect("report serializes");
     let errors = validate(&root("upgrade-report"), &report);
     assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// Pins a known, inherited mismatch (see `venue/schema.rs`): the schema marks
+/// `modules` and `scheduling.events.google_calendar_id` `required`, but the
+/// serializer omits them when empty. Do not "fix" this test: change the
+/// serializer or the schema deliberately, then update it.
+#[test]
+fn serializer_omits_two_keys_the_schema_requires() {
+    let schema = venue_schema();
+    let base = rich_base();
+    assert!(ok(&schema, &base), "hand-written JSON with both keys is valid");
+
+    let mut manifest: VenueManifest = serde_json::from_value(base).expect("parses");
+    manifest.modules.clear();
+    let events = manifest
+        .scheduling
+        .as_mut()
+        .and_then(|s| s.events.as_mut())
+        .expect("rich base has events");
+    events.google_calendar_id = None;
+    let out = serde_json::to_value(&manifest).expect("serializes");
+    assert!(out.get("modules").is_none(), "serializer omits empty modules");
+    assert!(
+        out.pointer("/scheduling/events/google_calendar_id").is_none(),
+        "serializer omits a None calendar id"
+    );
+    let errors = validate(&schema, &out);
+    assert_eq!(
+        errors.len(),
+        2,
+        "exactly the two inherited mismatches: {errors:?}"
+    );
+    assert!(errors.iter().any(|e| e.contains("`modules`")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("`google_calendar_id`")),
+        "{errors:?}"
+    );
+}
+
+/// `description` / `title` annotations of the legacy schema must survive
+/// generation (they feed editor tooltips and the `.d.ts` JSDoc).
+#[test]
+fn legacy_annotations_are_preserved() {
+    fn annotations(v: &Value, at: &str, out: &mut Vec<(String, String)>) {
+        let Value::Object(m) = v else { return };
+        for (k, c) in m {
+            match (k.as_str(), c) {
+                ("title" | "description", Value::String(s)) => {
+                    out.push((format!("{at} {k}"), s.clone()));
+                }
+                ("properties" | "$defs" | "patternProperties", Value::Object(named)) => {
+                    for (n, sub) in named {
+                        annotations(sub, &format!("{at}/{k}/{n}"), out);
+                    }
+                }
+                ("items" | "additionalProperties" | "not" | "if" | "then" | "else", _) => {
+                    annotations(c, &format!("{at}/{k}"), out);
+                }
+                ("oneOf" | "anyOf" | "allOf", Value::Array(branches)) => {
+                    for (i, b) in branches.iter().enumerate() {
+                        annotations(b, &format!("{at}/{k}/{i}"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let (mut old, mut new) = (Vec::new(), Vec::new());
+    annotations(&legacy(), "", &mut old);
+    annotations(&venue_schema(), "", &mut new);
+    assert!(old.len() >= 7, "legacy annotations found: {}", old.len());
+    // The hand-written schema inlined some `$defs`, so compare by text, not
+    // location: every legacy annotation must still be emitted somewhere.
+    let emitted: BTreeSet<&str> = new.iter().map(|(_, s)| s.as_str()).collect();
+    for (at, text) in &old {
+        assert!(emitted.contains(text.as_str()), "dropped {at}: {text:?}");
+    }
+    let generated = venue_schema();
+    for (ptr, text) in [
+        (
+            "/$defs/Fonts/properties/body/description",
+            "System font stack only; no web fonts.",
+        ),
+        (
+            "/$defs/ContrastPair/properties/foreground/description",
+            "palette key",
+        ),
+        (
+            "/$defs/ContrastPair/properties/background/description",
+            "palette key",
+        ),
+    ] {
+        assert_eq!(generated.pointer(ptr), Some(&json!(text)), "{ptr}");
+    }
 }

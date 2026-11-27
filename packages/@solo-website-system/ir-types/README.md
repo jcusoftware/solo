@@ -42,7 +42,7 @@ To add a root type, derive `JsonSchema` on it (behind `feature = "jsonschema"`) 
 - `BTreeMap<String, T>` is `additionalProperties` / `Record<string, T>`. Free-form `serde_json::Value` is unconstrained (`unknown`).
 - Enums such as `PropKind` and `FormFieldKind` are snake_case string unions.
 
-One TypeScript type is generated per Rust type. It describes what a tool may write; a document produced by `solo` always includes every key.
+One TypeScript type is generated per Rust type. It describes what a tool may write. A document serialized by `solo` includes every key except those the Rust types omit when empty: `uid` is omitted when it is `None`, and `CommandError.command_index` and `paths` are omitted when unset. Optional fields that are written serialize as `null`.
 
 ## Editor contract (`uid` and command batches)
 
@@ -59,7 +59,15 @@ The editor reducer (`sws_ir::edit`, contract in `docs/EDITOR_COMMANDS.md`) is pa
 
 The original hand-written schema carried value constraints that plain derives do not produce. They are restored with `schemars` attributes next to each field in `crates/sws-ir/src/types.rs`, schema only: no parser or `validate_ir` behaviour changed. They are: `schema_version >= 1`, the `slug` pattern, the `https` `base_url` pattern and `format: uri`, `minItems: 1` and `required` for `pages`, `#rrggbb` color values, `minLength: 1` on names, ids, selectors, tags, expressions and `src`, `exclusiveMinimum: 0` for `min_ratio`, `max_chars >= 0`, `^/` for route paths and patterns, and `required` plus `minItems: 1` for dynamic route `params`.
 
-`crates/sws-codegen/tests/ir_schema.rs` freezes the old schema (`tests/fixtures/site-document.schema.legacy.json`) and proves the generated one is not looser: every old constraint is present, and both schemas accept and reject the same documents over targeted edits and thousands of structural mutations. The only deliberate difference is `uid`. `crates/sws-codegen/tests/editor_contract.rs` checks the schemas against values produced by the real reducer.
+`crates/sws-codegen/tests/ir_schema.rs` freezes the old schema (`tests/fixtures/site-document.schema.legacy.json`) and proves the generated one is not looser: every old constraint is present, and both schemas accept and reject the same documents over targeted edits and thousands of structural mutations. The only deliberate differences are `uid` and the `u32` upper bound on `schema_version` (4294967295), which serde enforces and the old schema did not state; integer widths of 32 bits or fewer are emitted as `minimum`/`maximum`, while 64-bit and `usize` fields keep only the type and lower bound (their bounds are not exactly representable as JSON numbers). `crates/sws-codegen/tests/editor_contract.rs` checks the schemas against values produced by the real reducer.
+
+## Venue manifest caveat
+
+`packs/hospitality/schema/venue.schema.json` (also generated) is inherited from the hand-written schema and marks two keys `required` that the Rust serializer omits when empty: `modules` (omitted when the map is empty, `skip_serializing_if = "BTreeMap::is_empty"`) and `scheduling.events.google_calendar_id` (omitted when `None`). So a manifest serialized from Rust with no modules, or with no calendar id, does not validate against the schema, while hand-written JSON that includes the keys (the demo fixture, `"google_calendar_id": null`) does. This is pinned by a test so a future change is deliberate; neither the serialization nor the schema was changed.
+
+## License
+
+The package is `MIT OR Apache-2.0` and ships `LICENSE-MIT` and `LICENSE-APACHE`, copied from the repository root by `npm run codegen`.
 
 ## Unknown-field policy
 

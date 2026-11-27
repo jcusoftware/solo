@@ -27,6 +27,14 @@ pub fn render_declarations(roots: &[Value]) -> Result<String, String> {
             named.extend(defs.iter().map(|(k, v)| (k.clone(), v)));
         }
         for (name, schema) in named {
+            // `Record` is the only TypeScript utility type this renderer emits;
+            // a definition with that name would shadow it.
+            if name == "Record" {
+                return Err("a definition named `Record` would shadow the TypeScript \
+                            `Record` utility type the declarations use"
+                    .to_string());
+            }
+            check_shapes(&name, schema)?;
             let text = render_decl(&name, schema);
             match decls.get(&name) {
                 Some(existing) if *existing != text => {
@@ -50,6 +58,49 @@ pub fn render_declarations(roots: &[Value]) -> Result<String, String> {
         out.push_str(text);
     }
     Ok(out)
+}
+
+/// Reject shapes the renderer would silently render wrongly.
+fn check_shapes(at: &str, schema: &Value) -> Result<(), String> {
+    let Value::Object(map) = schema else {
+        return Ok(());
+    };
+    let is_object = map.get("type").is_some_and(|t| t == "object");
+    if is_object
+        && map.get("additionalProperties") == Some(&Value::Bool(false))
+        && !map.contains_key("properties")
+    {
+        return Err(format!(
+            "`{at}`: `additionalProperties: false` without `properties` (an always-empty \
+             object) is not representable by the renderer"
+        ));
+    }
+    if map.contains_key("properties") && (map.contains_key("oneOf") || map.contains_key("anyOf")) {
+        return Err(format!(
+            "`{at}`: an object schema with both `properties` and `oneOf`/`anyOf` would lose \
+             its properties in the declaration"
+        ));
+    }
+    for key in ["properties", "patternProperties", "$defs"] {
+        if let Some(Value::Object(children)) = map.get(key) {
+            for (name, child) in children {
+                check_shapes(&format!("{at}/{key}/{name}"), child)?;
+            }
+        }
+    }
+    for key in ["items", "additionalProperties", "not", "if", "then", "else"] {
+        if let Some(child) = map.get(key) {
+            check_shapes(&format!("{at}/{key}"), child)?;
+        }
+    }
+    for key in ["oneOf", "anyOf", "allOf"] {
+        if let Some(Value::Array(children)) = map.get(key) {
+            for (i, child) in children.iter().enumerate() {
+                check_shapes(&format!("{at}/{key}/{i}"), child)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn render_decl(name: &str, schema: &Value) -> String {

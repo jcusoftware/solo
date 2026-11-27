@@ -8,6 +8,16 @@
 //! `patternProperties`, nullable-but-constrained strings, `oneOf` objects and
 //! tuples. They keep the generated schema exactly as strict as the original
 //! hand-written `venue.schema.json` (proved by `tests/venue_schema.rs`).
+//!
+//! # Known mismatch with the Rust serializer
+//!
+//! The schema (inherited unchanged from the hand-written one) marks `modules`
+//! and `scheduling.events.google_calendar_id` as `required`, but the Rust
+//! types skip them when serializing (`BTreeMap::is_empty` / `Option::is_none`).
+//! A manifest serialized from Rust with no modules, or no calendar id, is
+//! therefore rejected by this schema, while hand-written JSON that spells the
+//! keys out is accepted. Neither side is changed here; the behaviour is pinned
+//! by `tests/venue_schema.rs` so any future change is deliberate.
 
 use schemars::{Schema, SchemaGenerator, json_schema};
 use serde_json::Value;

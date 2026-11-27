@@ -6,8 +6,9 @@
 //! issue #56). The tests below compare it with the generated schema by
 //! constraint inventory and by accept/reject agreement over a rich document,
 //! a table of targeted edits and automatic structural mutations. The only
-//! deliberate difference is the editor `uid` field (issue #55), which the
-//! legacy schema could not know about.
+//! deliberate differences are the editor `uid` field (issue #55), which the
+//! legacy schema could not know about, and the `u32` bound on
+//! `schema_version`, which serde enforces and the legacy schema did not.
 
 mod common;
 
@@ -270,6 +271,8 @@ fn structural_mutations_agree_with_the_legacy_schema() {
         json!("zz"),
         json!([]),
         json!({}),
+        json!(1.5),
+        json!(4_294_967_296_u64),
     ];
     let (mut checked, mut rejected) = (0, 0);
     for path in paths.iter().filter(|p| !p.is_empty()) {
@@ -280,6 +283,13 @@ fn structural_mutations_agree_with_the_legacy_schema() {
         }
         for doc in cases {
             let (a, b) = (ok(&old, &doc), ok(&new, &doc));
+            // Deliberate difference: `schema_version` is a `u32`, so the
+            // generated schema bounds it at u32::MAX like serde does; the
+            // legacy schema had no `maximum`.
+            if path == "/schema_version" && doc["schema_version"] == json!(4_294_967_296_u64) {
+                assert!(a && !b, "legacy accepts, generated rejects: u32 width");
+                continue;
+            }
             assert_eq!(
                 a,
                 b,
@@ -300,9 +310,13 @@ fn structural_mutations_agree_with_the_legacy_schema() {
     );
 }
 
-/// Every distinct (keyword, value) a schema uses, in a comparable form.
+/// Every (schema location, keyword, value) a schema uses, in a comparable
+/// form. Locations are JSON pointers into the schema, so a constraint that
+/// moved to another field is a difference. Only real schema positions are
+/// walked: a property that is itself named `required` is a name, not a keyword.
 fn constraint_inventory(schema: &Value) -> BTreeSet<String> {
     const KEYWORDS: &[&str] = &[
+        "type",
         "pattern",
         "enum",
         "const",
@@ -318,52 +332,53 @@ fn constraint_inventory(schema: &Value) -> BTreeSet<String> {
         "format",
         "minProperties",
         "required",
-        "if",
-        "then",
-        "not",
     ];
-    fn walk(v: &Value, out: &mut BTreeSet<String>) {
-        match v {
-            Value::Object(m) => {
-                for (k, child) in m {
-                    // children of these keys are names (a property may itself be
-                    // called `required`), not keywords
-                    if matches!(k.as_str(), "properties" | "$defs" | "patternProperties") {
-                        if let Value::Object(named) = child {
-                            named.values().for_each(|c| walk(c, out));
-                        }
-                        continue;
-                    }
-                    if KEYWORDS.contains(&k.as_str()) {
-                        let canon = match child {
-                            Value::Array(a) if k == "required" || k == "enum" => {
-                                let mut items: Vec<String> =
-                                    a.iter().map(Value::to_string).collect();
-                                items.sort();
-                                format!("[{}]", items.join(","))
-                            }
-                            other => other.to_string(),
-                        };
-                        out.insert(format!("{k}={canon}"));
-                    }
-                    if k == "additionalProperties" && child == &Value::Bool(false) {
-                        out.insert("additionalProperties=false".to_string());
-                    }
-                    if k == "oneOf" {
-                        out.insert(format!(
-                            "oneOf[{} branches]",
-                            child.as_array().map_or(0, Vec::len)
-                        ));
-                    }
-                    walk(child, out);
-                }
+    fn canon(k: &str, child: &Value) -> String {
+        match child {
+            Value::Array(a) if matches!(k, "required" | "enum" | "type") => {
+                let mut items: Vec<String> = a.iter().map(Value::to_string).collect();
+                items.sort();
+                format!("[{}]", items.join(","))
             }
-            Value::Array(a) => a.iter().for_each(|c| walk(c, out)),
-            _ => {}
+            other => other.to_string(),
+        }
+    }
+    fn walk(schema: &Value, at: &str, out: &mut BTreeSet<String>) {
+        let Value::Object(m) = schema else { return };
+        for (k, child) in m {
+            let here = format!("{at}/{k}");
+            if KEYWORDS.contains(&k.as_str()) {
+                out.insert(format!("{here}={}", canon(k, child)));
+            }
+            match k.as_str() {
+                "properties" | "$defs" | "patternProperties" => {
+                    if let Value::Object(named) = child {
+                        for (name, sub) in named {
+                            walk(sub, &format!("{here}/{name}"), out);
+                        }
+                    }
+                }
+                "additionalProperties" => {
+                    if child == &Value::Bool(false) {
+                        out.insert(format!("{here}=false"));
+                    }
+                    walk(child, &here, out);
+                }
+                "items" | "not" | "if" | "then" | "else" => walk(child, &here, out),
+                "oneOf" | "anyOf" | "allOf" => {
+                    if let Value::Array(branches) = child {
+                        out.insert(format!("{here}[{} branches]", branches.len()));
+                        for (i, b) in branches.iter().enumerate() {
+                            walk(b, &format!("{here}/{i}"), out);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
     let mut out = BTreeSet::new();
-    walk(schema, &mut out);
+    walk(schema, "", &mut out);
     out
 }
 
@@ -371,8 +386,30 @@ fn constraint_inventory(schema: &Value) -> BTreeSet<String> {
 /// Asserted exactly, so a new gap (or a closed one) forces a conscious edit.
 const MISSING_FROM_GENERATED: &[&str] = &[];
 
-/// Constraints only the generated schema has: the deliberate additions.
-const ADDED_BY_GENERATED: &[&str] = &[r#"pattern="^[a-z0-9][a-z0-9._-]{0,63}$""#];
+/// Constraints only the generated schema has: the deliberate additions, each
+/// listed with its exact schema location.
+///
+/// * the editor `uid` field on every `Node` variant (issue #55): its pattern
+///   and its `string | null` type;
+/// * `type: "string"` next to the `const` discriminator (`type` / `kind`) of
+///   each tagged-union branch: redundant with `const`, so no behaviour change;
+/// * `maximum` of `schema_version` (a `u32`).
+fn added_by_generated() -> Vec<String> {
+    let mut added = vec!["/properties/schema_version/maximum=4294967295".to_string()];
+    for i in 0..6 {
+        let node = format!("/$defs/Node/oneOf/{i}/properties");
+        added.push(format!("{node}/type/type=\"string\""));
+        added.push(format!("{node}/uid/pattern=\"^[a-z0-9][a-z0-9._-]{{0,63}}$\""));
+        added.push(format!("{node}/uid/type=[\"null\",\"string\"]"));
+    }
+    for i in 0..2 {
+        added.push(format!(
+            "/$defs/RoutePattern/oneOf/{i}/properties/kind/type=\"string\""
+        ));
+    }
+    added.sort();
+    added
+}
 
 #[test]
 fn every_legacy_constraint_is_present_in_the_generated_schema() {
@@ -383,9 +420,10 @@ fn every_legacy_constraint_is_present_in_the_generated_schema() {
         missing, MISSING_FROM_GENERATED,
         "legacy constraints missing from the generated schema"
     );
-    let added: Vec<&str> = new.difference(&old).map(String::as_str).collect();
+    let added: Vec<String> = new.difference(&old).cloned().collect();
     assert_eq!(
-        added, ADDED_BY_GENERATED,
+        added,
+        added_by_generated(),
         "generated schema has constraints the legacy schema did not"
     );
     assert!(old.len() > 25, "inventory too small: {}", old.len());
@@ -425,4 +463,41 @@ fn uid_is_the_only_deliberate_difference() {
     assert!(ok(&new, &with_uid(n)));
     // uid is never required (legacy documents have none)
     assert!(ok(&new, &rich_base()));
+}
+
+/// `description` / `title` annotations of the legacy schema must survive
+/// generation, at the same schema location.
+#[test]
+fn legacy_annotations_are_preserved() {
+    fn annotations(v: &Value, at: &str, out: &mut Vec<(String, Value)>) {
+        let Value::Object(m) = v else { return };
+        for (k, c) in m {
+            match (k.as_str(), c) {
+                ("title" | "description", Value::String(_)) => {
+                    out.push((format!("{at}/{k}"), c.clone()));
+                }
+                ("properties" | "$defs" | "patternProperties", Value::Object(named)) => {
+                    for (n, sub) in named {
+                        annotations(sub, &format!("{at}/{k}/{n}"), out);
+                    }
+                }
+                ("items" | "additionalProperties" | "not" | "if" | "then" | "else", _) => {
+                    annotations(c, &format!("{at}/{k}"), out);
+                }
+                ("oneOf" | "anyOf" | "allOf", Value::Array(branches)) => {
+                    for (i, b) in branches.iter().enumerate() {
+                        annotations(b, &format!("{at}/{k}/{i}"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let (old, new) = (legacy(), generated());
+    let mut found = Vec::new();
+    annotations(&old, "", &mut found);
+    assert!(!found.is_empty());
+    for (ptr, text) in found {
+        assert_eq!(new.pointer(&ptr), Some(&text), "annotation {ptr} changed");
+    }
 }

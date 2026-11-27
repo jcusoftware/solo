@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use regex::Regex;
 use serde_json::{Value, json};
 use sws_ir::{
     ComponentDef, ContrastPair, FormFieldKind, FormFieldOption, FormFieldSchema, FormSchema,
@@ -452,7 +453,12 @@ fn declarations_cover_every_root_and_def() {
     ] {
         assert!(dts.contains(needle), "index.d.ts is missing `{needle}`");
     }
-    assert!(!dts.contains("any"), "no `any` in generated declarations");
+    let any_type = Regex::new(r"(:|\||&|<|,|=)\s*any\b|\bany\s*(\[\]|[|&;,>])")
+        .expect("regex");
+    assert!(
+        !any_type.is_match(&dts),
+        "no `any` type in generated declarations"
+    );
 }
 
 #[test]
@@ -532,4 +538,104 @@ fn drift_is_reported_in_check_mode_and_fixed_in_write_mode() {
         vec!["p/a.json".to_string()]
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stale_schema_files_are_reported_in_check_mode_and_deleted_in_write_mode() {
+    let dir = std::env::temp_dir().join(format!("sws-codegen-stale-{}", std::process::id()));
+    let artifacts = vec![Artifact {
+        path: "pkg/schema/a.schema.json".into(),
+        contents: "{}\n".into(),
+    }];
+    sync(&dir, &artifacts, Mode::Write).expect("write");
+    std::fs::write(dir.join("pkg/schema/old.schema.json"), "{}\n").expect("stale");
+    std::fs::write(dir.join("pkg/schema/notes.txt"), "keep").expect("other");
+    assert_eq!(
+        sync(&dir, &artifacts, Mode::Check).expect("check"),
+        vec!["pkg/schema/old.schema.json".to_string()]
+    );
+    assert!(dir.join("pkg/schema/old.schema.json").exists());
+    assert_eq!(
+        sync(&dir, &artifacts, Mode::Write).expect("write"),
+        vec!["pkg/schema/old.schema.json".to_string()]
+    );
+    assert!(!dir.join("pkg/schema/old.schema.json").exists());
+    assert!(dir.join("pkg/schema/notes.txt").exists());
+    assert!(
+        sync(&dir, &artifacts, Mode::Check)
+            .expect("check")
+            .is_empty()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn package_ships_both_license_texts() {
+    let artifacts = core_artifacts().expect("artifacts");
+    for name in ["LICENSE-MIT", "LICENSE-APACHE"] {
+        let a = artifacts
+            .iter()
+            .find(|a| a.path == format!("{PACKAGE_DIR}/{name}"))
+            .unwrap_or_else(|| panic!("{name} is not generated"));
+        assert_eq!(
+            a.contents,
+            std::fs::read_to_string(repo_root().join(name)).expect("root license")
+        );
+        let pkg = artifacts
+            .iter()
+            .find(|a| a.path.ends_with("package.json"))
+            .expect("package.json");
+        assert!(pkg.contents.contains(&format!("\"{name}\"")));
+    }
+}
+
+#[test]
+fn unknown_keywords_nested_in_combinators_are_rejected() {
+    for wrapper in [
+        json!({"not": {"type": "string", "bogus": 1}}),
+        json!({"oneOf": [{"type": "string", "bogus": 1}, {"type": "null"}]}),
+        json!({"anyOf": [{"type": "string", "bogus": 1}]}),
+        json!({"if": {"bogus": 1}, "then": {"type": "string"}}),
+    ] {
+        let errs = validate(&wrapper, &json!(1));
+        assert!(
+            errs.iter().any(|e| e.contains("unsupported schema keyword")),
+            "{wrapper}: {errs:?}"
+        );
+        // Also when the instance would otherwise be accepted.
+        assert!(!validate(&wrapper, &json!("x")).is_empty(), "{wrapper}");
+    }
+}
+
+#[test]
+fn dangling_refs_and_bad_pattern_properties_regexes_are_errors() {
+    assert!(!validate(&json!({"$ref": "#/$defs/missing"}), &json!(1)).is_empty());
+    let schema = json!({"type": "object", "patternProperties": {"(": {"type": "string"}}});
+    let errs = validate(&schema, &json!({"a": "x"}));
+    assert!(errs.iter().any(|e| e.contains("unsupported regex")), "{errs:?}");
+}
+
+#[test]
+fn declarations_reject_shapes_they_would_render_wrongly() {
+    let root = |extra: Value| {
+        let mut r = json!({"title": "Root", "type": "object", "properties": {}});
+        if let (Value::Object(m), Value::Object(e)) = (&mut r, extra) {
+            m.extend(e);
+        }
+        r
+    };
+    // additionalProperties: false with no properties.
+    let empty_object = json!({
+        "title": "Root", "type": "object",
+        "properties": {"a": {"type": "object", "additionalProperties": false}}
+    });
+    assert!(ts::render_declarations(&[empty_object]).is_err());
+    // properties together with oneOf.
+    let both = root(json!({"oneOf": [{"type": "string"}]}));
+    assert!(ts::render_declarations(&[both]).is_err());
+    // A definition named like the utility type the renderer emits.
+    let shadow = root(json!({"$defs": {"Record": {"type": "string"}}}));
+    assert!(ts::render_declarations(&[shadow]).is_err());
+    // The same shapes are fine when they are not wrong.
+    assert!(ts::render_declarations(&[root(json!({}))]).is_ok());
 }

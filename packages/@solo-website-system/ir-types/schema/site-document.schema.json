@@ -835,7 +835,7 @@
   "$id": "https://solo-website-system.example/schemas/site-document.v1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Complete, domain-agnostic intermediate representation of a static/edge website.",
+  "description": "Deterministic intermediate representation for a Solo Website System (SWS) site.",
   "properties": {
     "base_url": {
       "format": "uri",
@@ -892,6 +892,7 @@
     },
     "schema_version": {
       "default": 1,
+      "maximum": 4294967295,
       "minimum": 1,
       "type": "integer"
     },

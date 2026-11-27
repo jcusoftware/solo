@@ -40,8 +40,15 @@ pub fn root_schema<T: JsonSchema>(id: &str, option_is_nullable: bool) -> Value {
 }
 
 /// Drop schemars' Rust-width annotations (`uint16`, `double`, ...): they are
-/// not registered `format` names, so strict validators (Ajv) reject them. The
-/// accompanying `minimum`/`maximum` and `type` keep the real constraint.
+/// not registered `format` names, so strict validators (Ajv) reject them.
+///
+/// Before the width is dropped, the exact bounds of the fixed-width integer
+/// types that fit a JSON number (`u8`/`u16`/`u32`, `i8`/`i16`/`i32`) are added
+/// as `minimum`/`maximum` (unless already present), so `schema_version:
+/// 5000000000` is rejected as serde rejects it. schemars already emits
+/// `minimum: 0` for unsigned types. The 64-bit and `usize` types (`uint64`,
+/// `int64`, `uint`) have no `maximum`: their bounds are not exactly
+/// representable as JSON doubles, so only the `type` and any `minimum` remain.
 pub fn strip_numeric_formats(schema: &mut Value) {
     match schema {
         Value::Object(map) => {
@@ -50,14 +57,30 @@ pub fn strip_numeric_formats(schema: &mut Value) {
                 Some(Value::Array(types)) => types.iter().any(|t| t == "integer" || t == "number"),
                 _ => false,
             };
-            if numeric {
-                map.remove("format");
+            if numeric
+                && let Some(Value::String(f)) = map.remove("format")
+                && let Some((min, max)) = integer_bounds(&f)
+            {
+                map.entry("minimum").or_insert_with(|| Value::from(min));
+                map.entry("maximum").or_insert_with(|| Value::from(max));
             }
             map.values_mut().for_each(strip_numeric_formats);
         }
         Value::Array(items) => items.iter_mut().for_each(strip_numeric_formats),
         _ => {}
     }
+}
+
+fn integer_bounds(format: &str) -> Option<(i64, i64)> {
+    Some(match format {
+        "uint8" => (0, i64::from(u8::MAX)),
+        "uint16" => (0, i64::from(u16::MAX)),
+        "uint32" => (0, i64::from(u32::MAX)),
+        "int8" => (i64::from(i8::MIN), i64::from(i8::MAX)),
+        "int16" => (i64::from(i16::MIN), i64::from(i16::MAX)),
+        "int32" => (i64::from(i32::MIN), i64::from(i32::MAX)),
+        _ => return None,
+    })
 }
 
 /// Remove the `null` branch schemars adds for `Option<T>`: `type: [T, "null"]`

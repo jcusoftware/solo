@@ -24,6 +24,12 @@ fn default_form_method() -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "jsonschema", schemars(extend("required" = ["slug", "name", "base_url", "pages"])))]
+#[cfg_attr(
+    feature = "jsonschema",
+    schemars(
+        description = "Deterministic intermediate representation for a Solo Website System (SWS) site."
+    )
+)]
 pub struct SiteDocument {
     #[serde(default = "default_schema_version")]
     #[cfg_attr(feature = "jsonschema", schemars(extend("minimum" = 1)))]

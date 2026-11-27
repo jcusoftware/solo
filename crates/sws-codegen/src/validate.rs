@@ -32,7 +32,21 @@ const ANNOTATIONS: &[&str] = &[
 /// `$ref` resolution). Returns human-readable errors; empty means valid.
 #[must_use]
 pub fn validate(schema: &Value, instance: &Value) -> Vec<String> {
-    let mut errors = Vec::new();
+    // Sub-schemas under `oneOf`/`anyOf`/`not`/`if` are evaluated as booleans,
+    // which would swallow an "unsupported keyword" error and could accept an
+    // instance. Reject the whole schema tree up front instead.
+    let mut errors: Vec<String> = unsupported_keywords(schema)
+        .into_iter()
+        .map(|p| format!("{p}: unsupported schema keyword"))
+        .collect();
+    errors.extend(
+        unresolved_refs(schema)
+            .into_iter()
+            .map(|r| format!("unresolved $ref `{r}`")),
+    );
+    if !errors.is_empty() {
+        return errors;
+    }
     check(schema, schema, instance, "", &mut errors);
     errors
 }
@@ -321,9 +335,13 @@ fn check(root: &Value, schema: &Value, inst: &Value, at: &str, errs: &mut Vec<St
             }
             if let Some(pats) = patterns {
                 for (p, sub) in pats {
-                    if regex_of(p).is_some_and(|re| re.is_match(key)) {
-                        matched = true;
-                        check(root, sub, value, &sub_at, errs);
+                    match regex_of(p) {
+                        Some(re) if re.is_match(key) => {
+                            matched = true;
+                            check(root, sub, value, &sub_at, errs);
+                        }
+                        None => errs.push(format!("{here}: unsupported regex `{p}`")),
+                        _ => {}
                     }
                 }
             }
