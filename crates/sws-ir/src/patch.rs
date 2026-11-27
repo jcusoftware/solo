@@ -250,10 +250,28 @@ pub fn apply_patch(doc: &mut SiteDocument, patch: &IrPatch) -> Result<(), IrErro
             Ok(())
         }
         IrPatch::UpsertPage { page } => {
-            if let Some(existing) = doc.pages.iter_mut().find(|p| p.id == page.id) {
-                *existing = page.clone();
-            } else {
-                doc.pages.push(page.clone());
+            let marked = is_marked(doc);
+            let position = doc.pages.iter().position(|p| p.id == page.id);
+            let previous = match position {
+                Some(index) => Some(std::mem::replace(&mut doc.pages[index], page.clone())),
+                None => {
+                    doc.pages.push(page.clone());
+                    None
+                }
+            };
+            if marked && let Err(err) = crate::edit::ids::check_uids(doc) {
+                match (position, previous) {
+                    (Some(index), Some(old)) => doc.pages[index] = old,
+                    _ => {
+                        doc.pages.pop();
+                    }
+                }
+                return Err(IrError::InvalidValue {
+                    field: "page".to_string(),
+                    message: format!(
+                        "upsert_page would leave a document with invalid stable node IDs: {err}"
+                    ),
+                });
             }
             Ok(())
         }

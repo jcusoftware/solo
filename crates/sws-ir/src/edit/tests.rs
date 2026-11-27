@@ -1863,6 +1863,39 @@ fn legacy_patch_ops_keep_working_on_unmarked_documents_and_are_guarded_on_marked
     assert!(apply_patch(&mut marked, &uidless_page).is_err());
     assert_eq!(bytes(&marked), before, "refused ops change nothing");
 
+    // Fully identified but colliding or malformed uids are refused and rolled back,
+    // both when replacing an existing page and when adding a new one.
+    let reuse_uid = |page_id: &str, uid: String| IrPatch::UpsertPage {
+        page: {
+            let mut page = random_page(page_id);
+            page.body = vec![Node::Text {
+                uid: Some(uid),
+                value: "x".into(),
+            }];
+            page
+        },
+    };
+    let taken = marked.pages[0].body[0]
+        .uid()
+        .expect("upgraded doc has uids")
+        .to_string();
+    for patch in [
+        reuse_uid("fresh", taken.clone()),
+        reuse_uid("fresh", "Bad UID!".into()),
+        reuse_uid(
+            &marked.pages[1 % marked.pages.len()].id.clone(),
+            taken.clone(),
+        ),
+    ] {
+        match apply_patch(&mut marked, &patch).unwrap_err() {
+            IrError::InvalidValue { message, .. } => {
+                assert!(message.contains("stable node IDs"), "{message}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(bytes(&marked), before, "rejected upsert rolls back");
+    }
+
     // Ops that cannot damage uids keep working and the document stays editable.
     apply_patch(
         &mut marked,
