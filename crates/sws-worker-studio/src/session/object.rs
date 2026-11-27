@@ -35,6 +35,7 @@ use worker::{
     WebSocketIncomingMessage, WebSocketPair, console_error, console_log, durable_object,
 };
 
+use crate::auth::policy::effective_role;
 use crate::model::Role;
 use crate::repo;
 use crate::respond::json_error;
@@ -147,12 +148,18 @@ impl DurableObject for SiteSession {
                 #[derive(serde::Deserialize)]
                 struct Body {
                     user_id: i64,
+                    /// Only sockets opened with this credential tag (logout, token
+                    /// revocation); `None` = every socket of the user.
+                    #[serde(default)]
+                    credential: Option<String>,
                 }
                 let body: Body = match req.json().await {
                     Ok(b) => b,
                     Err(_) => return to_response(json_error(400, "bad_request", &[])),
                 };
-                let n = self.revoke_user(body.user_id).await;
+                let n = self
+                    .revoke_user(body.user_id, body.credential.as_deref())
+                    .await;
                 Response::from_json(&serde_json::json!({ "closed": n }))
             }
             ("GET", PATH_REVISION) => {
@@ -517,11 +524,18 @@ impl SiteSession {
 
     // --- authorization --------------------------------------------------------
 
-    /// Fresh D1 membership read for one user. `Err` = D1 unavailable (callers
-    /// fail closed for edits and keep sockets open).
-    async fn fetch_role(&self, user_id: i64) -> Result<Option<Role>> {
+    /// Fresh authorization for one socket identity: the D1 membership AND the
+    /// credential behind it (#65: the session or token row must still be valid,
+    /// for this user and, for a token, this workspace). `Ok(Ok(role))` is the role
+    /// capped by the credential ([`effective_role`]); `Ok(Err(reason))` means the
+    /// socket must be closed; `Err` = D1 unavailable (callers fail closed for edits
+    /// and keep sockets open).
+    async fn fetch_role(
+        &self,
+        user_id: i64,
+        credential: Option<&str>,
+    ) -> Result<std::result::Result<Role, &'static str>> {
         let workspace_id = self.workspace_id().await?;
-        // #65: also validate the session/token behind `att.credential` here.
         #[cfg(feature = "insecure-dev-auth")]
         {
             if self.dev_d1_down.get() {
@@ -533,7 +547,14 @@ impl SiteSession {
         }
         let db = crate::d1::database(&self.env)?;
         let row = crate::d1::first(&db, &repo::membership_get(&workspace_id, user_id)).await?;
-        Ok(row.as_ref().and_then(role_from_row))
+        let Some(role) = row.as_ref().and_then(role_from_row) else {
+            return Ok(Err("membership_revoked"));
+        };
+        let now_s = now_ms().div_euclid(1000);
+        match crate::auth_http::revalidate(&db, &workspace_id, user_id, credential, now_s).await? {
+            Some(cred) => Ok(Ok(effective_role(role, &cred))),
+            None => Ok(Err("credential_revoked")),
+        }
     }
 
     /// The socket's attachment as it is RIGHT NOW, unless it was revoked.
@@ -557,8 +578,15 @@ impl SiteSession {
     /// Apply a membership result (read BEFORE the caller's await) to the socket's
     /// attachment as it is now. Never writes back a pre-await copy: a revocation
     /// that happened meanwhile stays revoked. `Ok(Some(role))` = still allowed.
-    async fn apply_membership(&self, ws: &WebSocket, role: Option<Role>, now: i64) -> Option<Role> {
+    async fn apply_membership(
+        &self,
+        ws: &WebSocket,
+        role: std::result::Result<Role, &'static str>,
+        now: i64,
+    ) -> Option<Role> {
         let fresh = ws.deserialize_attachment::<Attachment>().ok().flatten();
+        let reason = role.err().unwrap_or("membership_revoked");
+        let role = role.ok();
         match merge_membership(fresh, role, now) {
             Refresh::Gone => None,
             Refresh::Member(a) => {
@@ -567,7 +595,7 @@ impl SiteSession {
             }
             Refresh::Removed(a) => {
                 let client = a.client_id.clone();
-                self.revoke_socket(ws, a, "membership_revoked");
+                self.revoke_socket(ws, a, reason);
                 self.drop_presence(&client).await;
                 None
             }
@@ -580,14 +608,19 @@ impl SiteSession {
         let Some(before) = self.live(ws) else {
             return Ok(None);
         };
-        let role = self.fetch_role(before.user_id).await?;
+        let role = self
+            .fetch_role(before.user_id, before.credential.as_deref())
+            .await?;
         Ok(self.apply_membership(ws, role, now).await)
     }
 
     /// Refresh every other connection whose last check is older than the
-    /// interval (`force`: all of them). One D1 read per distinct user.
+    /// interval (`force`: all of them). One D1 check per distinct (user, credential).
     async fn recheck_peers(&self, now: i64, force: bool) {
-        let mut seen: Vec<(i64, Option<Role>)> = Vec::new();
+        // One D1 read per distinct (user, credential): two sockets of one user may
+        // hold different credentials (a browser session and a CLI token).
+        type Seen = (i64, Option<String>, std::result::Result<Role, &'static str>);
+        let mut seen: Vec<Seen> = Vec::new();
         for ws in self.state.get_websockets() {
             let Some(att) = self.live(&ws) else {
                 continue;
@@ -595,11 +628,17 @@ impl SiteSession {
             if !(force || needs_recheck(now, att.authz_checked_ms, self.config.authz_recheck_ms)) {
                 continue;
             }
-            let role = match seen.iter().find(|(u, _)| *u == att.user_id) {
-                Some((_, r)) => *r,
-                None => match self.fetch_role(att.user_id).await {
+            let role = match seen
+                .iter()
+                .find(|(u, c, _)| *u == att.user_id && *c == att.credential)
+            {
+                Some((_, _, r)) => *r,
+                None => match self
+                    .fetch_role(att.user_id, att.credential.as_deref())
+                    .await
+                {
                     Ok(r) => {
-                        seen.push((att.user_id, r));
+                        seen.push((att.user_id, att.credential.clone(), r));
                         r
                     }
                     Err(e) => {
@@ -612,12 +651,17 @@ impl SiteSession {
         }
     }
 
-    /// Worker -> DO internal request (#65 wires the callers).
-    async fn revoke_user(&self, user_id: i64) -> usize {
+    /// Worker -> DO internal request: logout, token revocation or rotation
+    /// (`credential`: only sockets opened with that tag) and membership removal or
+    /// role change (`None`: every socket of the user).
+    async fn revoke_user(&self, user_id: i64, credential: Option<&str>) -> usize {
         let mut n = 0;
         for ws in self.state.get_websockets_with_tag(&user_tag(user_id)) {
             // Fresh read, immediate write: no await in between.
-            if let Some(att) = self.live(&ws) {
+            if let Some(att) = self
+                .live(&ws)
+                .filter(|a| credential.is_none() || a.credential.as_deref() == credential)
+            {
                 let client = att.client_id.clone();
                 self.revoke_socket(&ws, att, "credential_revoked");
                 self.drop_presence(&client).await;
