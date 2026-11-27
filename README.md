@@ -85,13 +85,13 @@ crates/                       Open-source SWS Rust engine (MIT OR Apache-2.0)
   sws-wasm/                   Browser Wasm bindings for live visual canvas & preview
   sws-cli/                    `solo` CLI & MCP server for local/CI workflows
   sws-worker-site/            Published-site edge Worker (/api/*, Turnstile, D1, security headers)
-  sws-worker-studio/          planned v0.2.0 — studio control-plane Worker (Durable Objects, D1, R2, Queues)
+  sws-worker-studio/          planned v0.2.0 — optional Studio control-plane Worker (Durable Objects, D1; R2 opt-in)
 
-apps/                         planned v0.3.0 — Frontend builder & runtime surfaces (MIT OR Apache-2.0)
+apps/                         planned v0.3.0 — thin TypeScript Builder shell and sandboxed canvas (MIT OR Apache-2.0)
   builder/                    Visual website builder shell (properties, tokens, publish)
   canvas/                     Browser-based visual canvas powered by sws-wasm
 
-packages/                     planned v0.3.0 — Shared TypeScript/JS SDKs (@solo-website-system/*, MIT OR Apache-2.0)
+packages/                     planned v0.2.0-alpha.1 onward — generated types and shared TypeScript packages (@solo-website-system/*, MIT OR Apache-2.0)
 
 packs/                        Vertical plugins & industry schemas (open-source or external packs)
   hospitality/                Open-source reference pack (`MIT OR Apache-2.0`): M1–M10 modules,
@@ -115,7 +115,7 @@ private/                      Gitignored Zone B (prospect dossiers, client expor
 
 ## $0 free-tier Cloudflare architecture notes
 
-- **Cloudflare free tier:** Workers (100k requests/day), Workers Static Assets, D1 (5 GB SQLite), Turnstile, DNS, and DMARC Management. (Control-plane v0.2.0 adds SQLite Durable Objects, R2, and Queues.)
+- **Cloudflare free tier:** Workers (100k requests/day), Workers Static Assets, D1 (5 GB SQLite), Turnstile, DNS, and DMARC Management. (The optional v0.2.0 Studio control plane adds SQLite Durable Objects and is cardless by default; R2 is opt-in. Quota values are assumptions until verified; see `ROADMAP.md`.)
 - **Resend:** optional free tier for transactional form notifications. Without `RESEND_API_KEY`, email dispatch is stubbed and logged.
 - **Tooling:** GitHub Actions, Playwright, `axe-core`, and Lighthouse CI are open-source and free to run.
 

@@ -8,10 +8,12 @@ SWS is organized as a Cargo + pnpm monorepo:
 
 ```text
 ├── crates/       # Open-source core Rust engine & tooling (MIT OR Apache-2.0, industry-agnostic)
-├── apps/         # Studio, visual builder, canvas, dashboard, and Worker control-plane apps
-├── packages/     # Shared TypeScript packages (e.g., SDK, UI components)
+├── apps/         # Planned (v0.3.0): thin TypeScript Builder shell and sandboxed canvas
+├── packages/     # Planned (v0.2.0-alpha.1): `@solo-website-system/*`, starting with generated `ir-types`
 └── packs/        # Industry vertical packs (e.g., packs/hospitality)
 ```
+
+`apps/` and `packages/` do not exist yet. The Studio Worker is planned as `crates/sws-worker-studio`. Canonical IR, command reduction and validation stay in Rust; TypeScript is a thin shell (see `docs/ARCHITECTURE.md` §10 and `ROADMAP.md`). The worker baseline is `worker` 0.9 and `worker-build` 0.9.
 
 ### Dependency & Separation Rules
 
@@ -143,6 +145,12 @@ SWS enforces a strict separation between public/open-source assets and private c
   - `feat(sws-compiler): enforce heading hierarchy validation (fixes #12)`
   - `fix(sws-css): preserve media query order during minification`
 - Include verification command results in your pull request description.
+- **Pull requests and merges.**
+  - Every PR into `main` is **squash-merged**; no merge commits or rebase merges.
+  - The PR title is a conventional commit title (it becomes the squash commit title on `main`), e.g. `docs: align the roadmap and architecture (#58)`.
+  - Use a closing reference (`Closes #N` / `Fixes #N`) only for issues the PR fully completes. For partial work use `Refs #N` so the issue stays open.
+  - The PR description includes the verification log (`npm run verify`, plus `test:a11y` and `lhci` when UI changed).
+  - After merge, confirm the squash commit title and signature on `main` before tagging.
 
 ### 7. Release Runbook (tag-only pipeline)
 
@@ -151,8 +159,8 @@ Releases are tag-triggered only (`.github/workflows/release.yml`). There are two
 1. **Prepare the release via PR.** On an isolated `chore/release-...` branch:
    - Bump `[workspace.package] version` in `Cargo.toml` (all crates inherit via `version.workspace = true`); run `cargo update --workspace --precise <no-op>`/`cargo check` so `Cargo.lock` picks up the new version.
    - Move the relevant `CHANGELOG.md` `[Unreleased]` entries under a new dated `## [x.y.z]` heading.
-   - Open the PR, get it merged to `main`.
-2. **Tag `main`** at the release commit — annotated and signed (with `tag.gpgsign true`, `git tag -a -m "..." vX.Y.Z` signs automatically):
+   - Open the PR, get it squash-merged to `main`, then verify the final squash commit's title and signature (`git log --show-signature -1 origin/main`).
+2. **Tag `main`** at that verified final squash commit (never a feature-branch commit) — annotated and signed (with `tag.gpgsign true`, `git tag -a -m "..." vX.Y.Z` signs automatically):
    - `git tag -a -m "Solo vX.Y.Z" vX.Y.Z` — full release: workspace verify → CLI binaries (5 targets) → GitHub Release with SHA256SUMS → landing/docs Cloudflare deploy (if `CLOUDFLARE_API_TOKEN` is configured).
    - `git tag -a -m "SWS Hospitality Pack vX.Y.Z" pack-hospitality-vX.Y.Z` — pack release: pack tests/clippy/deny → `packs/hospitality` tarball → GitHub Release.
 3. **Push the tags** (pushing tags needs maintainer confirmation): `git push origin vX.Y.Z pack-hospitality-vX.Y.Z`.

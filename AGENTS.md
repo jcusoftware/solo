@@ -10,7 +10,7 @@ This repository is the open-source Solo (Solo Website System, SWS) workspace. Th
 | `packs/hospitality/` | A (public) | Open-source reference hospitality pack (schema, crate, VA ABC lint, and fictional `packs/hospitality/demo/venue.json`) | `MIT OR Apache-2.0` |
 | `sites/` | A (public) | Static landing (`sws-landing`) and docs (`sws-docs`) generator and output | `MIT OR Apache-2.0` |
 | `integrations/` | A (public, tracked) | Standalone integrations (Devvit subreddit release bot) | Per-package: `integrations/devvit-release-bot` is `BSD-3-Clause` |
-| `docs/` | A (public) | Architecture documentation (`ARCHITECTURE.md`) | `MIT OR Apache-2.0` |
+| `docs/` | A (public) | Post-launch reference documentation (architecture, runbooks, command references) | `MIT OR Apache-2.0` |
 | `private/` | **B** (gitignored) | Private client assets, prospect dossiers, credentials (`*.env`, `.dev.vars`) | Never commit |
 
 - **No tenant-specific or vertical-specific logic in `crates/` or `core/tools`.** Tools take an input path argument. `core/public/*` and `sites/*/public/*` are rendered output only: regenerate them with `npm run render` / `npm run sites:build` and never hand-edit them.
@@ -18,6 +18,7 @@ This repository is the open-source Solo (Solo Website System, SWS) workspace. Th
 - **Two-zone trademark firewall.** Zone A (core, reference pack, demo fixture, tests, docs, screenshots) must never contain real third-party venue names, logos, photos, menus or trademarks.
   - The public showcase uses only the fictional `shirlington-hearth-demo` (`packs/hospitality/demo/venue.json`). Its address, phone and domain are fictional on purpose: Hearthstone Lane, 555-01xx, `.example`.
   - Real-client or prospect material goes in `private/` (gitignored) or a separate private studio repo, never in Zone A.
+- **Tracked docs are post-launch references only.** That means user guides, contributing and maintenance, overall architecture, and package or command references. Design notes, audits, proposals and validation checklists live in `private/docs/<milestone>/` (gitignored). Tracked files never link to individual private notes; record decisions on the GitHub issue instead.
 
 ## 2. License hygiene
 
@@ -101,6 +102,6 @@ Make sure `~/.cargo/bin` is on `PATH` so `wrangler dev` can find `worker-build`.
 ## 10. Git & GitHub workflow
 
 - **Branches and commits.** Work on one isolated feature branch per change (`feat/…`, `fix/…`, `chore/…`). Use conventional commits that reference issues, e.g. `feat(sws-compiler): enforce heading hierarchy (fixes #12)`. All commits and release tags must be cryptographically signed (`git commit -S` / `commit.gpgsign=true`, verified with `git log --show-signature -1`).
-- **Pull requests.** PRs include the verification log: `npm run verify`, plus `test:a11y` and `lhci` when UI changed.
+- **Pull requests.** PRs include the verification log: `npm run verify`, plus `test:a11y` and `lhci` when UI changed. PRs into `main` are squash-merged with a conventional PR title; use `Closes #N` only for issues the PR fully completes and `Refs #N` otherwise. Release tags are signed and cut from the verified final squash commit on `main` (see `CONTRIBUTING.md` §6–§7).
 - **Ask first.** `git push`, `wrangler deploy`, secrets and remote D1 writes need user confirmation.
 - **Before committing,** run `npm run verify` and `git diff --stat`, and verify no real-client/Zone B data or secrets are staged.
