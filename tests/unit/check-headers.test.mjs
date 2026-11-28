@@ -75,6 +75,7 @@ pub const SECURITY_HEADERS: &[(&str, &str)] = &[
     const rust = readFileSync(resolve(process.cwd(), 'crates/sws-security/src/headers.rs'), 'utf8');
     for (const [name, file] of [
       ['STUDIO_HEADERS', 'studio'],
+      ['STUDIO_FORM_HEADERS', 'studio-form'],
       ['PREVIEW_HEADERS', 'preview'],
       ['CANVAS_HEADERS', 'canvas'],
     ]) {
