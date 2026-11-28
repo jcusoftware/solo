@@ -18,6 +18,8 @@
 //! | GET / POST | `/api/workspaces/{ws}/invitations` | owner (POST: fresh session) |
 //! | DELETE | `/api/workspaces/{ws}/invitations/{id}` | owner, fresh session |
 
+use sws_security::headers::HeaderProfile;
+
 use crate::auth::secret::is_lookup_id;
 use crate::bounds::{self, Reject};
 use crate::session::is_valid_id;
@@ -81,6 +83,16 @@ impl AuthRoute {
                 | AuthRoute::InvitePage
                 | AuthRoute::InviteAccept
         )
+    }
+
+    /// The security-header profile for this route's responses: `studio-form`
+    /// (Turnstile allowances) for the invitation form page only, `studio` for
+    /// everything else, including the form's POST target and its error pages.
+    pub fn header_profile(&self) -> HeaderProfile {
+        match self {
+            AuthRoute::InvitePage => HeaderProfile::StudioForm,
+            _ => HeaderProfile::Studio,
+        }
     }
 }
 
@@ -251,6 +263,44 @@ mod tests {
     use super::*;
 
     const ID: &str = "0123456789abcdef01234567";
+
+    #[test]
+    fn only_the_invitation_form_page_gets_the_studio_form_profile() {
+        let tokens = format!("/api/tokens/{ID}");
+        let rotate = format!("/api/tokens/{ID}/rotate");
+        let invitation = format!("/api/workspaces/ws-a/invitations/{ID}");
+        let cases: Vec<(&str, &str)> = vec![
+            ("GET", "/auth/github/start"),
+            ("GET", "/auth/github/callback"),
+            ("GET", "/auth/session"),
+            ("POST", "/auth/logout"),
+            ("GET", "/auth/logout"),
+            ("POST", "/auth/invitations/accept"),
+            ("POST", "/invite"),
+            ("GET", "/api/tokens"),
+            ("DELETE", "/api/tokens/current"),
+            ("DELETE", &tokens),
+            ("POST", &rotate),
+            ("POST", "/api/workspaces/ws-a/tokens"),
+            ("GET", "/api/workspaces/ws-a/members"),
+            ("PATCH", "/api/workspaces/ws-a/members/7"),
+            ("DELETE", "/api/workspaces/ws-a/members/7"),
+            ("GET", "/api/workspaces/ws-a/invitations"),
+            ("POST", "/api/workspaces/ws-a/invitations"),
+            ("DELETE", &invitation),
+            ("GET", "/api/tokens/nope/x"),
+        ];
+        for (m, p) in cases {
+            let r = parse(m, p).unwrap_or_else(|| panic!("{m} {p} is an auth path"));
+            assert_eq!(r.header_profile(), HeaderProfile::Studio, "{m} {p}");
+        }
+        let page = parse("GET", "/invite");
+        assert_eq!(page, Some(AuthRoute::InvitePage));
+        assert_eq!(
+            page.map(|r| r.header_profile()),
+            Some(HeaderProfile::StudioForm)
+        );
+    }
 
     #[test]
     fn auth_routes() {

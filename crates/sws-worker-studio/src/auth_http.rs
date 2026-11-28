@@ -17,6 +17,7 @@ use worker::{
     console_error, console_log, js_sys,
 };
 
+use sws_security::headers::HeaderProfile;
 use sws_security::validate::{TURNSTILE_FIELD, parse_form_urlencoded};
 use sws_security::worker_utils::{secret as env_secret, var, verify_turnstile, with_timeout};
 
@@ -103,14 +104,22 @@ fn json_ok(status: u16, body: Value, extra: &[(&str, &str)]) -> Result<Response>
     send(r, None)
 }
 
-fn html_page(status: u16, page: String, extra: &[(&str, &str)]) -> Result<Response> {
-    let mut r = respond::json_error(status, "html", extra);
-    r.body = None;
-    send(r, Some(page))
+fn html_page(
+    status: u16,
+    page: String,
+    extra: &[(&str, &str)],
+    profile: HeaderProfile,
+) -> Result<Response> {
+    send(respond::page(status, extra, profile), Some(page))
 }
 
 fn message(status: u16, title: &str, text: &str) -> Result<Response> {
-    html_page(status, html::message_page(title, text), &[])
+    html_page(
+        status,
+        html::message_page(title, text),
+        &[],
+        HeaderProfile::Studio,
+    )
 }
 
 fn redirect(location: &str, set_cookie: Option<&str>) -> Result<Response> {
@@ -927,7 +936,12 @@ async fn logout(req: &Request, env: &Env) -> Result<Response> {
 
 fn invite_page(env: &Env) -> Result<Response> {
     let key = var(env, "TURNSTILE_SITE_KEY").unwrap_or_default();
-    html_page(200, html::invite_page(&key), &[])
+    html_page(
+        200,
+        html::invite_page(&key),
+        &[],
+        AuthRoute::InvitePage.header_profile(),
+    )
 }
 
 async fn invite_accept(req: &Request, env: &Env, raw: &[u8]) -> Result<Response> {

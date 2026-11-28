@@ -15,9 +15,19 @@
 //! * `studio` ([`STUDIO_HEADERS`]): the Studio Worker (JSON API, attachment
 //!   downloads, future Builder shell). Differs from `site` only in the CSP,
 //!   `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action
-//!   'self'` (it serves no HTML, script, style or Turnstile today), and adds
+//!   'self'` (its JSON and plain HTML message pages load no script, style or
+//!   Turnstile; the invitation form uses `studio-form`), and adds
 //!   `Cross-Origin-Resource-Policy: same-origin` so other origins cannot embed
 //!   its responses as subresources.
+//! * `studio-form` ([`STUDIO_FORM_HEADERS`]): the one Studio HTML page that
+//!   embeds Turnstile, the public invitation form (`GET /invite`). The `studio`
+//!   set with the CSP widened by exactly what that page needs:
+//!   `script-src`, `frame-src` and `connect-src https://challenges.cloudflare.com`
+//!   for the widget, and `form-action 'self' https://github.com` because a valid
+//!   submission answers with a 303 to GitHub's authorize URL and browsers apply
+//!   `form-action` to redirects after a form submission. No `style-src` or
+//!   `img-src` (the page has no stylesheet, inline style or image) and no
+//!   `'unsafe-inline'`.
 //! * `preview` ([`PREVIEW_HEADERS`]): draft site HTML on a separate origin
 //!   (#67). Site-like CSP without Turnstile or Stripe, `connect-src 'none'`,
 //!   `frame-src 'none'`, `form-action 'none'` (a draft never submits), framing
@@ -79,6 +89,28 @@ pub const STUDIO_HEADERS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The `studio-form` profile: the Turnstile invitation form (`GET /invite`,
+/// #65) only. Golden copy: `crates/sws-security/profiles/studio-form.headers`.
+pub const STUDIO_FORM_HEADERS: &[(&str, &str)] = &[
+    (
+        "Strict-Transport-Security",
+        "max-age=63072000; includeSubDomains; preload",
+    ),
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    (
+        "Permissions-Policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), browsing-topics=()",
+    ),
+    ("Cross-Origin-Opener-Policy", "same-origin"),
+    ("Cross-Origin-Resource-Policy", "same-origin"),
+    (
+        "Content-Security-Policy",
+        "default-src 'none'; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com",
+    ),
+];
+
 /// The `preview` profile: draft site HTML on its own origin (#67). Use
 /// [`HeaderProfile::resolve`] to allow framing by the Studio origin. Golden
 /// copy: `crates/sws-security/profiles/preview.headers`.
@@ -136,17 +168,25 @@ pub const FRAME_ANCESTORS_NONE: &str = "frame-ancestors 'none'";
 pub enum HeaderProfile {
     Site,
     Studio,
+    StudioForm,
     Preview,
     Canvas,
 }
 
 impl HeaderProfile {
-    pub const ALL: [HeaderProfile; 4] = [Self::Site, Self::Studio, Self::Preview, Self::Canvas];
+    pub const ALL: [HeaderProfile; 5] = [
+        Self::Site,
+        Self::Studio,
+        Self::StudioForm,
+        Self::Preview,
+        Self::Canvas,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Site => "site",
             Self::Studio => "studio",
+            Self::StudioForm => "studio-form",
             Self::Preview => "preview",
             Self::Canvas => "canvas",
         }
@@ -158,6 +198,7 @@ impl HeaderProfile {
         match self {
             Self::Site => SECURITY_HEADERS,
             Self::Studio => STUDIO_HEADERS,
+            Self::StudioForm => STUDIO_FORM_HEADERS,
             Self::Preview => PREVIEW_HEADERS,
             Self::Canvas => CANVAS_HEADERS,
         }
@@ -165,11 +206,12 @@ impl HeaderProfile {
 
     /// The header set to emit. `preview` and `canvas` allow framing by
     /// `studio_origin` when [`frame_origin`] accepts it and stay
-    /// `frame-ancestors 'none'` otherwise; `site` and `studio` ignore it.
+    /// `frame-ancestors 'none'` otherwise; `site`, `studio` and `studio-form`
+    /// ignore it.
     pub fn resolve(self, studio_origin: Option<&str>) -> Vec<(String, String)> {
         let ancestor = match self {
             Self::Preview | Self::Canvas => studio_origin.and_then(frame_origin),
-            Self::Site | Self::Studio => None,
+            Self::Site | Self::Studio | Self::StudioForm => None,
         };
         self.headers()
             .iter()
@@ -498,6 +540,7 @@ mod tests {
         match profile {
             HeaderProfile::Site => None,
             HeaderProfile::Studio => Some(include_str!("../profiles/studio.headers")),
+            HeaderProfile::StudioForm => Some(include_str!("../profiles/studio-form.headers")),
             HeaderProfile::Preview => Some(include_str!("../profiles/preview.headers")),
             HeaderProfile::Canvas => Some(include_str!("../profiles/canvas.headers")),
         }
@@ -525,7 +568,10 @@ mod tests {
     #[test]
     fn every_profile_has_a_unique_name_and_no_duplicate_headers() {
         let names: Vec<_> = HeaderProfile::ALL.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["site", "studio", "preview", "canvas"]);
+        assert_eq!(
+            names,
+            ["site", "studio", "studio-form", "preview", "canvas"]
+        );
         for p in HeaderProfile::ALL {
             let h = p.headers();
             for (i, (a, _)) in h.iter().enumerate() {
@@ -587,6 +633,53 @@ mod tests {
         assert_eq!(
             HeaderProfile::Studio.resolve(Some("https://studio.example")),
             h
+        );
+    }
+
+    #[test]
+    fn studio_form_profile_is_studio_plus_only_the_turnstile_and_oauth_allowances() {
+        let form = owned(HeaderProfile::StudioForm.headers());
+        let studio = owned(HeaderProfile::Studio.headers());
+        // Same names, order and values as `studio`, except the CSP.
+        assert_eq!(form.len(), studio.len());
+        for ((fk, fv), (sk, sv)) in form.iter().zip(&studio) {
+            assert_eq!(fk, sk);
+            if fk != "Content-Security-Policy" {
+                assert_eq!(fv, sv, "{fk}");
+            }
+        }
+        assert_eq!(
+            csp(&form),
+            "default-src 'none'; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com"
+        );
+        // Every studio directive except form-action is kept verbatim.
+        let directives =
+            |c: &str| -> Vec<String> { c.split(';').map(|d| d.trim().to_string()).collect() };
+        let form_dirs = directives(&csp(&form));
+        for d in directives(&csp(&studio)) {
+            if !d.starts_with("form-action") {
+                assert!(form_dirs.contains(&d), "studio-form keeps {d}");
+            }
+        }
+        let c = csp(&form);
+        for banned in [
+            "'unsafe-inline'",
+            "'unsafe-eval'",
+            "style-src",
+            "img-src",
+            "*",
+            "data:",
+            "'self' https://challenges",
+        ] {
+            assert!(
+                !c.contains(banned),
+                "studio-form CSP must not contain {banned}"
+            );
+        }
+        assert_eq!(c.matches("frame-ancestors").count(), 1);
+        assert_eq!(
+            HeaderProfile::StudioForm.resolve(Some("https://studio.example")),
+            form
         );
     }
 

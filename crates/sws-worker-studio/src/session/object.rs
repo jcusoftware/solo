@@ -1155,7 +1155,10 @@ impl SiteSession {
                     // `flush_pending` already broadcast the outcome to everyone.
                     send(ws, &m);
                 } else {
-                    self.broadcast(&m, None, now);
+                    // `flush_pending` awaited D1: gate delivery on the clock after
+                    // it, not on `now`, or a socket whose authorization went stale
+                    // during the write would still be delivered to.
+                    self.broadcast(&m, None, now_ms());
                 }
                 self.ensure_alarm().await;
             }

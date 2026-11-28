@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { parseRustConst } from '../core/tools/check-headers.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CFG = 'wrangler.studio.jsonc';
@@ -53,6 +54,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Every credential value the run handles; none may appear in the server log. */
 const SECRETS = new Set([CLIENT_SECRET]);
 const keep = (v) => (v && SECRETS.add(v), v);
+// Security-header profiles (#180), read from the Rust source of truth: `studio-form` on the
+// invitation form page only, `studio` on every other auth response (JSON, redirects, messages).
+const HEADERS_RS = readFileSync(join(ROOT, 'crates/sws-security/src/headers.rs'), 'utf8');
+const STUDIO_HEADERS = parseRustConst(HEADERS_RS, 'STUDIO_HEADERS');
+const STUDIO_FORM_HEADERS = parseRustConst(HEADERS_RS, 'STUDIO_FORM_HEADERS');
+/** Every header of `profile` is present exactly once with exactly its value. */
+function assertProfile(res, profile, label) {
+  assert.ok(profile.length >= 8, `profile parsed for ${label}`);
+  for (const [k, v] of profile) assert.equal(res.headers.get(k), v, `${k} on ${label}`);
+}
 
 // --- Fake GitHub ---------------------------------------------------------------------------
 
@@ -447,7 +458,9 @@ async function phase1() {
   console.log('\nphase 1: auth flows (membership recheck 1 s, idle sweep 1 s)');
 
   await test('no credential: protected routes answer 401; the dev header means nothing in the release build', async () => {
-    assert.equal((await call('GET', '/auth/session')).status, 401);
+    const anon = await call('GET', '/auth/session');
+    assert.equal(anon.status, 401);
+    assertProfile(anon, STUDIO_HEADERS, '401 /auth/session');
     assert.equal((await call('GET', '/api/sites/studio/s-main/assets')).status, 401);
     assert.equal(await upgrade('/api/sites/studio/s-main/session', { 'X-Sws-Dev-User': '1' }), 401);
     assert.equal((await call('GET', '/api/sites/studio/s-main/assets', { headers: { 'X-Sws-Dev-User': '1' } })).status, 401);
@@ -463,6 +476,7 @@ async function phase1() {
     assert.equal(r.res.headers.get('content-type'), 'text/html; charset=utf-8');
     assert.equal(r.res.headers.get('cache-control'), 'no-store');
     assert.ok(r.res.headers.get('content-security-policy')?.includes("frame-ancestors 'none'"));
+    assertProfile(r.res, STUDIO_HEADERS, 'sign-in refused page');
     assert.equal(userId(5002), undefined);
   });
 
@@ -471,9 +485,13 @@ async function phase1() {
     assert.equal(r.res.status, 303, r.res.text);
     assert.equal(r.res.headers.get('location'), '/auth/session');
     assert.match(r.raw, /^__Host-sws_session=[0-9a-f]{24}\.[0-9a-f]{64}; Path=\/; Max-Age=1209600; HttpOnly; Secure; SameSite=Lax$/);
+    // The Set-Cookie survives the `studio` header profile on the redirect.
+    assertProfile(r.res, STUDIO_HEADERS, '303 callback');
+    assert.equal(r.res.headers.getSetCookie().filter((c) => c.startsWith('__Host-sws_session=')).length, 1);
     S.owner = { cookie: r.cookie };
     const me = await call('GET', '/auth/session', { who: S.owner });
     assert.equal(me.status, 200);
+    assertProfile(me, STUDIO_HEADERS, '200 /auth/session');
     assert.equal(me.json.github_login, 'Owner-One');
     assert.equal(me.json.credential.kind, 'session');
     assert.equal(me.json.credential.fresh, true);
@@ -490,6 +508,8 @@ async function phase1() {
 
   await test('OAuth state: single use, bound to the starting browser, and validated', async () => {
     const start = await call('GET', '/auth/github/start');
+    assertProfile(start, STUDIO_HEADERS, '303 /auth/github/start');
+    assert.ok(cookieFrom(start, '__Host-sws_oauth'), 'the OAuth binding cookie survives the profile');
     const state = keep(new URL(start.headers.get('location')).searchParams.get('state'));
     // Without the browser-binding cookie (login CSRF): refused.
     assert.equal((await call('GET', `/auth/github/callback?code=c-owner&state=${state}`)).status, 400);
@@ -517,6 +537,7 @@ async function phase1() {
     assert.equal(owner.json.error, 'invalid_role');
     const inv = await call('POST', '/api/workspaces/studio/invitations', { who: S.owner, body: { github_login: 'Editor-Two', role: 'editor' } });
     assert.equal(inv.status, 201, inv.text);
+    assertProfile(inv, STUDIO_HEADERS, '201 invitation create');
     const code = keep(inv.json.code);
     assert.match(code, /^swsi_[0-9a-f]{24}_[0-9a-f]{64}$/);
     assert.equal(inv.json.accept_url, `${HTTP}/invite`);
@@ -526,12 +547,26 @@ async function phase1() {
     // The public form.
     const page = await call('GET', '/invite');
     assert.equal(page.status, 200);
+    // Exactly the `studio-form` profile (Turnstile allowances), never `studio` or `site`.
+    assertProfile(page, STUDIO_FORM_HEADERS, 'GET /invite');
+    assert.equal(
+      page.headers.get('content-security-policy'),
+      "default-src 'none'; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com",
+    );
+    assert.equal(page.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.equal(page.headers.get('cache-control'), 'no-store');
+    // The page needs nothing the CSP does not allow: one external script, no inline script or style.
+    assert.deepEqual([...page.text.matchAll(/<script\b[^>]*>/g)].map((m) => m[0]), [
+      '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer>',
+    ]);
+    assert.equal(/<style|style=|<link\b|<img\b/.test(page.text), false);
     assert.match(page.text, /<form method="post" action="\/auth\/invitations\/accept">/);
     assert.match(page.text, /class="cf-turnstile" data-sitekey="1x00000000000000000000AA"/);
     // Missing Turnstile token, wrong Origin, bad code.
     const noTs = await call('POST', '/auth/invitations/accept', { form: { code }, headers: { Origin: HTTP } });
     assert.equal(noTs.status, 400);
     assert.match(noTs.text, /human check/);
+    assertProfile(noTs, STUDIO_HEADERS, 'invitation accept error page');
     const cross = await call('POST', '/auth/invitations/accept', { form: { code, 'cf-turnstile-response': 'XXXX.DUMMY.TOKEN.XXXX' }, headers: { Origin: 'https://evil.example' } });
     assert.equal(cross.status, 403);
     const bad = await signIn('c-editor', { invitation: code.slice(0, -1) + (code.endsWith('0') ? '1' : '0') });
@@ -575,6 +610,7 @@ async function phase1() {
     keep(act.json.token);
     // Listing never returns the secret or its digest.
     const list = await call('GET', '/api/tokens', { who: S.editor });
+    assertProfile(list, STUDIO_HEADERS, '200 /api/tokens');
     assert.equal(list.json.tokens.length, 1);
     assert.equal(list.text.includes(S.editTok), false);
     assert.equal(list.text.includes('token_hash'), false);
@@ -730,6 +766,7 @@ async function phase1() {
     const out = await call('POST', '/auth/logout', { who: sess });
     assert.equal(out.status, 200);
     assert.match(cookieFrom(out, '__Host-sws_session').raw, /Max-Age=0/);
+    assertProfile(out, STUDIO_HEADERS, '200 /auth/logout');
     assert.equal((await sock.next((m) => m.type === 'revoked', 5000)).reason, 'credential_revoked');
     assert.equal((await call('GET', '/auth/session', { who: sess })).status, 401);
     // The publisher's other session is unaffected.

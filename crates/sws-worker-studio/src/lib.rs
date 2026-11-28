@@ -102,7 +102,11 @@ mod wasm {
                         "unhandled auth error: {}",
                         crate::auth::secret::redact(&e.to_string())
                     );
-                    with_security_headers(to_response(respond::internal_error())?)
+                    with_profile_headers(
+                        to_response(respond::internal_error())?,
+                        HeaderProfile::Studio,
+                        None,
+                    )
                 }
             };
         }
