@@ -193,6 +193,15 @@ AND EXISTS (SELECT 1 FROM asset_reservations WHERE workspace_id = ?1 AND site_id
   AND id = ?10 AND kind = ?4 AND expires_at > ?11 AND byte_size >= ?6) \
 ON CONFLICT DO NOTHING";
 
+/// ?1 workspace, ?2 artifact id, ?3 seq, ?4 chunk bytes, ?5 data. Bytes of a generated
+/// artifact (a preview bundle, #67), written in the same batch as
+/// [`GENERATED_COMMIT`] and only when that row exists. Plain `INSERT`: artifact ids
+/// are unique per upload, so any conflict or violated CHECK fails the whole batch.
+pub const GENERATED_CHUNK_INSERT: &str = "INSERT INTO blob_chunks \
+(workspace_id, blob_id, seq, byte_size, data) \
+SELECT ?1, ?2, ?3, ?4, ?5 \
+WHERE EXISTS (SELECT 1 FROM generated_artifacts WHERE workspace_id = ?1 AND id = ?2)";
+
 /// ?1 workspace, ?2 site, ?3 now, ?4 batch size. Retention: past `expires_at`.
 pub const GENERATED_EXPIRED_SWEEP: &str = "DELETE FROM generated_artifacts WHERE workspace_id = ?1 \
 AND id IN (SELECT id FROM generated_artifacts WHERE workspace_id = ?1 AND site_id = ?2 \
@@ -232,6 +241,7 @@ pub const ALL: &[(&str, &str, bool)] = &[
     ("TOMBSTONE_CLEAR", TOMBSTONE_CLEAR, true),
     ("RESERVE_GENERATED", RESERVE_GENERATED, true),
     ("GENERATED_COMMIT", GENERATED_COMMIT, true),
+    ("GENERATED_CHUNK_INSERT", GENERATED_CHUNK_INSERT, true),
     ("GENERATED_EXPIRED_SWEEP", GENERATED_EXPIRED_SWEEP, true),
     ("GENERATED_EXCESS_SWEEP", GENERATED_EXCESS_SWEEP, true),
     ("GENERATED_USAGE", GENERATED_USAGE, true),
@@ -462,6 +472,19 @@ pub fn generated_commit(
     }
 }
 
+pub fn generated_chunk_insert(ws: &str, artifact_id: &str, seq: u32, data: &[u8]) -> Statement {
+    Statement {
+        sql: GENERATED_CHUNK_INSERT,
+        params: vec![
+            t(ws),
+            t(artifact_id),
+            Param::Int(i64::from(seq)),
+            int(data.len() as u64),
+            Param::Blob(data.to_vec()),
+        ],
+    }
+}
+
 pub fn generated_expired_sweep(ws: &str, site: &str, now: &str, batch: u32) -> Statement {
     Statement {
         sql: GENERATED_EXPIRED_SWEEP,
@@ -546,6 +569,7 @@ mod tests {
                 100,
             ),
             generated_usage("w", "s"),
+            generated_chunk_insert("w", "g", 0, &[1]),
         ];
         for s in stmts {
             assert_eq!(s.params[0], Param::Text("w".into()), "{}", s.sql);

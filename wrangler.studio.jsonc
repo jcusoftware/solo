@@ -40,6 +40,10 @@
 	"vars": {
 		"STUDIO_VERSION": "0.2.0-dev",
 		"STUDIO_PUBLIC_ORIGIN": "http://127.0.0.1:8788",
+		// Draft previews (#67): another host NAME routed to this Worker (cookies ignore the port, so
+		// a second port on 127.0.0.1 would not be isolated). Requests for it reach only /p/... and
+		// /robots.txt. Unset, or the Studio's host, disables previews. docs/STUDIO_PREVIEWS.md.
+		"STUDIO_PREVIEW_ORIGIN": "http://localhost:8788",
 		"STUDIO_BOOTSTRAP_WORKSPACE": "studio",
 		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA"
 	},

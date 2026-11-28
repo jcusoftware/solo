@@ -4,7 +4,8 @@
 //! (`tests/unit/studio-registry.test.mjs`); `--assets`: the asset-store statements
 //! (`tests/unit/studio-assets.test.mjs`); `--auth`: the authentication statements
 //! (`tests/unit/studio-auth.test.mjs`, `tenant` is always false there: those
-//! statements are scoped by credential id and user instead).
+//! statements are scoped by credential id and user instead); `--previews`: the
+//! preview statements (`tests/unit/studio-previews.test.mjs`).
 
 use serde_json::json;
 
@@ -18,7 +19,10 @@ fn main() {
         return;
     }
     let assets = std::env::args().any(|a| a == "--assets");
-    let all = if assets {
+    let previews = std::env::args().any(|a| a == "--previews");
+    let all = if previews {
+        sws_worker_studio::preview::sql::ALL
+    } else if assets {
         sws_worker_studio::asset_repo::ALL
     } else {
         sws_worker_studio::repo::ALL

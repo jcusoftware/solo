@@ -9,7 +9,9 @@
 //! `GET /api/sites/{workspace_id}/{site_id}/session` (WebSocket). GitHub OAuth
 //! sessions, invitations and scoped CLI/MCP tokens (#65) live in [`auth`]
 //! (pure) and `auth_http` (wasm), and guard every protected route. The publish
-//! pipeline (#64/#66) is out of scope.
+//! pipeline (#64/#66) is out of scope. Draft previews (#67, [`preview`]) are
+//! served by this Worker on a SEPARATE host (`STUDIO_PREVIEW_ORIGIN`) that
+//! reaches only the preview routes, with the `preview` header profile.
 //!
 //! Write-frequency invariant: the registry is written only on explicit
 //! save/publish/checkpoint actions, never once per edit. There is deliberately
@@ -29,6 +31,7 @@ pub mod auth;
 pub mod auth_repo;
 pub mod bounds;
 pub mod model;
+pub mod preview;
 pub mod repo;
 pub mod respond;
 pub mod routes;
@@ -54,7 +57,7 @@ mod wasm {
     use crate::bounds::{self, BodyLimiter};
     use crate::respond::{self, RequestFacts, Resp};
     use crate::routes::{self, Route};
-    use crate::session;
+    use crate::{preview, session};
 
     /// Either a response decided by the pure layer (headers already applied) or
     /// a raw one from the Durable Object (a 101 WebSocket upgrade has immutable
@@ -72,6 +75,54 @@ mod wasm {
 
     #[event(fetch)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+        // Draft previews (#67) FIRST: a request for the preview host reaches only the
+        // preview routes (no Studio API, auth or asset route exists there), and is
+        // answered with the `preview` profile. Every other host is the Studio.
+        let preview_cfg = preview::origin::configure(
+            var(&env, preview::origin::STUDIO_ORIGIN_VAR).as_deref(),
+            var(&env, preview::origin::PREVIEW_ORIGIN_VAR).as_deref(),
+        );
+        let url = req.url().ok();
+        if let Some(u) = &url
+            && preview::origin::surface(
+                &preview_cfg,
+                u.host_str().unwrap_or(""),
+                u.port_or_known_default(),
+            ) == preview::origin::Surface::Preview
+        {
+            let studio = preview_cfg.origins().map(|o| o.studio.clone());
+            return preview::http::serve(req, &env, studio.as_deref()).await;
+        }
+        if let Some(route) = url
+            .as_ref()
+            .and_then(|u| preview::serve::parse_producer(u.path()))
+        {
+            let resp = match preview::http::produce(req, &env, &preview_cfg, route).await {
+                Ok(r) => r,
+                Err(e) => {
+                    console_error!("unhandled preview error: {e}");
+                    to_response(respond::internal_error())?
+                }
+            };
+            return with_profile_headers(resp, HeaderProfile::Studio, None);
+        }
+        // Preview paths are never served on the Studio host: 404 through the normal
+        // routing below, or 503 when no valid, separate preview origin is configured.
+        if preview_cfg.origins().is_none()
+            && url
+                .as_ref()
+                .is_some_and(|u| preview::origin::is_preview_path(u.path()))
+        {
+            return with_profile_headers(
+                to_response(respond::json_error(
+                    503,
+                    "preview_origin_not_configured",
+                    &[],
+                ))?,
+                HeaderProfile::Studio,
+                None,
+            );
+        }
         // Asset routes (#63) are authenticated, tenant-scoped, and carry uploads
         // larger than the 64 KiB JSON bound, so they are decided before `handle`.
         if let Some(route) = req
