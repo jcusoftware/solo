@@ -21,6 +21,7 @@
 //! the `uploading` phase is the seam (`drive::stage_for_activation`) and today only
 //! marks the validated artifact ready to publish.
 
+pub mod bundle;
 pub mod job;
 pub mod manifest;
 pub mod sql;
@@ -138,8 +139,20 @@ pub fn parse_pointer(text: &str) -> Option<QueuePointer> {
 pub enum PublishRoute {
     /// `POST /api/sites/{ws}/{site}/publish`
     Enqueue { ws: String, site: String },
+    /// `PUT /api/sites/{ws}/{site}/publish/bundles/{manifest_sha256}`
+    BundleUpload {
+        ws: String,
+        site: String,
+        manifest_sha256: String,
+    },
     /// `GET /api/sites/{ws}/{site}/publish/{job_id}`
     Status {
+        ws: String,
+        site: String,
+        job: String,
+    },
+    /// `POST /api/sites/{ws}/{site}/publish/{job_id}/activate`
+    Activate {
         ws: String,
         site: String,
         job: String,
@@ -149,22 +162,24 @@ pub enum PublishRoute {
 impl PublishRoute {
     pub fn allow(&self) -> &'static str {
         match self {
-            PublishRoute::Enqueue { .. } => "POST",
+            PublishRoute::Enqueue { .. } | PublishRoute::Activate { .. } => "POST",
+            PublishRoute::BundleUpload { .. } => "PUT",
             PublishRoute::Status { .. } => "GET",
         }
     }
 
     pub fn ids(&self) -> (&str, &str) {
         match self {
-            PublishRoute::Enqueue { ws, site } | PublishRoute::Status { ws, site, .. } => {
-                (ws, site)
-            }
+            PublishRoute::Enqueue { ws, site }
+            | PublishRoute::BundleUpload { ws, site, .. }
+            | PublishRoute::Status { ws, site, .. }
+            | PublishRoute::Activate { ws, site, .. } => (ws, site),
         }
     }
 }
 
-/// Match `/api/sites/{ws}/{site}/publish[/{job_id}]`; every id must satisfy the
-/// registry grammar, otherwise it is not a route (404).
+/// Match `/api/sites/{ws}/{site}/publish[/{job_id}|/bundles/{sha}|/{job_id}/activate]`;
+/// every id must satisfy the registry grammar, otherwise it is not a route (404).
 pub fn parse_route(path: &str) -> Option<PublishRoute> {
     let rest = path.strip_prefix("/api/sites/")?;
     let mut it = rest.split('/');
@@ -173,9 +188,21 @@ pub fn parse_route(path: &str) -> Option<PublishRoute> {
         return None;
     }
     let (ws, site) = (ws.to_string(), site.to_string());
-    match (it.next(), it.next()) {
-        (None, _) => Some(PublishRoute::Enqueue { ws, site }),
-        (Some(job), None) if is_id(job) => Some(PublishRoute::Status {
+    match (it.next(), it.next(), it.next()) {
+        (None, _, _) => Some(PublishRoute::Enqueue { ws, site }),
+        (Some("bundles"), Some(sha), None) if sws_assets::validate::is_sha256(sha) => {
+            Some(PublishRoute::BundleUpload {
+                ws,
+                site,
+                manifest_sha256: sha.to_string(),
+            })
+        }
+        (Some(job), None, _) if is_id(job) => Some(PublishRoute::Status {
+            ws,
+            site,
+            job: job.to_string(),
+        }),
+        (Some(job), Some("activate"), None) if is_id(job) => Some(PublishRoute::Activate {
             ws,
             site,
             job: job.to_string(),

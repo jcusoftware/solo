@@ -11,10 +11,10 @@
 //! (pure) and `auth_http` (wasm), and guard every protected route. Asynchronous
 //! publish jobs (#64) live in [`publish`]: `POST|GET /api/sites/{workspace_id}/{site_id}/publish[/{job_id}]`,
 //! driven off the request path by the Cron Trigger (`scheduled` below) and, when a
-//! Queue is bound, the `queue` consumer. Cloudflare upload/activation (#66) is out
-//! of scope. Draft previews (#67, [`preview`]) are served by this Worker on a
-//! SEPARATE host (`STUDIO_PREVIEW_ORIGIN`) that reaches only the preview routes,
-//! with the `preview` header profile.
+//! Queue is bound, the `queue` consumer. Direct Upload publishing to the site Worker
+//! and the audited rollback route (#66) live in [`deploy`]. Draft previews (#67,
+//! [`preview`]) are served by this Worker on a SEPARATE host (`STUDIO_PREVIEW_ORIGIN`)
+//! that reaches only the preview routes, with the `preview` header profile.
 //!
 //! Write-frequency invariant: the registry is written only on explicit
 //! save/publish/checkpoint actions, never once per edit. There is deliberately
@@ -33,6 +33,7 @@ pub mod assets_api;
 pub mod auth;
 pub mod auth_repo;
 pub mod bounds;
+pub mod deploy;
 pub mod model;
 pub mod preview;
 pub mod publish;
@@ -198,6 +199,21 @@ mod wasm {
                 Ok(r) => r,
                 Err(e) => {
                     console_error!("unhandled asset error: {e}");
+                    to_response(respond::internal_error())?
+                }
+            };
+            return with_profile_headers(resp, HeaderProfile::Studio, None);
+        }
+        // Rollback (#66): authenticated, audited re-activation of a retained deployment.
+        if let Some(route) = req
+            .url()
+            .ok()
+            .and_then(|u| crate::deploy::route::parse(u.path()))
+        {
+            let resp = match crate::deploy::wasm::handle_rollback(req, &env, route).await {
+                Ok(r) => r,
+                Err(e) => {
+                    console_error!("unhandled deploy error: {e}");
                     to_response(respond::internal_error())?
                 }
             };

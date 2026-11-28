@@ -43,7 +43,10 @@
 	//                            yourself (`wrangler r2 bucket create`); nothing in this repo does it for you.
 	//                            Leave both unset for the cardless default: size-capped D1 blobs
 	//                            (1 MiB/asset, 50 MiB/site, 150 MiB/workspace; provisional limits).
-	//   R2 bundles        (#66, not read yet): "r2_buckets": [{ "binding": "BUNDLES_BUCKET", "bucket_name": "sws-studio-bundles" }]
+	//   R2 bundles        (#64/#66): "r2_buckets": [{ "binding": "BUNDLES_BUCKET", "bucket_name": "sws-studio-bundles" }]
+	// Publishing (#66) needs one SECRET, never a var: `wrangler secret put CLOUDFLARE_API_TOKEN`, an
+	// account API token with only Account > Workers Scripts > Edit on the account hosting the site
+	// Worker (see docs/STUDIO_PUBLISH.md). Nothing else is configured here: publish targets live in D1.
 	// Asset caps (and any alerts you add) reduce billing risk but are NOT provider-side hard stops;
 	// set your own Cloudflare usage notifications. See docs/ARCHITECTURE.md, "Studio asset storage".
 	//   Queues publish    (#64, OPTIONAL): "queues": { "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "sws-studio-publish" }],

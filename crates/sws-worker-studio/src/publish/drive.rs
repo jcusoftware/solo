@@ -8,12 +8,18 @@
 //! inside a phase step is transient (retried with backoff); an error while writing a
 //! transition leaves the lease in place, so the job is recovered once it expires.
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sws_assets::limits::PUBLISH_ARTIFACT;
 use worker::{D1Database, Date, Env, Result, console_error};
 
+use super::bundle::{self, BundleArtifactSource};
 use super::job::{self, Claim, Phase, StepError};
 use super::{QueuePointer, StoredArtifact, sql};
+use crate::auth::policy::{self, Permission};
+use crate::deploy::store::{AuditAction, AuditResult, AuditRow, PublishStore};
+use crate::deploy::wasm::{D1Store, EnvSecrets, FetchClient, WorkerRuntime, api_base};
+use crate::deploy::{PublishEnv, PublishJobRef, Stage};
 use crate::{d1, repo};
 
 /// Test-only fault injection. Populated solely by the `insecure-dev-auth` build's
@@ -85,19 +91,208 @@ impl Outcome {
     }
 }
 
-/// The `uploading` phase: the seam #66 fills (upload the validated files to
-/// Cloudflare, verify each received file against its manifest SHA-256, record the
-/// upload). Until then it performs no I/O and no Cloudflare call; reaching `ready`
-/// means "validated and ready to publish", not "live".
-async fn stage_for_activation(
-    _db: &D1Database,
-    _ws: &str,
-    _job_id: &str,
-) -> std::result::Result<(), StepError> {
-    Ok(())
+#[derive(Deserialize)]
+struct BundleChunkRow {
+    data: Vec<u8>,
 }
 
+/// Read and re-verify the uploaded bundle (if present), and if `publish_targets`
+/// exists AND the job was enqueued with `"activate": true`, perform the
+/// activation-time D1 authorization recheck and call `deploy::run_publish`.
+/// When neither a `publish_targets` row nor a bundle exists (WP-04 manifest-only
+/// staging tests), succeeds with `bytes_verified: false`.
+async fn stage_for_activation(
+    env: &Env,
+    db: &D1Database,
+    ws: &str,
+    site: &str,
+    job_id: &str,
+    revision_id: &str,
+    now: u64,
+) -> std::result::Result<(), StepError> {
+    let unavailable = |_| StepError::Transient("d1_unavailable");
+    let act_row = d1::first(db, &crate::deploy::sql::activation_get(ws, job_id))
+        .await
+        .map_err(unavailable)?;
+    let auto_activate = act_row
+        .as_ref()
+        .and_then(|r| r.get("auto_activate"))
+        .and_then(Value::as_i64)
+        == Some(1);
+    let cred_tag = act_row
+        .as_ref()
+        .and_then(|r| r.get("credential_tag"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let target = d1::first(db, &crate::deploy::sql::target_get(ws, site))
+        .await
+        .map_err(unavailable)?;
+
+    let artifact_row = d1::first(db, &sql::artifact_get(ws, job_id))
+        .await
+        .map_err(unavailable)?;
+    let Some(stored) = artifact_row.as_ref().and_then(StoredArtifact::from_row) else {
+        if target.is_some() || auto_activate {
+            return Err(StepError::Permanent("artifact_missing"));
+        }
+        return Ok(());
+    };
+
+    let bundle_row = d1::first(
+        db,
+        &crate::deploy::sql::bundle_get(ws, site, &stored.manifest_sha256),
+    )
+    .await
+    .map_err(unavailable)?;
+
+    let Some(bundle_row) = bundle_row else {
+        if target.is_some() && auto_activate {
+            return Err(StepError::Permanent("bundle_missing"));
+        }
+        return Ok(());
+    };
+
+    let total_bytes = bundle_row
+        .get("total_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let chunk_rows = d1::all(
+        db,
+        &crate::deploy::sql::bundle_chunks_get(ws, site, &stored.manifest_sha256),
+    )
+    .await
+    .map_err(unavailable)?;
+    let mut raw = Vec::with_capacity(total_bytes);
+    for row in chunk_rows {
+        let chunk: BundleChunkRow =
+            serde_json::from_value(row).map_err(|_| StepError::Permanent("bundle_malformed"))?;
+        raw.extend_from_slice(&chunk.data);
+    }
+
+    let verified = bundle::verify_against_stored(&raw, &stored, &PUBLISH_ARTIFACT)
+        .map_err(StepError::Permanent)?;
+    drop(raw);
+
+    d1::run(
+        db,
+        &crate::deploy::sql::activation_set_verified(ws, site, job_id),
+    )
+    .await
+    .map_err(unavailable)?;
+
+    let Some(target_val) = target else {
+        return Ok(());
+    };
+    if !auto_activate {
+        return Ok(());
+    }
+
+    let target_id = target_val
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let job_row = d1::first(db, &sql::job_get(ws, site, job_id))
+        .await
+        .map_err(unavailable)?
+        .ok_or(StepError::Permanent("job_missing"))?;
+    let created_by = job_row
+        .get("created_by")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let rev_row = d1::first(db, &repo::revision_get(ws, site, revision_id))
+        .await
+        .map_err(unavailable)?
+        .ok_or(StepError::Permanent("revision_missing"))?;
+    let revision_seq = rev_row
+        .get("revision")
+        .and_then(Value::as_i64)
+        .ok_or(StepError::Permanent("revision_missing"))?;
+
+    let store = D1Store {
+        db: d1::database(env).map_err(unavailable)?,
+    };
+
+    // Activation-time authorization recheck against current D1 membership & credential state.
+    let role = crate::auth_http::role_in(db, ws, created_by)
+        .await
+        .map_err(unavailable)?;
+    let cred = crate::auth_http::revalidate(db, ws, created_by, cred_tag.as_deref(), now as i64)
+        .await
+        .map_err(unavailable)?;
+    let authorized = cred
+        .as_ref()
+        .is_some_and(|c| policy::authorize(c, role, ws, Permission::Activate).is_ok());
+    if !authorized {
+        let _ = store
+            .audit(&AuditRow {
+                workspace_id: ws.to_string(),
+                site_id: site.to_string(),
+                target_id,
+                actor_user_id: (created_by > 0).then_some(created_by),
+                action: AuditAction::PublishActivate,
+                result: AuditResult::Refused,
+                cf_version_id: None,
+                published_id: None,
+                revision_id: Some(revision_id.to_string()),
+                job_id: Some(job_id.to_string()),
+                stage: Some(Stage::Prepare.as_str()),
+                error_code: Some("activation_unauthorized"),
+                at: super::now_text(now),
+            })
+            .await;
+        return Err(StepError::Permanent("activation_unauthorized"));
+    }
+
+    let base = api_base(None, env);
+    let secrets = EnvSecrets(env);
+    let publish_env = PublishEnv {
+        http: &FetchClient,
+        rt: &WorkerRuntime,
+        store: &store,
+        secrets: &secrets,
+        api_base: &base,
+    };
+    let job_ref = PublishJobRef {
+        workspace_id: ws.to_string(),
+        site_id: site.to_string(),
+        job_id: job_id.to_string(),
+        revision_id: revision_id.to_string(),
+        revision_seq,
+        requested_by: created_by,
+        artifact_sha256: None,
+    };
+    let source = BundleArtifactSource::new(verified);
+    match crate::deploy::run_publish(&job_ref, &source, &publish_env).await {
+        Ok(out) => {
+            d1::run(
+                db,
+                &crate::deploy::sql::activation_set_deployed(
+                    ws,
+                    site,
+                    job_id,
+                    &out.published_id,
+                    &out.cf_version_id,
+                ),
+            )
+            .await
+            .map_err(unavailable)?;
+            Ok(())
+        }
+        Err(f) => {
+            if f.retryable {
+                Err(StepError::Transient(f.code))
+            } else {
+                Err(StepError::Permanent(f.code))
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_step(
+    env: &Env,
     db: &D1Database,
     ws: &str,
     site: &str,
@@ -127,7 +322,9 @@ async fn run_step(
             let stored = artifact.as_ref().and_then(StoredArtifact::from_row);
             super::validate_step(revision_id, ir, stored.as_ref(), &PUBLISH_ARTIFACT)
         }
-        Phase::Uploading => stage_for_activation(db, ws, job_id).await,
+        Phase::Uploading => {
+            stage_for_activation(env, db, ws, site, job_id, revision_id, opts.now).await
+        }
         Phase::Ready | Phase::Failed => Err(StepError::Permanent("illegal_phase")),
     }
 }
@@ -135,6 +332,7 @@ async fn run_step(
 /// Drive one job as far as it goes. `expected_revision` (from a queue pointer) must
 /// match the row, or the job is treated as missing.
 pub async fn drive_one(
+    env: &Env,
     db: &D1Database,
     ws: &str,
     site: &str,
@@ -181,7 +379,7 @@ pub async fn drive_one(
     }
     let mut phase = state.phase;
     loop {
-        let result = run_step(db, ws, site, job_id, &revision_id, phase, opts).await;
+        let result = run_step(env, db, ws, site, job_id, &revision_id, phase, opts).await;
         let tr = job::on_step(phase, state.origin, attempt, result, now);
         if d1::run(db, &sql::transition(ws, job_id, &tr, attempt, now)).await? != 1 {
             return Ok(Outcome::Lost);
@@ -200,6 +398,7 @@ pub async fn drive_one(
 pub async fn drive_pointer(env: &Env, p: &QueuePointer, opts: &DriveOptions) -> Result<Outcome> {
     let db = d1::database(env)?;
     drive_one(
+        env,
         &db,
         &p.workspace_id,
         &p.site_id,
@@ -220,7 +419,7 @@ pub async fn run_due(env: &Env, opts: &DriveOptions) -> Result<Value> {
     for row in due.iter().take(opts.max_jobs as usize) {
         let s = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or_default();
         let (ws, site, id) = (s("workspace_id"), s("site_id"), s("id"));
-        let mut entry = match drive_one(&db, ws, site, id, None, opts).await {
+        let mut entry = match drive_one(env, &db, ws, site, id, None, opts).await {
             Ok(o) => o.to_json(),
             Err(e) => {
                 console_error!("publish job {ws}/{id}: {e}");

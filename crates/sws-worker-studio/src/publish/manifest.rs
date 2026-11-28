@@ -69,6 +69,8 @@ pub struct Manifest {
 pub struct PublishRequest {
     pub request_id: String,
     pub manifest: Manifest,
+    #[serde(default)]
+    pub activate: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

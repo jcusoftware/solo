@@ -230,6 +230,8 @@ jobs:
         # Cron Trigger handler (wrangler dev --test-scheduled) and a local Queue consumer; each wrangler
         # dev runs in its own process group, which the test stops itself.
         run: npm run test:studio:publish
+      - name: Studio Direct Upload deploy & rollback integration (ports 8800-8802, fake Cloudflare API, local D1; test-only dev-auth build)
+        run: npm run test:studio:deploy
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Studio draft previews (release build; preview origin on a second loopback host name; own port 8796 and local state; Chromium framing/CSP checks)

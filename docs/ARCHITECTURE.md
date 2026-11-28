@@ -366,6 +366,7 @@ All Cloudflare Workers, D1, Durable Object, Queue and R2 limits, quotas and pric
 - Publishing compiles against an immutable revision, off HTTP handlers, through an asynchronous job pipeline (#64). Studio uploads compiled static assets to the standalone edge Worker through Cloudflare Direct Upload Assets, preserving `run_worker_first: ["/api/*"]` and the existing D1/Turnstile bindings (#66). Visitors are served with Studio unavailable.
 - Server-side compilation is the default only if #59 shows repeatable Free-plan headroom (queue wall time is not CPU time). Otherwise the documented cardless path is CLI compile, local shared Rust verification, then upload of a revision-pinned artifact manifest with a publish-scoped credential (#59, #64, #68). CLI-built artifacts are labelled as such and never presented as independently server-built.
 - Draft previews are served from a separate, non-indexed origin (#67; `STUDIO_PREVIEW_ORIGIN`, reference in `docs/STUDIO_PREVIEWS.md`). Rollback is a new audited action on a retained verified deployment and never rewinds editable IR (#66).
+- The Direct Upload sequence, the per-target activation lease and revision order, ambiguous-outcome reconciliation, rollback compatibility rules and the API token scope are in `docs/STUDIO_PUBLISH.md` (#66).
 - Static and Worker security-header parity (§5) must hold for published and exported sites (#69, #82).
 
 ### Studio publish jobs (#64)
