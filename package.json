@@ -33,6 +33,7 @@
     "test:studio:sessions": "node scripts/test-studio-sessions.mjs",
     "test:studio:auth": "node scripts/test-studio-auth.mjs",
     "test:studio:publish": "node --test --test-timeout=300000 tests/integration/studio-publish.test.mjs",
+    "test:studio:cli": "node scripts/test-studio-cli.mjs",
     "check:studio:release": "node scripts/check-studio-release.mjs",
     "build": "npm run build:wasm:release",
     "build:wasm:dev": "node scripts/build-wasm.mjs --profile dev",

@@ -230,6 +230,8 @@ jobs:
         # Cron Trigger handler (wrangler dev --test-scheduled) and a local Queue consumer; each wrangler
         # dev runs in its own process group, which the test stops itself.
         run: npm run test:studio:publish
+      - name: Studio CLI sync & publish integration (native `solo` binary against local wrangler dev on 8804-8805)
+        run: npm run test:studio:cli
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Accessibility + header gates (axe, WCAG 2.2 AA)

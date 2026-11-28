@@ -121,6 +121,22 @@ mod wasm {
 
     #[event(fetch)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+        // HTTP sync route (#68): GET/POST /api/sites/{ws}/{site}/sync carry up to
+        // MAX_MESSAGE_BYTES (1 MiB for seed) and forward to SiteSession DO.
+        if let Some(route) = req
+            .url()
+            .ok()
+            .and_then(|u| crate::session::sync::parse_route(u.path()))
+        {
+            let resp = match crate::session::sync_http::handle(req, &env, route).await {
+                Ok(r) => r,
+                Err(e) => {
+                    console_error!("unhandled sync error: {e}");
+                    to_response(respond::internal_error())?
+                }
+            };
+            return with_profile_headers(resp, HeaderProfile::Studio, None);
+        }
         // Publish routes (#64) carry a manifest body larger than the 64 KiB JSON bound
         // and are authorized by `publish::authz::require_publish`.
         if let Some(route) = req

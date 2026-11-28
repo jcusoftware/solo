@@ -510,6 +510,7 @@ fn mcp_stdio_round_trip_supports_all_methods_and_tools() {
         tool_names,
         vec![
             "read_site_ir",
+            "apply_command_batch",
             "apply_ir_patch",
             "compile_preview",
             "run_a11y_and_plugin_checks"
@@ -817,4 +818,69 @@ fn preview_rejects_non_get_methods_and_stops_cleanly() {
     // After stop() the bound port refuses new connections.
     let retry = TcpStream::connect_timeout(&addr, Duration::from_secs(1));
     assert!(retry.is_err(), "port should be closed after stop");
+}
+
+#[test]
+fn mcp_apply_command_batch_updates_uid_addressed_ir_and_is_restorable() {
+    let dir = TempDir::new("mcp-batch");
+    let starter = starter_site_document();
+    let (upgraded, _) = sws_ir::edit::assign_stable_ids(&starter).expect("upgrade");
+    let batch = json!({
+        "version": 1,
+        "commands": [
+            { "op": "set_site_meta", "name": "Batch Updated Site" }
+        ]
+    });
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_command_batch",
+            "arguments": {
+                "ir_json": upgraded,
+                "batch": batch
+            }
+        }
+    });
+    let resp = crate::mcp::handle_mcp_line(&req.to_string(), dir.path()).expect("response");
+    assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
+    let text = resp["result"]["content"][0]["text"].as_str().expect("text");
+    let parsed: Value = serde_json::from_str(text).expect("json output");
+    assert_eq!(parsed["document"]["name"], json!("Batch Updated Site"));
+    assert_eq!(parsed["transaction"]["forward"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["transaction"]["inverse"].as_array().unwrap().len(), 1);
+}
+
+#[cfg(feature = "pack-hospitality")]
+#[test]
+fn mcp_apply_ir_patch_does_not_bake_pack_contributions() {
+    let dir = TempDir::new("mcp-no-bake");
+    let venue_raw: Value = serde_json::from_str(include_str!(
+        "../../../packs/hospitality/demo/venue.json"
+    ))
+    .expect("parse venue.json");
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": {
+            "name": "apply_ir_patch",
+            "arguments": {
+                "ir_json": venue_raw,
+                "patch_json": { "op": "set_site_meta", "name": "Unbaked Venue" }
+            }
+        }
+    });
+    let resp = crate::mcp::handle_mcp_line(&req.to_string(), dir.path()).expect("response");
+    assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
+    let text = resp["result"]["content"][0]["text"].as_str().expect("text");
+    let doc: sws_ir::SiteDocument = serde_json::from_str(text).expect("parse SiteDocument");
+    assert_eq!(doc.name, "Unbaked Venue");
+    // Pack-contributed forms (e.g. "inquire") must NOT be baked into saved IR.
+    assert!(
+        !doc.forms.contains_key("inquire"),
+        "pack contributions must not be baked into saved IR: {:?}",
+        doc.forms.keys().collect::<Vec<_>>()
+    );
 }
