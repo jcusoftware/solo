@@ -103,9 +103,7 @@ WHERE workspace_id = ?1 AND site_id = ?2 AND manifest_sha256 = ?3 ORDER BY seq";
 
 pub const ACTIVATION_UPSERT: &str = "INSERT INTO publish_activations \
 (workspace_id, site_id, job_id, auto_activate, credential_tag, bytes_verified) \
-VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (workspace_id, job_id) DO UPDATE SET \
-auto_activate = excluded.auto_activate, credential_tag = excluded.credential_tag, \
-bytes_verified = excluded.bytes_verified";
+VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (workspace_id, job_id) DO NOTHING";
 
 pub const ACTIVATION_SET_VERIFIED: &str = "INSERT INTO publish_activations \
 (workspace_id, site_id, job_id, bytes_verified) VALUES (?1, ?2, ?3, 1) \

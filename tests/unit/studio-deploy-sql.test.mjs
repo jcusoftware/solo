@@ -222,6 +222,17 @@ describe('studio publish targets migration (0005)', () => {
     assert.equal(db.prepare(Q.AUDIT_LIST.sql).all('ws-b', 'site-a', 10).length, 0);
   });
 
+  it('ACTIVATION_UPSERT ignores a racing conflicting enqueue without overwriting credential_tag', () => {
+    db.exec(`INSERT INTO publish_jobs (workspace_id, site_id, id, revision_id, request_id, origin, phase, next_attempt_at, created_by, created_at, updated_at) VALUES ('ws-a', 'site-a', 'job-race', 'rev-1', 'req-race', 'cli', 'queued', '${T1}', 1, '${T1}', '${T1}')`);
+    run('ACTIVATION_UPSERT', 'ws-a', 'site-a', 'job-race', 1, 'tok:cred-a', 1);
+    run('ACTIVATION_UPSERT', 'ws-a', 'site-a', 'job-race', 0, 'tok:cred-b', 0);
+    const row = get('ACTIVATION_GET', 'ws-a', 'job-race');
+    assert.deepEqual(
+      [row.auto_activate, row.credential_tag, row.bytes_verified],
+      [1, 'tok:cred-a', 1],
+    );
+  });
+
   it('deleting a site cascades its target, retained versions and audit', () => {
     assert.equal(acquire('job-1', 1, V(1)), 1);
     run('TARGET_RECORD_PUBLISH', 'ws-a', 'target-a', 'job-1', V(1), 'pv-1', 'rev-1', 1, T1);
