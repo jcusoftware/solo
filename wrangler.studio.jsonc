@@ -34,6 +34,14 @@
 		"bindings": [{ "name": "SITE_SESSION", "class_name": "SiteSession" }]
 	},
 	"migrations": [{ "tag": "v1-site-session", "new_sqlite_classes": ["SiteSession"] }],
+	// Publish jobs (#64) are driven by the Worker's scheduled handler. Local `wrangler dev`
+	// never fires crons on its own (use `--test-scheduled` and GET /__scheduled), so none is
+	// configured here. A deployment enables the cron in its own config (see
+	// deploy/cloudflare/wrangler.studio.example.jsonc); Cron Triggers are cardless:
+	//   "triggers": { "crons": ["*/5 * * * *"] },
+	// The Queue is OPTIONAL (the cron alone drives every job). To use one locally:
+	//   "queues": { "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "sws-studio-publish" }],
+	//               "consumers": [{ "queue": "sws-studio-publish", "max_retries": 3 }] },
 	// Non-secret vars only. Secrets (SESSION_SIGNING_KEY, GITHUB_OAUTH_CLIENT_SECRET, ...)
 	// belong in `.dev.vars` locally or `wrangler secret put` in production (#65).
 	"vars": {
