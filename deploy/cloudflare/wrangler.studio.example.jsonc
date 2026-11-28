@@ -58,6 +58,12 @@
 		"STUDIO_VERSION": "0.2.0-dev",
 		"STUDIO_PUBLIC_ORIGIN": "https://studio.sws.example",
 		"PUBLISHED_ORIGIN_TEMPLATE": "https://{slug}.sws.example",
+		// Draft previews (#67): a SEPARATE host, routed to this same Worker (add it as a custom
+		// domain or route). Requests for this host reach only the preview routes. Use a different
+		// registrable domain from STUDIO_PUBLIC_ORIGIN (sibling subdomains are same-site to
+		// browsers); the same host, or a parent/child of it, disables previews (503). Unset = off.
+		// Reference: docs/STUDIO_PREVIEWS.md.
+		"STUDIO_PREVIEW_ORIGIN": "https://drafts.sws-preview.example",
 		// GitHub OAuth App client id (public, non-secret). Callback URL to register:
 		// <STUDIO_PUBLIC_ORIGIN>/auth/github/callback. No GitHub scope is requested.
 		"GITHUB_OAUTH_CLIENT_ID": "<YOUR_GITHUB_OAUTH_CLIENT_ID>",

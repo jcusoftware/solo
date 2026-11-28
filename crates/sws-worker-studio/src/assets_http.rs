@@ -183,14 +183,15 @@ thread_local! {
 }
 
 /// Holds a download slot for as long as the response stream lives (it is moved into the
-/// stream, so a cancelled or finished response releases it on drop). If the runtime
+/// stream, so a cancelled or finished response releases it on drop). Preview file
+/// responses (#67) take slots from the same per-isolate budget. If the runtime
 /// drops the stream WITHOUT ever running this `Drop`, the slot still stops counting
 /// [`DOWNLOAD_SLOT_DEADLINE_SECS`] after it was admitted (see [`DownloadSlots`]); a
 /// download legitimately slower than that merely lets one extra download in.
-struct DownloadSlot(u64);
+pub(crate) struct DownloadSlot(u64);
 
 impl DownloadSlot {
-    fn admit(now_secs: u64) -> Option<Self> {
+    pub(crate) fn admit(now_secs: u64) -> Option<Self> {
         DOWNLOADS.with(|d| {
             d.borrow_mut()
                 .admit(
@@ -210,10 +211,11 @@ impl Drop for DownloadSlot {
 }
 
 /// Holds an in-flight upload allowance; releases it on drop (including a cancelled request).
-struct Inflight(u64);
+/// Preview bundle uploads (#67) are charged against the same per-isolate budget.
+pub(crate) struct Inflight(u64);
 
 impl Inflight {
-    fn admit(bytes: u64) -> Option<Self> {
+    pub(crate) fn admit(bytes: u64) -> Option<Self> {
         INFLIGHT.with(|c| {
             admit_inflight(c.get(), bytes, MAX_INFLIGHT_UPLOAD_BYTES).then(|| {
                 c.set(c.get() + bytes);

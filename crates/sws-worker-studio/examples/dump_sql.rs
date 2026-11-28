@@ -6,7 +6,8 @@
 //! (`tests/unit/studio-publish-sql.test.mjs`); `--deploy`: the publish-target, lease,
 //! retained-version, bundle and audit statements (`tests/unit/studio-deploy-sql.test.mjs`);
 //! `--auth`: the authentication statements (`tests/unit/studio-auth.test.mjs`,
-//! `tenant` is always false there: those statements are scoped by credential id and user instead).
+//! `tenant` is always false there: those statements are scoped by credential id and user instead);
+//! `--previews`: the preview statements (`tests/unit/studio-previews.test.mjs`).
 
 use serde_json::json;
 
@@ -20,7 +21,9 @@ fn main() {
         println!("{}", serde_json::Value::Array(rows));
         return;
     }
-    let all = if flag("--assets") {
+    let all = if flag("--previews") {
+        sws_worker_studio::preview::sql::ALL
+    } else if flag("--assets") {
         sws_worker_studio::asset_repo::ALL
     } else if flag("--publish") {
         sws_worker_studio::publish::sql::ALL
