@@ -85,7 +85,7 @@ pub fn unauthenticated() -> Resp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::publish::Activation;
+    use crate::deploy::Activation;
     use sws_security::headers::STUDIO_HEADERS;
 
     #[test]

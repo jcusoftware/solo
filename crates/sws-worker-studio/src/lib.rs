@@ -28,7 +28,7 @@ pub mod assets_api;
 pub mod auth;
 pub mod bounds;
 pub mod model;
-pub mod publish;
+pub mod deploy;
 pub mod repo;
 pub mod respond;
 pub mod routes;
@@ -89,9 +89,9 @@ mod wasm {
         if let Some(route) = req
             .url()
             .ok()
-            .and_then(|u| crate::publish::route::parse(u.path()))
+            .and_then(|u| crate::deploy::route::parse(u.path()))
         {
-            let resp = match crate::publish::wasm::handle_rollback(req, &env, route).await {
+            let resp = match crate::deploy::wasm::handle_rollback(req, &env, route).await {
                 Ok(r) => r,
                 Err(e) => {
                     console_error!("unhandled publish error: {e}");
