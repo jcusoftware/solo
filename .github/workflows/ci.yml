@@ -225,6 +225,11 @@ jobs:
         # Builds a SEPARATE dev-auth Worker (its own build-* directory). The test starts each
         # wrangler dev in its own process group and stops those groups itself.
         run: npm run test:studio:assets
+      - name: Studio publish job integration (own dev servers on 8798-8799, local D1 and Queue state; test-only dev-auth build)
+        # Builds the SEPARATE test-only Worker (its own build-* directory). Drives jobs through the real
+        # Cron Trigger handler (wrangler dev --test-scheduled) and a local Queue consumer; each wrangler
+        # dev runs in its own process group, which the test stops itself.
+        run: npm run test:studio:publish
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Accessibility + header gates (axe, WCAG 2.2 AA)

@@ -46,6 +46,49 @@ const png = (len) => Buffer.concat([PNG_SIG, randomBytes(Math.max(0, len - PNG_S
 
 const servers = [];
 
+/** fetch() on a FRESH connection (`agent: false`), returning a standard `Response`. Like
+ *  scripts/test-studio-auth.mjs: the first request after local wrangler D1/R2 writes can
+ *  otherwise reuse a pooled keep-alive socket the server already closed and fail with
+ *  `fetch failed`. Transport only: bodies, headers and statuses are what fetch would see. */
+function freshFetch(url, { method = 'GET', headers = {}, body, signal } = {}) {
+  return new Promise((resolveP, reject) => {
+    const u = new URL(url);
+    const h = { ...headers };
+    const has = (name) => Object.keys(h).some((k) => k.toLowerCase() === name);
+    const stream = body && typeof body.getReader === 'function' ? body : null;
+    let bytes = null;
+    if (!stream && body !== undefined && body !== null) bytes = typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
+    if (bytes && !has('content-length')) h['Content-Length'] = bytes.length;
+    if (!stream && !bytes && ['POST', 'PUT'].includes(method) && !has('content-length')) h['Content-Length'] = 0;
+    const req = http.request({ host: u.hostname, port: u.port, path: `${u.pathname}${u.search}`, method, headers: h, agent: false }, (r) => {
+      const out = new Headers();
+      for (let i = 0; i < r.rawHeaders.length; i += 2) out.append(r.rawHeaders[i], r.rawHeaders[i + 1]);
+      const empty = method === 'HEAD' || [204, 304].includes(r.statusCode);
+      if (empty) r.resume();
+      if (signal) signal.addEventListener('abort', () => r.destroy(signal.reason), { once: true });
+      resolveP(new Response(empty ? null : Readable.toWeb(r), { status: r.statusCode, statusText: r.statusMessage, headers: out }));
+    });
+    req.on('error', reject);
+    if (signal) {
+      if (signal.aborted) return req.destroy(signal.reason);
+      signal.addEventListener('abort', () => req.destroy(signal.reason), { once: true });
+    }
+    if (stream) {
+      (async () => {
+        const reader = stream.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          req.write(value);
+        }
+        req.end();
+      })().catch((e) => req.destroy(e));
+    } else {
+      req.end(bytes ?? undefined);
+    }
+  });
+}
+
 function writeConfig(name, { r2 }) {
   const dir = join(STATE, name);
   mkdirSync(dir, { recursive: true });
@@ -174,7 +217,7 @@ function api(server) {
     const h = { ...headers };
     if (user !== undefined) h['X-Sws-Dev-User'] = String(user);
     if (now !== undefined) h['X-Sws-Dev-Now'] = String(now);
-    const res = await fetch(`${server.base}${path}`, { method, headers: h, body, duplex: body && body.getReader ? 'half' : undefined });
+    const res = await freshFetch(`${server.base}${path}`, { method, headers: h, body });
     const buf = Buffer.from(await res.arrayBuffer());
     let json = null;
     if ((res.headers.get('content-type') || '').includes('application/json')) json = JSON.parse(buf.toString('utf8'));
@@ -721,7 +764,7 @@ describe('studio asset store (local wrangler dev, insecure-dev-auth build)', { c
   describe('ambiguous commits, download slots and download integrity', () => {
     /** Raw GET that keeps the status/headers and lets the caller decide how to read the body. */
     const rawGet = (server, path, { headers = {}, signal } = {}) =>
-      fetch(`${server.base}${path}`, { headers: { 'X-Sws-Dev-User': '1', ...headers }, signal });
+      freshFetch(`${server.base}${path}`, { headers: { 'X-Sws-Dev-User': '1', ...headers }, signal });
     const d1Exec = (server, sql) =>
       wr(['d1', 'execute', 'STUDIO_DB', '--local', '-c', server.cfg, '--persist-to', server.persist, '--command', sql, '--json']);
     const objectKeyOf = (server, sha) => {
