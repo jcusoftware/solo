@@ -4,7 +4,7 @@
 //! `cargo run --example dump_sql -- --auth`) against the real migrations.
 //!
 //! Limits that must hold under concurrency (at most 10 active tokens per user,
-//! pending invitations per workspace, outstanding OAuth states) are enforced
+//! pending invitations per workspace) are enforced
 //! INSIDE the inserting statement (`INSERT ... SELECT ... WHERE (SELECT COUNT(*)
 //! ...) < ?`), so two racing requests cannot both pass a separate count.
 
@@ -12,10 +12,6 @@ use crate::repo::{Param, Statement};
 
 fn t(s: &str) -> Param {
     Param::Text(s.to_string())
-}
-
-fn opt(s: Option<&str>) -> Param {
-    s.map_or(Param::Null, t)
 }
 
 // --- Browser sessions -----------------------------------------------------------
@@ -47,12 +43,17 @@ WHERE workspace_id = ?1 AND id = ?2 AND user_id = ?3";
 pub const TOKEN_TOUCH: &str =
     "UPDATE api_tokens SET last_used_at = ?2 WHERE id = ?1 AND revoked_at IS NULL";
 /// Insert unless the user already holds `?11` active tokens (`?10`: a token id
-/// excluded from the count, the one being rotated; `''` on create).
+/// excluded from the count, the one being rotated; `''` on create). A rotation
+/// inserts only while the old token is still unrevoked, checked in this same
+/// statement, so two concurrent rotations of one token cannot fork its chain:
+/// the batch that commits second inserts nothing.
 pub const TOKEN_INSERT_LIMITED: &str = "INSERT INTO api_tokens \
 (workspace_id, id, user_id, token_hash, scope, label, created_at, expires_at, chain_started_at) \
 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9 \
 WHERE (SELECT COUNT(*) FROM api_tokens WHERE user_id = ?3 AND revoked_at IS NULL \
-AND expires_at > ?7 AND id <> ?10) < ?11";
+AND expires_at > ?7 AND id <> ?10) < ?11 \
+AND (?10 = '' OR EXISTS (SELECT 1 FROM api_tokens WHERE id = ?10 AND user_id = ?3 \
+AND revoked_at IS NULL))";
 /// Second half of a rotation batch: revoke the old token only if its successor exists.
 pub const TOKEN_REVOKE_ROTATED: &str = "UPDATE api_tokens SET revoked_at = ?3 \
 WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL \
@@ -122,16 +123,6 @@ SELECT i.workspace_id, i.accepted_by, i.role FROM invitations i \
 WHERE i.id = ?1 AND i.accepted_at = ?2 AND i.accepted_by = (SELECT id FROM users WHERE github_id = ?3) \
 ON CONFLICT (workspace_id, user_id) DO NOTHING";
 
-// --- OAuth states -------------------------------------------------------------------
-
-pub const STATE_PRUNE: &str = "DELETE FROM oauth_states WHERE expires_at <= ?1";
-pub const STATE_INSERT_LIMITED: &str = "INSERT INTO oauth_states \
-(state_hash, invitation_id, created_at, expires_at) SELECT ?1, ?2, ?3, ?4 \
-WHERE (SELECT COUNT(*) FROM oauth_states) < ?5";
-/// Atomic single use: the row is deleted as it is read.
-pub const STATE_CONSUME: &str =
-    "DELETE FROM oauth_states WHERE state_hash = ?1 AND expires_at > ?2 RETURNING invitation_id";
-
 /// Every named statement (name, sql), for the SQL-level test.
 pub const ALL: &[(&str, &str)] = &[
     ("SESSION_INSERT", SESSION_INSERT),
@@ -165,9 +156,6 @@ pub const ALL: &[(&str, &str)] = &[
     ("INVITE_BY_ID", INVITE_BY_ID),
     ("INVITE_ACCEPT", INVITE_ACCEPT),
     ("INVITE_MEMBERSHIP", INVITE_MEMBERSHIP),
-    ("STATE_PRUNE", STATE_PRUNE),
-    ("STATE_INSERT_LIMITED", STATE_INSERT_LIMITED),
-    ("STATE_CONSUME", STATE_CONSUME),
 ];
 
 fn st(sql: &'static str, params: Vec<Param>) -> Statement {
@@ -398,31 +386,6 @@ pub fn invite_membership(id: &str, now: &str, github_id: i64) -> Statement {
     )
 }
 
-pub fn state_prune(now: &str) -> Statement {
-    st(STATE_PRUNE, vec![t(now)])
-}
-pub fn state_insert_limited(
-    hash: &str,
-    invitation_id: Option<&str>,
-    now: &str,
-    expires: &str,
-    max: i64,
-) -> Statement {
-    st(
-        STATE_INSERT_LIMITED,
-        vec![
-            t(hash),
-            opt(invitation_id),
-            t(now),
-            t(expires),
-            Param::Int(max),
-        ],
-    )
-}
-pub fn state_consume(hash: &str, now: &str) -> Statement {
-    st(STATE_CONSUME, vec![t(hash), t(now)])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,9 +470,6 @@ mod tests {
             invite_by_id("i"),
             invite_accept("i", "n", 1, "l"),
             invite_membership("i", "n", 1),
-            state_prune("n"),
-            state_insert_limited("h", None, "n", "e", 10),
-            state_consume("h", "n"),
         ];
         for s in &all {
             assert_eq!(s.params.len(), max_placeholder(s.sql), "{}", s.sql);

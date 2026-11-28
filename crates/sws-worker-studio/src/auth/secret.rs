@@ -12,7 +12,8 @@
 //! * CLI/MCP token: `swst_<id>_<secret>` (sent as `Authorization: Bearer`).
 //! * Invitation code: `swsi_<id>_<secret>` (typed into the invitation form).
 //! * Session cookie value: `<id>.<secret>`.
-//! * OAuth state: `<secret>` (64 hex; stored hashed, single use).
+//! * OAuth state: `<secret>` (64 hex; never stored server-side: it lives only
+//!   in the authorize URL and the browser-bound `__Host-sws_oauth` cookie).
 
 use sws_assets::hash::{sha256_hex, to_hex};
 
@@ -74,11 +75,9 @@ pub fn mint(kind: Kind, random: &[u8; RANDOM_BYTES]) -> Minted {
     Minted { id, value, hash }
 }
 
-/// An OAuth `state`: 64 hex characters from 32 random bytes, and its digest.
-pub fn mint_state(random: &[u8; SECRET_BYTES]) -> (String, String) {
-    let s = to_hex(random);
-    let h = hash(&s);
-    (s, h)
+/// An OAuth `state`: 64 hex characters from 32 random bytes.
+pub fn mint_state(random: &[u8; SECRET_BYTES]) -> String {
+    to_hex(random)
 }
 
 pub fn is_state(s: &str) -> bool {
@@ -133,76 +132,87 @@ pub fn verify(presented: &str, stored_hash: &str) -> bool {
 /// Remove anything credential-shaped from text before it is logged or echoed:
 /// `swst_`/`swsi_` credentials, session cookie values, `Bearer` credentials,
 /// the two auth cookies and OAuth `code`/`state`/`access_token` parameters.
+///
+/// Total on every input: matching works on bytes (every pattern is ASCII) and
+/// never slices a `&str` at a byte offset, so multi-byte characters anywhere,
+/// including straddling a pattern or credential length, cannot panic or hide a
+/// credential. Bytes are only ever dropped in whole runs that start and end on
+/// ASCII bytes (char boundaries), so the output is valid UTF-8.
 pub fn redact(text: &str) -> String {
-    const MARK: &str = "[redacted]";
-    let mut out = String::with_capacity(text.len());
+    const MARK: &[u8] = b"[redacted]";
+    const KEYS: [&str; 6] = [
+        "__host-sws_session=",
+        "__host-sws_oauth=",
+        "code=",
+        "state=",
+        "access_token=",
+        "client_secret=",
+    ];
+    const BEARER: &str = "bearer ";
+    const SESSION_LEN: usize = ID_BYTES * 2 + 1 + SECRET_BYTES * 2;
     let bytes = text.as_bytes();
-    let mut i = 0;
     let is_tok = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'~');
+    let at_ci = |at: usize, key: &str| {
+        at.checked_add(key.len())
+            .and_then(|end| bytes.get(at..end))
+            .is_some_and(|w| w.eq_ignore_ascii_case(key.as_bytes()))
+    };
+    let boundary_before = |at: usize| at == 0 || bytes.get(at - 1).is_none_or(|b| !is_tok(*b));
+    let skip_tok = |mut at: usize| {
+        while bytes.get(at).is_some_and(|b| is_tok(*b)) {
+            at += 1;
+        }
+        at
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
     while i < bytes.len() {
-        let rest = &text[i..];
-        let lower_rest = rest
-            .get(..rest.len().min(32))
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        // Prefixed credentials.
-        if rest.starts_with(TOKEN_PREFIX) || rest.starts_with(INVITE_PREFIX) {
-            out.push_str(MARK);
-            i += 5;
-            while i < bytes.len() && is_tok(bytes[i]) {
-                i += 1;
-            }
+        // Prefixed credentials (case-sensitive, like the formats themselves).
+        if bytes[i..].starts_with(TOKEN_PREFIX.as_bytes())
+            || bytes[i..].starts_with(INVITE_PREFIX.as_bytes())
+        {
+            out.extend_from_slice(MARK);
+            i = skip_tok(i + TOKEN_PREFIX.len());
             continue;
         }
         // `name=value` pairs whose value is a secret.
-        let mut matched = false;
-        for key in [
-            "__host-sws_session=",
-            "__host-sws_oauth=",
-            "code=",
-            "state=",
-            "access_token=",
-            "client_secret=",
-        ] {
-            let at_boundary = i == 0 || !is_tok(bytes[i - 1]);
-            if at_boundary && lower_rest.starts_with(key) {
-                out.push_str(&rest[..key.len()]);
-                out.push_str(MARK);
-                i += key.len();
-                while i < bytes.len() && is_tok(bytes[i]) {
-                    i += 1;
-                }
-                matched = true;
-                break;
-            }
-        }
-        if matched {
+        if boundary_before(i)
+            && let Some(key) = KEYS.iter().find(|k| at_ci(i, k))
+        {
+            out.extend_from_slice(&bytes[i..i + key.len()]);
+            out.extend_from_slice(MARK);
+            i = skip_tok(i + key.len());
             continue;
         }
-        if lower_rest.starts_with("bearer ") {
-            out.push_str(&rest[..7]);
-            out.push_str(MARK);
-            i += 7;
-            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'"' {
+        if at_ci(i, BEARER) {
+            out.extend_from_slice(&bytes[i..i + BEARER.len()]);
+            out.extend_from_slice(MARK);
+            i += BEARER.len();
+            while bytes
+                .get(i)
+                .is_some_and(|b| !b.is_ascii_whitespace() && *b != b'"')
+            {
                 i += 1;
             }
             continue;
         }
         // A bare session cookie value `<24 hex>.<64 hex>`.
-        if rest.len() >= 89
-            && (i == 0 || !is_tok(bytes[i - 1]))
-            && parse(Kind::Session, &rest[..89]).is_some()
-            && rest.as_bytes().get(89).is_none_or(|b| !is_tok(*b))
-        {
-            out.push_str(MARK);
-            i += 89;
+        let session = boundary_before(i)
+            && bytes
+                .get(i..i + SESSION_LEN)
+                .and_then(|w| std::str::from_utf8(w).ok())
+                .is_some_and(|w| parse(Kind::Session, w).is_some())
+            && bytes.get(i + SESSION_LEN).is_none_or(|b| !is_tok(*b));
+        if session {
+            out.extend_from_slice(MARK);
+            i += SESSION_LEN;
             continue;
         }
-        let ch = rest.chars().next().unwrap_or(' ');
-        out.push(ch);
-        i += ch.len_utf8();
+        out.push(bytes[i]);
+        i += 1;
     }
-    out
+    // Always valid UTF-8 (see above); the lossy fallback only keeps this total.
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 #[cfg(test)]
@@ -301,7 +311,7 @@ mod tests {
         let tok = mint(Kind::Token, &rnd(4)).value;
         let inv = mint(Kind::Invite, &rnd(5)).value;
         let ses = mint(Kind::Session, &rnd(6)).value;
-        let (state, _) = mint_state(&[7u8; 32]);
+        let state = mint_state(&[7u8; 32]);
         let text = format!(
             "fetch failed: Authorization: Bearer {tok} cookie __Host-sws_session={ses}; \
              __Host-sws_oauth={state} url https://x/cb?code=abc123&state={state} \
@@ -326,5 +336,134 @@ mod tests {
         let plain = "revision ck-0123 sha256 abcdef seq=5 user 7 decode=x";
         assert_eq!(redact(plain), plain);
         assert_eq!(redact("über ✓"), "über ✓");
+    }
+
+    /// The panic repro from review: byte 89 falls inside `é`.
+    #[test]
+    fn redaction_never_slices_inside_a_multibyte_char() {
+        let repro = format!("{}é tail", "a".repeat(88));
+        assert_eq!(redact(&repro), repro);
+        let ses = mint(Kind::Session, &rnd(11)).value;
+        let state = mint_state(&[9u8; 32]);
+        for ch in ['é', '✓', '𝄞'] {
+            for k in 0..=100 {
+                for fill in ['a', '0', '.'] {
+                    let s = format!(
+                        "{}{ch}{}",
+                        fill.to_string().repeat(k),
+                        fill.to_string().repeat(100 - k)
+                    );
+                    assert_eq!(redact(&s), s, "{ch} at {k} in {fill}");
+                }
+                // A char cut into a credential-shaped prefix of every length.
+                let cut = k.min(ses.len());
+                let s = format!("{}{ch}{}", &ses[..cut], &ses[cut..]);
+                let _ = redact(&s);
+                // Pattern keys followed by a value with a char at every offset:
+                // the part before the char is still redacted.
+                let head = &state[..k.min(state.len())];
+                let s = format!("code={head}{ch} tail");
+                let r = redact(&s);
+                assert!(r.starts_with("code=[redacted]"), "{r}");
+                assert!(r.ends_with(&format!("{ch} tail")), "{r}");
+                if head.len() >= 8 {
+                    assert!(!r.contains(head), "{head} leaked in {r}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn credentials_next_to_non_ascii_are_still_redacted() {
+        let tok = mint(Kind::Token, &rnd(12)).value;
+        let inv = mint(Kind::Invite, &rnd(13)).value;
+        let ses = mint(Kind::Session, &rnd(14)).value;
+        let state = mint_state(&[3u8; 32]);
+        for ch in ["é", "✓", "𝄞", "\u{a0}"] {
+            let text = format!(
+                "{ch}{tok}{ch} {ch}{inv}{ch} {ch}{ses}{ch} {ch}state={state}{ch} \
+                 {ch}__Host-sws_oauth={state}{ch} {ch}Bearer {tok}{ch} \
+                 {}{ch}code={state}",
+                "x".repeat(26)
+            );
+            let r = redact(&text);
+            for secret in [tok.as_str(), inv.as_str(), ses.as_str(), state.as_str()] {
+                assert!(!r.contains(secret), "{secret} leaked in {r}");
+            }
+            assert!(r.contains(ch), "{r}");
+        }
+        // A pattern straddling byte 32 of the scan window used to be missed.
+        let s = format!("{}é code={state}", "y".repeat(28));
+        assert!(!redact(&s).contains(&state));
+    }
+
+    #[test]
+    fn redaction_of_empty_and_long_inputs() {
+        assert_eq!(redact(""), "");
+        assert_eq!(redact("é"), "é");
+        assert_eq!(redact("swst_"), "[redacted]");
+        assert_eq!(redact("Bearer "), "Bearer [redacted]");
+        let tok = mint(Kind::Token, &rnd(15)).value;
+        let filler = "lorem ✓ ipsum é 𝄞 ".repeat(20_000);
+        let long = format!("{filler}{tok} {filler}");
+        let r = redact(&long);
+        assert!(!r.contains(&tok));
+        assert_eq!(r.len(), long.len() - tok.len() + "[redacted]".len());
+    }
+
+    /// Property-style: thousands of random UTF-8 strings built from
+    /// credential fragments and multi-byte chars never panic, and plain
+    /// (credential-free) text is returned unchanged.
+    #[test]
+    fn redaction_is_total_on_random_utf8() {
+        let ses = mint(Kind::Session, &rnd(16)).value;
+        let tok = mint(Kind::Token, &rnd(17)).value;
+        let pieces: Vec<String> = vec![
+            "a".into(),
+            "0".into(),
+            "f".into(),
+            ".".into(),
+            "_".into(),
+            "-".into(),
+            " ".into(),
+            "=".into(),
+            "\"".into(),
+            "é".into(),
+            "✓".into(),
+            "𝄞".into(),
+            "\u{0}".into(),
+            "swst_".into(),
+            "swsi_".into(),
+            "code=".into(),
+            "STATE=".into(),
+            "Bearer ".into(),
+            "__Host-sws_session=".into(),
+            ses[..40].into(),
+            ses.clone(),
+            tok[..50].into(),
+            tok.clone(),
+        ];
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..5_000 {
+            let n = (next() % 40) as usize;
+            let s: String = (0..n)
+                .map(|_| pieces[(next() % pieces.len() as u64) as usize].as_str())
+                .collect();
+            let r = redact(&s);
+            // Prefixed tokens are redacted in every context (a bare session
+            // value only at token boundaries, so it is not asserted here).
+            assert!(!r.contains(&tok), "{s:?} -> {r:?}");
+            // Ordinary multi-byte text is never altered.
+            let plain: String = (0..n)
+                .map(|_| ["a", " ", "é", "✓", "𝄞", "0", "\n"][(next() % 7) as usize])
+                .collect();
+            assert_eq!(redact(&plain), plain);
+        }
     }
 }

@@ -3,9 +3,10 @@
 // database (node:sqlite, no dependency) and runs the exact auth SQL the Worker
 // binds, printed by `cargo run --example dump_sql -- --auth`. Proves the limits
 // that must hold under concurrency (10 active tokens per user, pending
-// invitations, OAuth states) live inside the inserting statement, single use of
-// OAuth states and invitations, the one-owner bootstrap, owner protection, token
-// workspace binding and cascade on membership removal.
+// invitations, one successor per rotated token) live inside the inserting
+// statement, single use of invitations, that no OAuth state is stored, the
+// one-owner bootstrap, owner protection, token workspace binding and cascade on
+// membership removal.
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -63,7 +64,7 @@ INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a',1,'owner'),
   it('applies from empty; 0003 is idempotent; new tables are STRICT', () => {
     const d = freshDb();
     d.exec(readFileSync(resolve(MIGRATIONS, '0003_auth.sql'), 'utf8'));
-    for (const t of ['auth_sessions', 'invitations', 'oauth_states']) {
+    for (const t of ['auth_sessions', 'invitations']) {
       assert.equal(d.prepare('SELECT strict FROM pragma_table_list WHERE name = ?').get(t).strict, 1, t);
     }
   });
@@ -115,9 +116,30 @@ INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a',1,'owner'),
     assert.equal(get('TOKEN_COUNT_ACTIVE', 1, NOW).n, 10);
     // A rotation whose successor was not inserted revokes nothing.
     assert.equal(run('TOKEN_REVOKE_ROTATED', id(3), 1, NOW, id(99)).changes, 0);
+    // Rotating an already revoked (or another user's, or unknown) token inserts nothing.
+    assert.equal(token(15, { replaces: id(2) }).changes, 0, 'old token already rotated');
+    assert.equal(token(16, { replaces: id(77) }).changes, 0, 'unknown old token');
     // Expired tokens do not count either.
     const after = '2027-01-01T00:00:00Z';
     assert.equal(get('TOKEN_COUNT_ACTIVE', 1, after).n, 0);
+  });
+
+  it('tokens: two concurrent rotations of one token cannot fork its chain', () => {
+    seed();
+    assert.equal(token(1).changes, 1);
+    // Each rotation is one D1 batch (one transaction): insert successor, revoke old.
+    const rotate = (n) => {
+      db.exec('BEGIN');
+      const ins = token(n, { replaces: id(1) }).changes;
+      const rev = run('TOKEN_REVOKE_ROTATED', id(1), 1, LATER, id(n)).changes;
+      db.exec('COMMIT');
+      return [ins, rev];
+    };
+    assert.deepEqual(rotate(2), [1, 1], 'first rotation wins');
+    assert.deepEqual(rotate(3), [0, 0], 'second rotation inserts nothing and revokes nothing');
+    assert.equal(get('TOKEN_GET_OWN', id(3), 1), undefined);
+    const active = db.prepare("SELECT id FROM api_tokens WHERE user_id = 1 AND revoked_at IS NULL").all();
+    assert.deepEqual(active.map((r) => r.id), [id(2)], 'exactly one live successor');
   });
 
   it('tokens: lifetime CHECKs per scope and chain, workspace binding, listing without digests', () => {
@@ -213,24 +235,10 @@ INSERT INTO memberships (workspace_id, user_id, role) VALUES ('ws-a',1,'owner'),
     assert.equal(all('INVITE_LIST', 'ws-b', 10).length, 0);
   });
 
-  it('oauth states: single use via DELETE ... RETURNING, TTL capped, table bounded', () => {
-    seed();
-    const exp = '2026-11-27T00:10:00Z';
-    assert.equal(run('STATE_INSERT_LIMITED', h(1), null, NOW, exp, 5000).changes, 1);
-    assert.throws(() => run('STATE_INSERT_LIMITED', h(2), null, NOW, '2026-11-27T00:10:01Z', 5000), /CHECK/);
-    assert.equal(run('STATE_INSERT_LIMITED', h(3), null, NOW, exp, 1).changes, 0, 'table bound');
-    const first = get('STATE_CONSUME', h(1), LATER);
-    assert.deepEqual({ ...first }, { invitation_id: null });
-    assert.equal(get('STATE_CONSUME', h(1), LATER), undefined, 'replay finds nothing');
-    // An expired state is not consumable, and prune removes it.
-    run('STATE_INSERT_LIMITED', h(4), null, NOW, exp, 5000);
-    assert.equal(get('STATE_CONSUME', h(4), exp), undefined);
-    assert.equal(run('STATE_PRUNE', exp).changes, 1);
-    // A state can carry an invitation (which must exist).
-    run('INVITE_INSERT_LIMITED', 'ws-a', id(9), h(9), 'x', 'editor', 1, NOW, '2026-12-01T00:00:00Z', 50);
-    run('STATE_INSERT_LIMITED', h(5), id(9), NOW, exp, 5000);
-    assert.equal(get('STATE_CONSUME', h(5), LATER).invitation_id, id(9));
-    assert.throws(() => run('STATE_INSERT_LIMITED', h(6), id(77), NOW, exp, 5000), /FOREIGN KEY/);
+  it('no server-side OAuth state: no table and no statement for it (sign-in start writes nothing)', () => {
+    const d = freshDb();
+    assert.equal(d.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%oauth%'").all().length, 0);
+    for (const r of Object.values(Q)) assert.doesNotMatch(r.sql, /oauth_state/i, r.name);
   });
 
   it('users: login update only when it changed; workspaces listing', () => {

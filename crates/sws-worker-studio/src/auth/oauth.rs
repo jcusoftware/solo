@@ -157,13 +157,66 @@ pub fn owner_id(raw: Option<&str>) -> Option<i64> {
         .filter(|n| (1..=MAX_SAFE_INT).contains(n))
 }
 
+/// The value of the `__Host-sws_oauth` cookie that binds a sign-in to the
+/// browser that started it: `<state>` or, from the invitation form,
+/// `<state>.<invitation code>`. Nothing about a started sign-in is stored
+/// server-side, so `GET /auth/github/start` writes nothing to D1. The invitation
+/// code is the one the invitee just typed (already verified, Turnstile passed);
+/// carrying it here, instead of only its id, means the callback re-verifies
+/// possession of the code and a cookie edited by its own holder gains nothing.
+pub fn binding_value(state: &str, invite_code: Option<&str>) -> String {
+    match invite_code {
+        Some(code) => format!("{state}.{code}"),
+        None => state.to_string(),
+    }
+}
+
+/// A verified browser binding: the cookie parsed strictly and its state equal
+/// (constant time) to the callback's `state` query parameter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Binding<'a> {
+    /// `(lookup id, full code)` of the invitation the flow started from.
+    pub invitation: Option<(&'a str, &'a str)>,
+}
+
+impl std::fmt::Debug for Binding<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Binding")
+            .field("invitation", &self.invitation.map(|(id, _)| id))
+            .finish()
+    }
+}
+
+/// Check the callback's `state` against the binding cookie. `None` (refuse)
+/// unless both are present, well formed, and the states are equal. The state
+/// is single use because the callback always clears the cookie and GitHub
+/// codes are single use.
+pub fn check_binding<'a>(cookie: Option<&'a str>, query_state: &str) -> Option<Binding<'a>> {
+    use super::secret::{self, Kind};
+    let (state, invite) = match cookie?.split_once('.') {
+        Some((s, code)) => (s, Some(code)),
+        None => (cookie?, None),
+    };
+    if !secret::is_state(state)
+        || !secret::is_state(query_state)
+        || !secret::ct_eq(state.as_bytes(), query_state.as_bytes())
+    {
+        return None;
+    }
+    let invitation = match invite {
+        Some(code) => Some((secret::parse(Kind::Invite, code)?, code)),
+        None => None,
+    };
+    Some(Binding { invitation })
+}
+
 /// What a completed GitHub sign-in may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignIn {
     /// The pre-declared owner: create the bootstrap workspace and owner
     /// membership if no owner exists yet, then sign in.
     Bootstrap,
-    /// Accept the invitation carried by the OAuth state, then sign in.
+    /// Accept the invitation carried by the OAuth binding cookie, then sign in.
     AcceptInvitation,
     /// A known user with at least one membership.
     Existing,
@@ -311,5 +364,52 @@ mod tests {
         );
         assert_eq!(decide(8, Some(7), false, true), SignIn::Existing);
         assert_eq!(decide(8, Some(7), true, false), SignIn::AcceptInvitation);
+    }
+
+    #[test]
+    fn browser_binding_requires_matching_state_and_valid_invitation() {
+        use crate::auth::secret::{Kind, mint, mint_state};
+        let state = mint_state(&[0xabu8; 32]);
+        let other = mint_state(&[6u8; 32]);
+        let inv = mint(Kind::Invite, &[8u8; 44]);
+        let plain = binding_value(&state, None);
+        assert_eq!(plain, state);
+        assert_eq!(
+            check_binding(Some(&plain), &state),
+            Some(Binding { invitation: None })
+        );
+        let with = binding_value(&state, Some(&inv.value));
+        assert_eq!(with, format!("{state}.{}", inv.value));
+        assert_eq!(
+            check_binding(Some(&with), &state),
+            Some(Binding {
+                invitation: Some((inv.id.as_str(), inv.value.as_str()))
+            })
+        );
+        assert!(!format!("{:?}", check_binding(Some(&with), &state)).contains(&inv.value));
+        // Missing cookie, mismatched state, malformed parts: refused.
+        assert_eq!(check_binding(None, &state), None);
+        assert_eq!(check_binding(Some(&plain), &other), None);
+        assert_eq!(check_binding(Some(&with), &other), None);
+        assert_eq!(check_binding(Some(""), ""), None);
+        assert_eq!(
+            check_binding(Some(&state.to_uppercase()), &state.to_uppercase()),
+            None
+        );
+        assert_eq!(check_binding(Some(&state[..63]), &state[..63]), None);
+        assert_eq!(check_binding(Some(&format!("{state}.")), &state), None);
+        assert_eq!(
+            check_binding(Some(&format!("{state}.swsi_x")), &state),
+            None
+        );
+        assert_eq!(
+            check_binding(Some(&format!("{state}.{}x", inv.value)), &state),
+            None
+        );
+        assert_eq!(
+            check_binding(Some(&format!("{state}.{}.x", inv.value)), &state),
+            None
+        );
+        assert_eq!(check_binding(Some("<script>"), "<script>"), None);
     }
 }

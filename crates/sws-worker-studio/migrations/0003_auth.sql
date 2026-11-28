@@ -1,9 +1,10 @@
--- SWS Studio authentication (#65): browser sessions, single-use OAuth states and
--- explicit workspace invitations. CLI/MCP tokens reuse `api_tokens` from
--- 0001_registry.sql unchanged.
+-- SWS Studio authentication (#65): browser sessions and explicit workspace
+-- invitations. CLI/MCP tokens reuse `api_tokens` from 0001_registry.sql
+-- unchanged. OAuth `state` is not stored at all: it is bound to the browser by
+-- the `__Host-sws_oauth` cookie, so an anonymous sign-in start writes nothing.
 --
--- Only SHA-256 hex digests of credentials are stored (`secret_hash`,
--- `state_hash`), never a cookie value, token, invitation code or OAuth state.
+-- Only SHA-256 hex digests of credentials are stored (`secret_hash`), never a
+-- cookie value, token, invitation code or OAuth state.
 -- Each credential has a separate random public lookup `id` (24 lowercase hex);
 -- the digest is compared in constant time by the Worker.
 --
@@ -50,18 +51,4 @@ CREATE TABLE IF NOT EXISTS invitations (
     CHECK (accepted_at IS NULL OR revoked_at IS NULL)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_invitations_workspace ON invitations (workspace_id, created_at);
-
--- Single-use OAuth `state` values (10-minute TTL). `invitation_id` is set when
--- the flow started from the invitation form; the callback consumes the row
--- with DELETE ... RETURNING, so a state can never be replayed.
-CREATE TABLE IF NOT EXISTS oauth_states (
-    state_hash    TEXT NOT NULL PRIMARY KEY
-                       CHECK (length(state_hash) = 64 AND state_hash NOT GLOB '*[^0-9a-f]*'),
-    invitation_id TEXT REFERENCES invitations (id) ON DELETE CASCADE,
-    created_at    TEXT NOT NULL CHECK (strftime('%Y-%m-%dT%H:%M:%SZ', created_at) IS created_at),
-    expires_at    TEXT NOT NULL CHECK (strftime('%Y-%m-%dT%H:%M:%SZ', expires_at) IS expires_at),
-    CHECK (expires_at > created_at),
-    CHECK (expires_at <= strftime('%Y-%m-%dT%H:%M:%SZ', created_at, '+10 minutes'))
-) STRICT;
-CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states (expires_at);
 

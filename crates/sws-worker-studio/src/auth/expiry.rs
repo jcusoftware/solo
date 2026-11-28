@@ -27,10 +27,9 @@ pub const TOKEN_TOUCH_SECS: i64 = 15 * 60;
 pub const TOKEN_CHAIN_MAX_SECS: i64 = 90 * DAY;
 pub const MAX_ACTIVE_TOKENS: i64 = 10;
 
+/// Lifetime of the browser-bound OAuth state cookie (`__Host-sws_oauth`).
+/// Nothing is stored server-side for a started sign-in.
 pub const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
-/// Outstanding (unexpired) OAuth states kept at most; `start` refuses beyond it
-/// so an unauthenticated caller cannot grow the table without bound.
-pub const MAX_OAUTH_STATES: i64 = 5000;
 pub const INVITATION_TTL_SECS: i64 = 7 * DAY;
 /// Pending invitations per workspace.
 pub const MAX_PENDING_INVITATIONS: i64 = 50;

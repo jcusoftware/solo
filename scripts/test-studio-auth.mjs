@@ -10,7 +10,9 @@
 // invitation step needs network access to challenges.cloudflare.com).
 //
 // Phase 1 (fast knobs: membership recheck 1 s, idle sweep 1 s): OAuth sign-in with owner
-// bootstrap, non-owner first sign-in refused, state single use and browser binding, invitation
+// bootstrap, non-owner first sign-in refused, browser-bound OAuth state (missing or mismatched
+// cookie refused, cookie cleared by every callback, replay refused, `start` writes nothing to
+// D1), invitation
 // form (Turnstile) and acceptance bound to the invited login, session cookie attributes, CSRF
 // (Origin) on cookie writes, re-authentication window, idle and absolute expiry, scoped tokens
 // (role caps, 10-token limit, rotation, revocation, tokens cannot manage tokens), tenant denial
@@ -75,6 +77,7 @@ const GH_USERS = {
   'c-intruder': { id: 5005, login: 'intruder' },
 };
 const ghTokens = new Map();
+const usedCodes = new Set();
 let gh;
 let GH_BASE;
 function startFakeGithub() {
@@ -91,8 +94,13 @@ function startFakeGithub() {
         if (req.headers.accept !== 'application/json') return send(400, { error: 'accept' });
         if (f.get('client_id') !== CLIENT_ID || f.get('client_secret') !== CLIENT_SECRET) return send(200, { error: 'incorrect_client_credentials' });
         if (f.get('redirect_uri') !== `${HTTP}/auth/github/callback`) return send(200, { error: 'redirect_uri_mismatch' });
-        const user = GH_USERS[f.get('code')];
-        if (!user) return send(200, { error: 'bad_verification_code' });
+        // `<name>-n<hex>` codes are single use, like real GitHub codes; bare names are reusable
+        // fixtures.
+        const raw = f.get('code') ?? '';
+        const nonce = /-n[0-9a-f]+$/.exec(raw);
+        const user = GH_USERS[nonce ? raw.slice(0, nonce.index) : raw];
+        if (!user || (nonce && usedCodes.has(raw))) return send(200, { error: 'bad_verification_code' });
+        if (nonce) usedCodes.add(raw);
         const tok = keep(`gho_${randomBytes(12).toString('hex')}`);
         ghTokens.set(tok, user);
         return send(200, { access_token: tok, token_type: 'bearer', scope: '' });
@@ -291,6 +299,13 @@ function cookieFrom(res, name) {
   return c ? { raw: c, value: c.slice(name.length + 1).split(';')[0] } : null;
 }
 
+/** Every callback response, success or refusal, deletes the OAuth binding cookie. */
+function assertOauthCleared(res) {
+  const c = cookieFrom(res, '__Host-sws_oauth');
+  assert.ok(c, `callback ${res.status} clears the OAuth cookie`);
+  assert.equal(c.raw, '__Host-sws_oauth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax');
+}
+
 /** Full browser sign-in through the fake GitHub. Returns { cookie, res } or the failing response. */
 async function signIn(code, { invitation } = {}) {
   let start;
@@ -310,8 +325,12 @@ async function signIn(code, { invitation } = {}) {
   const state = keep(loc.searchParams.get('state'));
   const oc = cookieFrom(start, '__Host-sws_oauth');
   assert.ok(oc, 'the OAuth state is bound to the browser by a cookie');
-  assert.equal(oc.value, state);
-  const cb = await call('GET', `/auth/github/callback?code=${code}&state=${state}`, { headers: { Cookie: `__Host-sws_oauth=${state}` } });
+  keep(oc.value);
+  // `<state>`, or `<state>.<invitation code>` when the flow started from the invitation form.
+  assert.equal(oc.value, invitation ? `${state}.${invitation}` : state);
+  assert.match(oc.raw, /; Path=\/; Max-Age=600; HttpOnly; Secure; SameSite=Lax$/);
+  const cb = await call('GET', `/auth/github/callback?code=${code}&state=${state}`, { headers: { Cookie: `__Host-sws_oauth=${oc.value}` } });
+  assertOauthCleared(cb);
   const sc = cookieFrom(cb, '__Host-sws_session');
   if (cb.status !== 303 || !sc) return { res: cb, state };
   keep(sc.value);
@@ -506,25 +525,72 @@ async function phase1() {
     assert.ok(rows.every((x) => /^[0-9a-f]{64}$/.test(x.secret_hash) && !r.cookie.includes(x.secret_hash)));
   });
 
-  await test('OAuth state: single use, bound to the starting browser, and validated', async () => {
+  await test('OAuth state: browser-bound by cookie, cleared by every callback, single use, validated', async () => {
     const start = await call('GET', '/auth/github/start');
     assertProfile(start, STUDIO_HEADERS, '303 /auth/github/start');
-    assert.ok(cookieFrom(start, '__Host-sws_oauth'), 'the OAuth binding cookie survives the profile');
+    const oc = cookieFrom(start, '__Host-sws_oauth');
+    assert.ok(oc, 'the OAuth binding cookie survives the profile');
     const state = keep(new URL(start.headers.get('location')).searchParams.get('state'));
-    // Without the browser-binding cookie (login CSRF): refused.
-    assert.equal((await call('GET', `/auth/github/callback?code=c-owner&state=${state}`)).status, 400);
-    // With another browser's cookie: refused.
-    assert.equal((await call('GET', `/auth/github/callback?code=c-owner&state=${state}`, { headers: { Cookie: `__Host-sws_oauth=${'f'.repeat(64)}` } })).status, 400);
-    const ok = await call('GET', `/auth/github/callback?code=c-owner&state=${state}`, { headers: { Cookie: `__Host-sws_oauth=${state}` } });
-    assert.equal(ok.status, 303);
+    assert.match(state, /^[0-9a-f]{64}$/);
+    assert.equal(oc.value, state);
+    const cb = (q, cookie) => call('GET', `/auth/github/callback?${q}`, cookie ? { headers: { Cookie: `__Host-sws_oauth=${cookie}` } } : {});
+    const code = `c-owner-n${randomBytes(6).toString('hex')}`;
+    // Missing cookie (login CSRF: the victim's browser never started this flow): refused.
+    let r = await cb(`code=${code}&state=${state}`);
+    assert.equal(r.status, 400);
+    assertOauthCleared(r);
+    // Mismatched cookie (another browser's or a stale flow's state): refused.
+    r = await cb(`code=${code}&state=${state}`, 'f'.repeat(64));
+    assert.equal(r.status, 400);
+    r = await cb(`code=${code}&state=${'f'.repeat(64)}`, state);
+    assert.equal(r.status, 400);
+    // A second start in the same browser replaces the cookie; the first state no longer matches.
+    const second = await call('GET', '/auth/github/start');
+    const state2 = keep(new URL(second.headers.get('location')).searchParams.get('state'));
+    assert.notEqual(state2, state);
+    r = await cb(`code=${code}&state=${state}`, state2);
+    assert.equal(r.status, 400);
+    // The matching pair signs in, and the response deletes the binding cookie.
+    const ok = await cb(`code=${code}&state=${state}`, state);
+    assert.equal(ok.status, 303, ok.text);
+    assertOauthCleared(ok);
     keep(cookieFrom(ok, '__Host-sws_session')?.value);
-    // Replay of a consumed state: refused.
-    assert.equal((await call('GET', `/auth/github/callback?code=c-owner&state=${state}`, { headers: { Cookie: `__Host-sws_oauth=${state}` } })).status, 400);
+    // Replay as the browser sends it after the callback (cookie cleared): refused.
+    r = await cb(`code=${code}&state=${state}`);
+    assert.equal(r.status, 400);
+    // Replay by a client that re-sends the old cookie: GitHub codes are single use, so the
+    // exchange fails and no session is issued.
+    r = await cb(`code=${code}&state=${state}`, state);
+    assert.equal(r.status, 502);
+    assert.equal(cookieFrom(r, '__Host-sws_session'), null);
+    assertOauthCleared(r);
     // GitHub-side cancellation and junk.
-    assert.equal((await call('GET', '/auth/github/callback?error=access_denied')).status, 400);
-    assert.equal((await call('GET', '/auth/github/callback?code=x&state=<script>', { headers: { Cookie: '__Host-sws_oauth=<script>' } })).status, 400);
+    r = await call('GET', '/auth/github/callback?error=access_denied');
+    assert.equal(r.status, 400);
+    assertOauthCleared(r);
+    assert.equal((await cb('code=x&state=<script>', '<script>')).status, 400);
+    assert.equal((await cb(`code=x&state=${state.toUpperCase()}`, state.toUpperCase())).status, 400);
     // logout is never a GET (no CSRF by link).
     assert.equal((await call('GET', '/auth/logout')).status, 405);
+  });
+
+  await test('OAuth start is anonymous and stateless: no D1 table, no row, never "busy"', async () => {
+    assert.deepEqual(d1("SELECT name FROM sqlite_master WHERE name LIKE '%oauth%'"), []);
+    const COUNT = `SELECT (SELECT COUNT(*) FROM users) + (SELECT COUNT(*) FROM memberships)
+      + (SELECT COUNT(*) FROM auth_sessions) + (SELECT COUNT(*) FROM invitations)
+      + (SELECT COUNT(*) FROM api_tokens) AS n`;
+    const before = d1(COUNT)[0].n;
+    const N = 300;
+    const states = new Set();
+    for (let i = 0; i < N; i += 25) {
+      const batch = await Promise.all(Array.from({ length: 25 }, () => call('GET', '/auth/github/start')));
+      for (const r of batch) {
+        assert.equal(r.status, 303, r.text);
+        states.add(keep(new URL(r.headers.get('location')).searchParams.get('state')));
+      }
+    }
+    assert.equal(states.size, N, 'every start mints a fresh state');
+    assert.equal(d1(COUNT)[0].n, before, 'no D1 row written by any start');
   });
 
   await test('invitations: owner-only with a fresh session and Origin; form needs Turnstile; bound to the invited login; single use', async () => {
@@ -571,6 +637,19 @@ async function phase1() {
     assert.equal(cross.status, 403);
     const bad = await signIn('c-editor', { invitation: code.slice(0, -1) + (code.endsWith('0') ? '1' : '0') });
     assert.equal(bad.res.status, 400);
+    // The binding cookie carries the code itself; a holder who edits it to another value with the
+    // same invitation id (no knowledge of the secret) is refused at the callback.
+    {
+      const st = await call('POST', '/auth/invitations/accept', { form: { code, 'cf-turnstile-response': 'XXXX.DUMMY.TOKEN.XXXX' }, headers: { Origin: HTTP } });
+      assert.equal(st.status, 303, st.text);
+      const stState = keep(new URL(st.headers.get('location')).searchParams.get('state'));
+      const forged = code.slice(0, 30) + 'f'.repeat(64);
+      assert.notEqual(forged, code);
+      const r = await call('GET', `/auth/github/callback?code=c-editor&state=${stState}`, { headers: { Cookie: `__Host-sws_oauth=${stState}.${forged}` } });
+      assert.equal(r.status, 403, r.text);
+      assertOauthCleared(r);
+      assert.equal(d1(`SELECT accepted_at FROM invitations WHERE id = '${code.slice(5, 29)}'`)[0].accepted_at, null);
+    }
     // Another GitHub account cannot use it.
     const intr = await signIn('c-intruder', { invitation: code });
     assert.equal(intr.res.status, 403, intr.res.text);

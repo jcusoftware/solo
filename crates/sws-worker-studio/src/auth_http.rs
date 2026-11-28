@@ -516,9 +516,11 @@ pub async fn handle(mut req: Request, env: &Env, route: AuthRoute) -> Result<Res
 
 // --- OAuth ------------------------------------------------------------------------------
 
-/// Begin the GitHub flow: a single-use, server-side state (optionally carrying
-/// an accepted invitation), bound to this browser by the `__Host-sws_oauth` cookie.
-async fn start(_req: &Request, env: &Env, invitation_id: Option<&str>) -> Result<Response> {
+/// Begin the GitHub flow: a fresh random state, put in the authorize URL and in
+/// the short-lived `__Host-sws_oauth` cookie (with the verified invitation code
+/// when the flow starts from the invitation form). Nothing is written to D1, so
+/// an anonymous caller can neither fill a table nor spend D1 write quota.
+async fn start(_req: &Request, env: &Env, invite_code: Option<&str>) -> Result<Response> {
     let (Some(client_id), Some(origin), Some(base)) = (
         var(env, "GITHUB_OAUTH_CLIENT_ID"),
         config_origin(env),
@@ -543,29 +545,12 @@ async fn start(_req: &Request, env: &Env, invitation_id: Option<&str>) -> Result
             "GitHub sign-in is not configured on this Studio.",
         );
     };
-    let db = d1::database(env)?;
-    let now = now_secs();
-    let (state, state_hash) = secret::mint_state(&random_bytes::<{ secret::SECRET_BYTES }>()?);
-    d1::run(&db, &q::state_prune(&expiry::to_text(now))).await?;
-    let inserted = d1::run(
-        &db,
-        &q::state_insert_limited(
-            &state_hash,
-            invitation_id,
-            &expiry::to_text(now),
-            &expiry::to_text(now + expiry::OAUTH_STATE_TTL_SECS),
-            expiry::MAX_OAUTH_STATES,
-        ),
-    )
-    .await?;
-    if inserted == 0 {
-        return message(
-            503,
-            "Sign-in busy",
-            "Too many sign-ins are in progress. Try again in a few minutes.",
-        );
-    }
-    let c = cookie::set(OAUTH_COOKIE, &state, expiry::OAUTH_STATE_TTL_SECS);
+    let state = secret::mint_state(&random_bytes::<{ secret::SECRET_BYTES }>()?);
+    let c = cookie::set(
+        OAUTH_COOKIE,
+        &oauth::binding_value(&state, invite_code),
+        expiry::OAUTH_STATE_TTL_SECS,
+    );
     redirect(
         &oauth::authorize_url(&base, &client_id, &redirect_uri, &state),
         Some(&c),
@@ -667,7 +652,28 @@ fn invitation_pending(row: &Value, now: i64) -> bool {
         && time(row, "expires_at").is_some_and(|e| now < e)
 }
 
+/// GitHub's redirect back. Every outcome (success, refusal or error) clears the
+/// `__Host-sws_oauth` cookie, so a state is usable at most once per browser.
 async fn callback(
+    req: &Request,
+    env: &Env,
+    code: Option<&str>,
+    state: Option<&str>,
+    errored: bool,
+) -> Result<Response> {
+    let mut resp = match callback_inner(req, env, code, state, errored).await {
+        Ok(r) => r,
+        Err(e) => {
+            log_err("sign-in callback failed", &e);
+            send(respond::internal_error(), None)?
+        }
+    };
+    resp.headers_mut()
+        .append("Set-Cookie", &cookie::clear(OAUTH_COOKIE))?;
+    Ok(resp)
+}
+
+async fn callback_inner(
     req: &Request,
     env: &Env,
     code: Option<&str>,
@@ -693,22 +699,19 @@ async fn callback(
     {
         return message(400, "Sign-in failed", EXPIRED);
     }
-    // The state must be ours (format), bound to THIS browser (cookie, constant
-    // time), and unused (consumed atomically below).
+    // The state must be ours (format) and bound to THIS browser: equal, in
+    // constant time, to the `__Host-sws_oauth` cookie set by `start` (expired
+    // after 10 minutes by the browser, cleared by every callback response).
     let cookies = req.headers().get("Cookie")?;
-    let bound = cookie::get(cookies.as_deref(), OAUTH_COOKIE)
-        .is_some_and(|c| secret::ct_eq(c.as_bytes(), state.as_bytes()));
-    if !secret::is_state(state) || !bound {
-        return message(400, "Sign-in failed", EXPIRED);
-    }
-    let db = d1::database(env)?;
-    let now = now_secs();
-    let now_t = expiry::to_text(now);
-    let Some(consumed) = d1::first(&db, &q::state_consume(&secret::hash(state), &now_t)).await?
+    let Some(binding) = oauth::check_binding(cookie::get(cookies.as_deref(), OAUTH_COOKIE), state)
     else {
         return message(400, "Sign-in failed", EXPIRED);
     };
-    let invitation_id = s(&consumed, "invitation_id").map(str::to_string);
+    let invitation_id = binding.invitation.map(|(id, _)| id.to_string());
+    let invite_code = binding.invitation.map(|(_, c)| c);
+    let db = d1::database(env)?;
+    let now = now_secs();
+    let now_t = expiry::to_text(now);
     let Some(redirect_uri) = config_origin(env).and_then(|o| oauth::redirect_uri(&o)) else {
         return message(
             503,
@@ -741,8 +744,14 @@ async fn callback(
         None => None,
     };
     if invitation_id.is_some() {
+        // Possession of the code is re-verified: the binding cookie carries
+        // the code itself, never just an id the holder could change.
         let ok = invitation.as_ref().is_some_and(|r| {
-            invitation_pending(r, now) && s(r, "github_login") == Some(login_lower.as_str())
+            invite_code
+                .zip(s(r, "secret_hash"))
+                .is_some_and(|(c, h)| secret::verify(c, h))
+                && invitation_pending(r, now)
+                && s(r, "github_login") == Some(login_lower.as_str())
         });
         if !ok {
             return message(
@@ -988,7 +997,7 @@ async fn invite_accept(req: &Request, env: &Env, raw: &[u8]) -> Result<Response>
     if !valid {
         return message(400, "Invitation not accepted", INVALID);
     }
-    start(req, env, Some(id)).await
+    start(req, env, Some(code)).await
 }
 
 // --- Tokens -------------------------------------------------------------------------------
@@ -1104,6 +1113,16 @@ async fn issue(
         }
     };
     if inserted == 0 {
+        // A rotation that lost a race (the old token was revoked or rotated
+        // concurrently) inserts nothing; say so instead of blaming the limit.
+        if let Some(old) = replaces {
+            let revoked = d1::first(db, &q::token_get_own(old, user_id))
+                .await?
+                .is_none_or(|r| r.get("revoked_at").is_some_and(|v| !v.is_null()));
+            if revoked {
+                return Ok(Err(json_err(409, "token_revoked")?));
+            }
+        }
         return Ok(Err(json_err(
             409,
             expiry::TokenError::TooManyTokens.code(),
