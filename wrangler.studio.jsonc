@@ -29,16 +29,27 @@
 	],
 	// Per-site command sessions (#62): one SQLite-backed, hibernating Durable Object per
 	// site. Free-plan compatible (SQLite-backed classes only). The route
-	// /api/sites/{workspace_id}/{site_id}/session answers 401 until real auth (#65) lands.
+	// /api/sites/{workspace_id}/{site_id}/session needs a session cookie or a bearer token (#65).
 	"durable_objects": {
 		"bindings": [{ "name": "SITE_SESSION", "class_name": "SiteSession" }]
 	},
 	"migrations": [{ "tag": "v1-site-session", "new_sqlite_classes": ["SiteSession"] }],
-	// Non-secret vars only. Secrets (SESSION_SIGNING_KEY, GITHUB_OAUTH_CLIENT_SECRET, ...)
-	// belong in `.dev.vars` locally or `wrangler secret put` in production (#65).
+	// Publish jobs (#64) are driven by the Worker's scheduled handler. Local `wrangler dev`
+	// never fires crons on its own (use `--test-scheduled` and GET /__scheduled), so none is
+	// configured here. A deployment enables the cron in its own config (see
+	// deploy/cloudflare/wrangler.studio.example.jsonc); Cron Triggers are cardless:
+	//   "triggers": { "crons": ["*/5 * * * *"] },
+	// The Queue is OPTIONAL (the cron alone drives every job). To use one locally:
+	//   "queues": { "producers": [{ "binding": "PUBLISH_QUEUE", "queue": "sws-studio-publish" }],
+	//               "consumers": [{ "queue": "sws-studio-publish", "max_retries": 3 }] },
+	// Non-secret vars only. Secrets (GITHUB_OAUTH_CLIENT_SECRET, TURNSTILE_SECRET_KEY) belong in
+	// `.dev.vars` locally or `wrangler secret put` in production (#65). Sign-in answers 503 until
+	// GITHUB_OAUTH_CLIENT_ID (and the secret) are set; STUDIO_OWNER_GITHUB_ID names the bootstrap owner.
 	"vars": {
 		"STUDIO_VERSION": "0.2.0-dev",
-		"STUDIO_PUBLIC_ORIGIN": "http://127.0.0.1:8788"
+		"STUDIO_PUBLIC_ORIGIN": "http://127.0.0.1:8788",
+		"STUDIO_BOOTSTRAP_WORKSPACE": "studio",
+		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA"
 	},
 	"observability": {
 		"enabled": true

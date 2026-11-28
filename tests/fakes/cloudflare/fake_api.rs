@@ -40,7 +40,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde_json::{Value, json};
 
-use crate::publish::http::{HttpClient, HttpRequest, HttpResponse, TransportError};
+use crate::deploy::http::{HttpClient, HttpRequest, HttpResponse, TransportError};
 
 pub const FAKE_BASE: &str = "https://api.cloudflare.test/client/v4";
 

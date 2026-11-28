@@ -17,10 +17,11 @@
 //! * as a hard gate at delivery time ([`delivery_allowed`]): a socket whose last
 //!   verification is two intervals old is skipped, whatever else happens.
 //!
-//! #65 hook: `object::fetch_role` is the one D1 lookup; adding session-expiry
-//! and token-revocation checks there, and calling `entry::revoke_user` (the
-//! Worker -> DO `/internal/revoke` request) on logout, token revocation or
-//! membership change, is the whole integration; no protocol change is needed.
+//! #65: `object::fetch_role` is the one D1 lookup; it also revalidates the
+//! socket's session or token (`auth_http::revalidate`) and caps the role by the
+//! credential (`auth::policy::effective_role`), and the Worker calls
+//! `entry::revoke_user` (the `/internal/revoke` request) on logout, token
+//! revocation or rotation and membership change. No protocol change was needed.
 
 use crate::model::Role;
 

@@ -5,7 +5,9 @@
 // the asset-store test hooks (X-Sws-Dev-Now, -Commit-Skew, -Batch, -Fail-Put,
 // -Fail-Batch-After-Commit, -Hold-Slot; #63) and the /api/dev/ session test routes, so it exists
 // only for the local integration tests (scripts/test-studio-sessions.mjs with
-// wrangler.studio-sessions.jsonc, and tests/integration/studio-assets.test.mjs), each building
+// wrangler.studio-sessions.jsonc, tests/integration/studio-assets.test.mjs and
+// tests/integration/studio-publish.test.mjs, whose /api/dev/publish-drive hook injects
+// publish-job faults; #64), each building
 // into a SEPARATE build-* directory. This one script is the union of the former #63 guard
 // (scripts/check-studio-no-dev-auth.mjs) and the #62 guard. Static checks (part of
 // `npm run verify`, no build needed):
@@ -33,6 +35,8 @@ export const FEATURE = 'insecure-dev-auth';
 export const HEADER = 'X-Sws-Dev-User';
 /** Var the dev-auth build requires at runtime; only the local test script passes it. */
 export const FENCE_VAR = 'SWS_INSECURE_DEV_AUTH';
+/** Var that overrides the Cloudflare API base URL; only allowed in dev-auth builds. */
+export const DEV_CF_API_BASE_VAR = 'STUDIO_DEV_CF_API_BASE';
 /** Every test-only header the dev-auth build reads (#62 auth, #63 asset-store hooks). */
 export const DEV_HEADERS = [
   HEADER,
@@ -46,7 +50,12 @@ export const DEV_HEADERS = [
 /** package.json scripts allowed to mention the feature (test and lint only). */
 export const ALLOWED_SCRIPTS = new Set(['test:studio:sessions', 'test:studio:assets', 'lint:clippy']);
 /** Local runners that start a dev-auth Worker; each must open the runtime fence itself. */
-export const DEV_RUNNERS = ['scripts/test-studio-sessions.mjs', 'tests/integration/studio-assets.test.mjs'];
+export const DEV_RUNNERS = [
+  'scripts/test-studio-sessions.mjs',
+  'tests/integration/studio-assets.test.mjs',
+  'tests/integration/studio-publish.test.mjs',
+  'scripts/test-studio-deploy.mjs',
+];
 
 const WALK_SKIP = new Set(['target', 'node_modules', '.git', 'build', '.wrangler']);
 
@@ -147,8 +156,8 @@ export function checkSessionsConfig(text) {
 }
 
 /** Strings only the dev-auth build carries: the dev headers, the feature name, the runtime fence
- *  var and the test-only routes. */
-export const DEV_MARKERS = [...DEV_HEADERS, FEATURE, FENCE_VAR, '/api/dev/'];
+ *  var, the dev Cloudflare API base var, and the test-only routes. */
+export const DEV_MARKERS = [...DEV_HEADERS, FEATURE, FENCE_VAR, DEV_CF_API_BASE_VAR, '/api/dev/'];
 
 export function wasmHasDevAuth(bytes) {
   const buf = Buffer.from(bytes);
@@ -175,7 +184,7 @@ export function checkStatic(root) {
   }
   const prod = [join(root, 'wrangler.studio.jsonc'), ...walk(join(root, 'deploy'), (p) => /\.jsonc?$/.test(p))];
   for (const f of prod) {
-    if (existsSync(f) && /insecure-dev-auth|X-Sws-Dev-|build-dev-auth/.test(readFileSync(f, 'utf8'))) {
+    if (existsSync(f) && /insecure-dev-auth|X-Sws-Dev-|build-dev-auth|STUDIO_DEV_CF_API_BASE/.test(readFileSync(f, 'utf8'))) {
       problems.push(`${relative(root, f)} must not reference the dev-auth build`);
     }
   }

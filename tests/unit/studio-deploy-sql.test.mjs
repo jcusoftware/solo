@@ -13,7 +13,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
-const MIGRATIONS = ['0001_registry.sql', '0002_asset_store.sql', '0005_publish_targets.sql'].map((f) =>
+const MIGRATIONS = ['0001_registry.sql', '0002_asset_store.sql', '0003_auth.sql', '0004_publish_jobs.sql', '0005_publish_targets.sql'].map((f) =>
   resolve(ROOT, 'crates/sws-worker-studio/migrations', f),
 );
 const ACCOUNT = '0123456789abcdef0123456789abcdef';
@@ -26,7 +26,7 @@ const T2 = '2026-11-27T00:02:00Z';
 const T3 = '2026-11-27T00:03:00Z';
 
 function loadSql() {
-  const out = execFileSync('cargo', ['run', '-q', '--locked', '-p', 'sws-worker-studio', '--example', 'dump_sql', '--', '--publish'], {
+  const out = execFileSync('cargo', ['run', '-q', '--locked', '-p', 'sws-worker-studio', '--example', 'dump_sql', '--', '--deploy'], {
     cwd: ROOT,
     encoding: 'utf8',
   });
@@ -79,8 +79,19 @@ describe('studio publish targets migration (0005)', () => {
     run('VERSION_INSERT_IF_LIVE', ws, site, id, tgt, version, rev, seq, `job-${seq}`, 4, H, T1, 1).changes;
 
   it('applies from empty, re-applies 0005 idempotently, and every statement prepares', () => {
-    db.exec(readFileSync(MIGRATIONS[2], 'utf8'));
+    db.exec(readFileSync(MIGRATIONS[4], 'utf8'));
     for (const [name, { sql }] of Object.entries(Q)) assert.doesNotThrow(() => db.prepare(sql), name);
+  });
+
+  it('stores and retrieves chunked bundles and rejects oversized chunks', () => {
+    run('BUNDLE_INSERT', 'ws-a', 'site-a', H, 1024, 1, 1, T0);
+    run('BUNDLE_CHUNK_INSERT', 'ws-a', 'site-a', H, 0, Buffer.alloc(1024, 0x41));
+    assert.equal(get('BUNDLE_GET', 'ws-a', 'site-a', H).chunk_count, 1);
+    assert.equal(db.prepare(Q.BUNDLE_CHUNKS_GET.sql).all('ws-a', 'site-a', H).length, 1);
+    assert.throws(
+      () => run('BUNDLE_CHUNK_INSERT', 'ws-a', 'site-a', H, 1, Buffer.alloc(524289, 0x42)),
+      /CHECK/,
+    );
   });
 
   it('CHECKs refuse bad targets, secret values and half-written leases', () => {

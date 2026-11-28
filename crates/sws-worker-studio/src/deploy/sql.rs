@@ -85,6 +85,41 @@ pub const AUDIT_LIST: &str = "SELECT id, actor_user_id, action, result, cf_versi
 revision_id, job_id, stage, error_code, at FROM publish_audit \
 WHERE workspace_id = ?1 AND site_id = ?2 ORDER BY id DESC LIMIT ?3";
 
+pub const BUNDLE_GET: &str = "SELECT workspace_id, site_id, manifest_sha256, total_bytes, \
+chunk_count, created_by, created_at FROM publish_bundles \
+WHERE workspace_id = ?1 AND site_id = ?2 AND manifest_sha256 = ?3";
+
+pub const BUNDLE_INSERT: &str = "INSERT INTO publish_bundles \
+(workspace_id, site_id, manifest_sha256, total_bytes, chunk_count, created_by, created_at) \
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO NOTHING";
+
+pub const BUNDLE_CHUNK_INSERT: &str = "INSERT INTO publish_bundle_chunks \
+(workspace_id, site_id, manifest_sha256, seq, data) \
+SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM publish_bundles \
+WHERE workspace_id = ?1 AND site_id = ?2 AND manifest_sha256 = ?3) ON CONFLICT DO NOTHING";
+
+pub const BUNDLE_CHUNKS_GET: &str = "SELECT seq, data FROM publish_bundle_chunks \
+WHERE workspace_id = ?1 AND site_id = ?2 AND manifest_sha256 = ?3 ORDER BY seq";
+
+pub const ACTIVATION_UPSERT: &str = "INSERT INTO publish_activations \
+(workspace_id, site_id, job_id, auto_activate, credential_tag, bytes_verified) \
+VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (workspace_id, job_id) DO UPDATE SET \
+auto_activate = excluded.auto_activate, credential_tag = excluded.credential_tag, \
+bytes_verified = excluded.bytes_verified";
+
+pub const ACTIVATION_SET_VERIFIED: &str = "INSERT INTO publish_activations \
+(workspace_id, site_id, job_id, bytes_verified) VALUES (?1, ?2, ?3, 1) \
+ON CONFLICT (workspace_id, job_id) DO UPDATE SET bytes_verified = 1";
+
+pub const ACTIVATION_SET_DEPLOYED: &str = "INSERT INTO publish_activations \
+(workspace_id, site_id, job_id, bytes_verified, published_id, cf_version_id) \
+VALUES (?1, ?2, ?3, 1, ?4, ?5) ON CONFLICT (workspace_id, job_id) DO UPDATE SET \
+bytes_verified = 1, published_id = excluded.published_id, cf_version_id = excluded.cf_version_id";
+
+pub const ACTIVATION_GET: &str = "SELECT workspace_id, site_id, job_id, auto_activate, \
+credential_tag, bytes_verified, published_id, cf_version_id FROM publish_activations \
+WHERE workspace_id = ?1 AND job_id = ?2";
+
 /// Every statement (name, sql, tenant-scoped) for the SQL-level test.
 pub const ALL: &[(&str, &str, bool)] = &[
     ("TARGET_INSERT", TARGET_INSERT, true),
@@ -102,6 +137,14 @@ pub const ALL: &[(&str, &str, bool)] = &[
     ("VERSION_LIST", VERSION_LIST, true),
     ("AUDIT_INSERT", AUDIT_INSERT, true),
     ("AUDIT_LIST", AUDIT_LIST, true),
+    ("BUNDLE_GET", BUNDLE_GET, true),
+    ("BUNDLE_INSERT", BUNDLE_INSERT, true),
+    ("BUNDLE_CHUNK_INSERT", BUNDLE_CHUNK_INSERT, true),
+    ("BUNDLE_CHUNKS_GET", BUNDLE_CHUNKS_GET, true),
+    ("ACTIVATION_UPSERT", ACTIVATION_UPSERT, true),
+    ("ACTIVATION_SET_VERIFIED", ACTIVATION_SET_VERIFIED, true),
+    ("ACTIVATION_SET_DEPLOYED", ACTIVATION_SET_DEPLOYED, true),
+    ("ACTIVATION_GET", ACTIVATION_GET, true),
 ];
 
 fn t(s: &str) -> Param {
@@ -236,6 +279,104 @@ pub fn audit_insert(a: &AuditRow) -> Statement {
             t(&a.at),
         ],
     )
+}
+
+pub fn bundle_get(ws: &str, site: &str, manifest_sha256: &str) -> Statement {
+    st(BUNDLE_GET, vec![t(ws), t(site), t(manifest_sha256)])
+}
+
+pub fn bundle_insert(
+    ws: &str,
+    site: &str,
+    manifest_sha256: &str,
+    total_bytes: u64,
+    chunk_count: u32,
+    created_by: i64,
+    created_at: &str,
+) -> Statement {
+    st(
+        BUNDLE_INSERT,
+        vec![
+            t(ws),
+            t(site),
+            t(manifest_sha256),
+            Param::Int(i64::try_from(total_bytes).unwrap_or(i64::MAX)),
+            Param::Int(i64::from(chunk_count)),
+            Param::Int(created_by),
+            t(created_at),
+        ],
+    )
+}
+
+pub fn bundle_chunk_insert(
+    ws: &str,
+    site: &str,
+    manifest_sha256: &str,
+    seq: u32,
+    data: &[u8],
+) -> Statement {
+    st(
+        BUNDLE_CHUNK_INSERT,
+        vec![
+            t(ws),
+            t(site),
+            t(manifest_sha256),
+            Param::Int(i64::from(seq)),
+            Param::Blob(data.to_vec()),
+        ],
+    )
+}
+
+pub fn bundle_chunks_get(ws: &str, site: &str, manifest_sha256: &str) -> Statement {
+    st(BUNDLE_CHUNKS_GET, vec![t(ws), t(site), t(manifest_sha256)])
+}
+
+pub fn activation_upsert(
+    ws: &str,
+    site: &str,
+    job_id: &str,
+    auto_activate: bool,
+    credential_tag: Option<&str>,
+    bytes_verified: bool,
+) -> Statement {
+    st(
+        ACTIVATION_UPSERT,
+        vec![
+            t(ws),
+            t(site),
+            t(job_id),
+            Param::Int(i64::from(auto_activate)),
+            opt(credential_tag),
+            Param::Int(i64::from(bytes_verified)),
+        ],
+    )
+}
+
+pub fn activation_set_verified(ws: &str, site: &str, job_id: &str) -> Statement {
+    st(ACTIVATION_SET_VERIFIED, vec![t(ws), t(site), t(job_id)])
+}
+
+pub fn activation_set_deployed(
+    ws: &str,
+    site: &str,
+    job_id: &str,
+    published_id: &str,
+    cf_version_id: &str,
+) -> Statement {
+    st(
+        ACTIVATION_SET_DEPLOYED,
+        vec![
+            t(ws),
+            t(site),
+            t(job_id),
+            t(published_id),
+            t(cf_version_id),
+        ],
+    )
+}
+
+pub fn activation_get(ws: &str, job_id: &str) -> Statement {
+    st(ACTIVATION_GET, vec![t(ws), t(job_id)])
 }
 
 #[cfg(test)]

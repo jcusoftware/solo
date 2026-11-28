@@ -125,3 +125,45 @@ BEFORE UPDATE ON publish_audit
 BEGIN
     SELECT RAISE(ABORT, 'publish_audit rows are append-only');
 END;
+
+-- Verified compiled bundles uploaded via PUT /api/sites/{ws}/{site}/publish/bundles/{manifest_sha256},
+-- stored in 256 KiB chunks. Content-addressed per site by `manifest_sha256`.
+CREATE TABLE IF NOT EXISTS publish_bundles (
+    workspace_id    TEXT    NOT NULL,
+    site_id         TEXT    NOT NULL,
+    manifest_sha256 TEXT    NOT NULL
+                            CHECK (length(manifest_sha256) = 64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'),
+    total_bytes     INTEGER NOT NULL CHECK (total_bytes >= 0),
+    chunk_count     INTEGER NOT NULL CHECK (chunk_count >= 1),
+    created_by      INTEGER NOT NULL REFERENCES users (id),
+    created_at      TEXT    NOT NULL CHECK (strftime('%Y-%m-%dT%H:%M:%SZ', created_at) IS created_at),
+    PRIMARY KEY (workspace_id, site_id, manifest_sha256),
+    FOREIGN KEY (workspace_id, site_id) REFERENCES sites (workspace_id, id) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS publish_bundle_chunks (
+    workspace_id    TEXT    NOT NULL,
+    site_id         TEXT    NOT NULL,
+    manifest_sha256 TEXT    NOT NULL,
+    seq             INTEGER NOT NULL CHECK (seq >= 0),
+    data            BLOB    NOT NULL CHECK (length(data) <= 524288),
+    PRIMARY KEY (workspace_id, site_id, manifest_sha256, seq),
+    FOREIGN KEY (workspace_id, site_id, manifest_sha256)
+        REFERENCES publish_bundles (workspace_id, site_id, manifest_sha256) ON DELETE CASCADE
+) STRICT;
+
+-- Per-job activation metadata (kept in 0005 so 0004 remains standalone):
+-- auto_activate + credential_tag for activation-time auth recheck, bytes_verified
+-- status, and the resulting published_id / cf_version_id once activated.
+CREATE TABLE IF NOT EXISTS publish_activations (
+    workspace_id    TEXT    NOT NULL,
+    site_id         TEXT    NOT NULL,
+    job_id          TEXT    NOT NULL,
+    auto_activate   INTEGER NOT NULL DEFAULT 0 CHECK (auto_activate IN (0, 1)),
+    credential_tag  TEXT    CHECK (credential_tag IS NULL OR length(credential_tag) BETWEEN 3 AND 64),
+    bytes_verified  INTEGER NOT NULL DEFAULT 0 CHECK (bytes_verified IN (0, 1)),
+    published_id    TEXT    CHECK (published_id IS NULL OR (length(published_id) BETWEEN 1 AND 64 AND published_id NOT GLOB '*[^a-z0-9_-]*')),
+    cf_version_id   TEXT    CHECK (cf_version_id IS NULL OR (length(cf_version_id) = 36 AND cf_version_id NOT GLOB '*[^0-9a-f-]*')),
+    PRIMARY KEY (workspace_id, job_id),
+    FOREIGN KEY (workspace_id, job_id) REFERENCES publish_jobs (workspace_id, id) ON DELETE CASCADE
+) STRICT;

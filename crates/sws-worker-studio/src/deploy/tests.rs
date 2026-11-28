@@ -165,7 +165,10 @@ impl World {
             workspace_id: WS.into(),
             site_id: SITE.into(),
             published_id: published_id.into(),
-            principal: Principal { user_id: user },
+            principal: Principal {
+                user_id: user,
+                credential: crate::auth::Credential::Dev,
+            },
         };
         block_on(run_rollback(&req, &self.env()))
     }
@@ -961,7 +964,7 @@ fn rollback_needs_owner_or_publisher_and_a_retained_version() {
     let v1 = w.publish(1, &art("v1")).expect("v1");
     w.publish(2, &art("v2")).expect("v2");
     let e = w.rollback(3, &v1.published_id).expect_err("editor");
-    assert_eq!((e.status, e.code), (403, "forbidden"));
+    assert_eq!((e.status, e.code), (403, "forbidden_role"));
     let audits = w.store.s.borrow().audit.len();
     let e = w.rollback(99, &v1.published_id).expect_err("non-member");
     assert_eq!((e.status, e.code), (403, "forbidden"));

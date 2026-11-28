@@ -237,8 +237,8 @@ pub const H_WORKSPACE: &str = "X-Sws-Internal-Workspace";
 pub const H_SITE: &str = "X-Sws-Internal-Site";
 pub const H_USER: &str = "X-Sws-Internal-User";
 pub const H_ROLE: &str = "X-Sws-Internal-Role";
-/// Reserved for #65: the id of the session or token the caller authenticated
-/// with, kept in the attachment so revalidation can check it.
+/// Tag of the session or token the caller authenticated with (`s:<id>` /
+/// `t:<id>`, #65), kept in the attachment so every recheck revalidates it.
 pub const H_CREDENTIAL: &str = "X-Sws-Internal-Credential";
 /// Internal DO paths.
 pub const PATH_SESSION: &str = "/session";

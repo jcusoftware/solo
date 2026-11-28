@@ -9,6 +9,9 @@
 //! * `POST /api/dev/d1-fault/{workspace}/{site}/{down|checkpoint|up}`: simulate a D1 outage
 //!   (`down`: membership reads and checkpoint writes; `checkpoint`: checkpoint writes only;
 //!   `slow`: every membership read takes 400 ms)
+//! * `POST /api/dev/publish-drive[?now=<offset s>&crash_after=<phase>&transient=<phase>&job=<ws>/<site>/<id>]`:
+//!   run the publish driver (`publish::drive`, the function the Cron Trigger calls)
+//!   with a skewed clock and injected faults; without `job` it is one scheduled run
 
 use serde_json::json;
 use worker::{Env, Method, Request, RequestInit, Response, Result};
@@ -37,7 +40,7 @@ pub async fn handle(
             let Ok(user) = u.parse::<i64>() else {
                 return Ok(Some(to_response(json_error(400, "bad_request", &[]))?));
             };
-            entry::revoke_user(env, w, s, user).await?;
+            entry::revoke_user(env, w, s, user, None).await?;
             json_ok(json!({ "revoked": true }))
         }
         ("GET", ["revision", w, s, r]) if is_valid_id(w) && is_valid_id(s) && is_valid_id(r) => {
@@ -82,7 +85,41 @@ pub async fn handle(
                 .await?;
             json_ok(r.json().await?)
         }
+        ("POST", ["publish-drive"]) => publish_drive(req, env).await?,
         _ => json_error(404, "not_found", &[]),
     };
     Ok(Some(to_response(resp)?))
+}
+
+/// The publish driver under test control. Every knob is test-only: a clock offset
+/// (`now`, seconds added to the real clock), a crash right after a phase's transition
+/// is written (`crash_after`), and a transient failure in a phase (`transient`).
+async fn publish_drive(req: &Request, env: &Env) -> Result<crate::respond::Resp> {
+    use crate::publish::drive::{self, DriveOptions};
+    use crate::publish::job::Phase;
+    let url = req.url()?;
+    let q = |k: &str| {
+        url.query_pairs()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.into_owned())
+    };
+    let mut opts = DriveOptions::from_env(env);
+    if let Some(off) = q("now").and_then(|v| v.parse::<i64>().ok()) {
+        opts.now = opts.now.saturating_add_signed(off);
+    }
+    opts.faults.crash_after = q("crash_after").as_deref().and_then(Phase::parse);
+    opts.faults.transient_in = q("transient").as_deref().and_then(Phase::parse);
+    if let Some(target) = q("job") {
+        let parts: Vec<&str> = target.split('/').collect();
+        let [w, s, j] = parts.as_slice() else {
+            return Ok(json_error(400, "bad_request", &[]));
+        };
+        if !(is_valid_id(w) && is_valid_id(s) && is_valid_id(j)) {
+            return Ok(json_error(400, "bad_request", &[]));
+        }
+        let db = crate::d1::database(env)?;
+        let out = drive::drive_one(env, &db, w, s, j, None, &opts).await?;
+        return Ok(json_ok(json!({ "jobs": [out.to_json()] })));
+    }
+    Ok(json_ok(drive::run_due(env, &opts).await?))
 }

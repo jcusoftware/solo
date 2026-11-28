@@ -93,6 +93,26 @@ pub fn check_request(
     transfer_encoding: Option<&str>,
     content_type: Option<&str>,
 ) -> Result<(), Reject> {
+    check_request_with_cap(
+        method,
+        url_len,
+        content_length,
+        transfer_encoding,
+        content_type,
+        MAX_BODY_BYTES,
+    )
+}
+
+/// [`check_request`] with a route-specific body cap instead of [`MAX_BODY_BYTES`]
+/// (the publish manifest route, whose JSON body may be larger).
+pub fn check_request_with_cap(
+    method: &str,
+    url_len: usize,
+    content_length: Option<&str>,
+    transfer_encoding: Option<&str>,
+    content_type: Option<&str>,
+    max_body: usize,
+) -> Result<(), Reject> {
     if url_len > MAX_URL_BYTES {
         return Err(Reject::UriTooLong);
     }
@@ -115,7 +135,7 @@ pub fn check_request(
         return Err(Reject::LengthRequired);
     }
     let len = parse_content_length(content_length.ok_or(Reject::LengthRequired)?)?;
-    if len > MAX_BODY_BYTES {
+    if len > max_body {
         return Err(Reject::PayloadTooLarge);
     }
     if len > 0 && !is_supported_content_type(content_type) {
@@ -154,6 +174,14 @@ impl BodyLimiter {
         }
     }
 
+    /// Like [`BodyLimiter::new`] with a route-specific cap.
+    pub fn with_cap(declared: usize, cap: usize) -> Self {
+        Self {
+            limit: declared.min(cap),
+            seen: 0,
+        }
+    }
+
     pub fn push(&mut self, chunk_len: usize) -> Result<(), Reject> {
         self.seen = self.seen.saturating_add(chunk_len);
         if self.seen > self.limit {
@@ -169,6 +197,41 @@ mod tests {
     use super::*;
 
     const JSON: Option<&str> = Some("application/json");
+
+    #[test]
+    fn a_route_cap_replaces_only_the_size_limit() {
+        let big = (MAX_BODY_BYTES + 1).to_string();
+        assert_eq!(
+            check_request("POST", 1, Some(&big), None, JSON),
+            Err(Reject::PayloadTooLarge)
+        );
+        let cap = 4 * MAX_BODY_BYTES;
+        assert_eq!(
+            check_request_with_cap("POST", 1, Some(&big), None, JSON, cap),
+            Ok(())
+        );
+        let over = (cap + 1).to_string();
+        assert_eq!(
+            check_request_with_cap("POST", 1, Some(&over), None, JSON, cap),
+            Err(Reject::PayloadTooLarge)
+        );
+        // Every other rule is unchanged.
+        assert_eq!(
+            check_request_with_cap("POST", 1, None, None, JSON, cap),
+            Err(Reject::LengthRequired)
+        );
+        assert_eq!(
+            check_request_with_cap("POST", 1, Some("5"), Some("chunked"), JSON, cap),
+            Err(Reject::LengthRequired)
+        );
+        assert_eq!(
+            check_request_with_cap("POST", 1, Some("5"), None, Some("text/plain"), cap),
+            Err(Reject::UnsupportedMediaType)
+        );
+        let mut l = BodyLimiter::with_cap(cap + 10, cap);
+        assert!(l.push(cap).is_ok());
+        assert_eq!(l.push(1), Err(Reject::PayloadTooLarge));
+    }
 
     #[test]
     fn get_without_body_is_ok() {

@@ -23,7 +23,8 @@ pub struct Attachment {
     pub role: String,
     /// Epoch ms of the last successful D1 membership check.
     pub authz_checked_ms: i64,
-    /// Reserved for #65: the session/token id this socket authenticated with.
+    /// Tag of the session or token this socket authenticated with (`s:<id>` /
+    /// `t:<id>`, #65); revalidated on every recheck. `None` only in the dev-auth build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
     /// Set just before the socket is closed for revocation; never delivered to.

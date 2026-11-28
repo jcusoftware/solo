@@ -19,7 +19,7 @@ use worker::{
 use crate::bounds::{self, BodyLimiter, MAX_URL_BYTES};
 use crate::model::Role;
 use crate::respond::{self, Resp};
-use crate::{auth, d1, repo};
+use crate::{d1, repo};
 
 use super::http::{HttpClient, HttpRequest, HttpResponse, Runtime, Secrets, TransportError};
 use super::pipeline::PublishEnv;
@@ -249,6 +249,36 @@ fn to_response(r: Resp) -> Result<Response> {
     Ok(resp)
 }
 
+/// Cloudflare API base URL. Production builds ALWAYS use [`super::CLOUDFLARE_API_BASE`];
+/// the `insecure-dev-auth` test build may point at a loopback fake via
+/// `STUDIO_DEV_CF_API_BASE` only when the runtime fence is open.
+#[cfg(feature = "insecure-dev-auth")]
+pub(crate) fn api_base(req: Option<&Request>, env: &Env) -> String {
+    let fence_open = match req {
+        Some(r) => crate::session::entry::dev_fence_open(r, env),
+        None => {
+            sws_security::worker_utils::var(env, crate::session::devfence::FENCE_VAR)
+                .as_deref()
+                .map(str::trim)
+                == Some("1")
+        }
+    };
+    if fence_open
+        && let Some(url) = sws_security::worker_utils::var(env, "STUDIO_DEV_CF_API_BASE")
+    {
+        let u = url.trim().trim_end_matches('/');
+        if u.starts_with("http://127.0.0.1:") || u.starts_with("http://localhost:") {
+            return u.to_string();
+        }
+    }
+    super::CLOUDFLARE_API_BASE.to_string()
+}
+
+#[cfg(not(feature = "insecure-dev-auth"))]
+pub(crate) fn api_base(_req: Option<&Request>, _env: &Env) -> String {
+    super::CLOUDFLARE_API_BASE.to_string()
+}
+
 /// `POST /api/sites/{ws}/{site}/deployments/{published_id}/rollback`. The body is
 /// optional; when present it must be a JSON object (no field is read today).
 pub async fn handle_rollback(
@@ -278,7 +308,15 @@ pub async fn handle_rollback(
     ) {
         return to_response(respond::reject(rej));
     }
-    let dev_user = crate::assets_http::dev_user_header(&req, env)?;
+
+    let Some(principal) = crate::auth_http::authenticate(&req, env).await? else {
+        return to_response(route::unauthenticated());
+    };
+    if !crate::auth_http::csrf_ok(&req, env, &principal, &method) {
+        return to_response(respond::json_error(403, "forbidden_origin", &[]));
+    }
+
+    let base = api_base(Some(&req), env);
 
     // Count the bytes actually streamed (never trust Content-Length alone).
     let limit = bounds::drain_limit(&method, content_length.as_deref());
@@ -299,9 +337,6 @@ pub async fn handle_rollback(
         return to_response(respond::reject(bounds::Reject::BadRequest));
     }
 
-    let Ok(principal) = auth::authenticate(dev_user.as_deref()) else {
-        return to_response(route::unauthenticated());
-    };
     let store = D1Store {
         db: d1::database(env)?,
     };
@@ -311,7 +346,7 @@ pub async fn handle_rollback(
         rt: &WorkerRuntime,
         store: &store,
         secrets: &secrets,
-        api_base: super::CLOUDFLARE_API_BASE,
+        api_base: &base,
     };
     let request = RollbackRequest {
         workspace_id: route.workspace_id,

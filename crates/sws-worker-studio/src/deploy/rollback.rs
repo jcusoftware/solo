@@ -63,9 +63,14 @@ const FORWARD_FIX: &str = "publish a forward fix (a new revision) instead";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthzError {
-    /// Not a member of the workspace (or unknown): answered as a uniform 403.
+    /// Not a member of the workspace, or token for another workspace: uniform 403.
     NotMember,
+    /// Member, but role does not allow activation: 403 `forbidden_role`.
     InsufficientRole,
+    /// Token scope below `activate`: 403 `insufficient_scope`.
+    InsufficientScope,
+    /// Browser session outside the 15-minute re-auth window: 401 `reauth_required`.
+    ReauthRequired,
     Unavailable,
 }
 
@@ -74,21 +79,32 @@ pub fn activate_allowed(role: Role) -> bool {
     matches!(role, Role::Owner | Role::Publisher)
 }
 
-/// The ONE authorization seam for activation-class actions (rollback today; manual
-/// activation later). Today: D1 membership role in {owner, publisher}, as the asset
-/// routes check membership. #65 adds here: the `activate` token scope, and the
-/// 15-minute re-authentication window for interactive sessions.
+/// The ONE authorization seam for activation-class actions (rollback and manual
+/// activation): checks D1 membership role, token scope (`activate`), workspace
+/// binding, and the 15-minute re-authentication window for interactive sessions (#65).
 pub async fn require_activate<S: PublishStore>(
     store: &S,
     principal: &Principal,
     workspace_id: &str,
     _site_id: &str,
 ) -> Result<Role, AuthzError> {
-    match store.role(workspace_id, principal.user_id).await {
-        Ok(Some(r)) if activate_allowed(r) => Ok(r),
-        Ok(Some(_)) => Err(AuthzError::InsufficientRole),
-        Ok(None) => Err(AuthzError::NotMember),
-        Err(_) => Err(AuthzError::Unavailable),
+    let role = store
+        .role(workspace_id, principal.user_id)
+        .await
+        .map_err(|_| AuthzError::Unavailable)?;
+    match crate::auth::policy::authorize(
+        &principal.credential,
+        role,
+        workspace_id,
+        crate::auth::policy::Permission::Activate,
+    ) {
+        Ok(()) => Ok(role.unwrap_or(Role::Editor)),
+        Err(crate::auth::policy::Denied::Forbidden) => Err(AuthzError::NotMember),
+        Err(crate::auth::policy::Denied::Role) => Err(AuthzError::InsufficientRole),
+        Err(crate::auth::policy::Denied::Scope | crate::auth::policy::Denied::SessionRequired) => {
+            Err(AuthzError::InsufficientScope)
+        }
+        Err(crate::auth::policy::Denied::ReauthRequired) => Err(AuthzError::ReauthRequired),
     }
 }
 
@@ -113,6 +129,13 @@ where
     }
     if auth == Err(AuthzError::NotMember) {
         return Err(rerr(403, "forbidden", "not allowed"));
+    }
+    if auth == Err(AuthzError::ReauthRequired) {
+        return Err(rerr(
+            401,
+            "reauth_required",
+            "recent sign-in required for activation",
+        ));
     }
     let mut target: Target = match store.target(ws, site).await {
         Ok(Some(t)) => t,
@@ -145,18 +168,23 @@ where
         error_code: code,
         at: now(),
     };
-    if auth == Err(AuthzError::InsufficientRole) {
+    if let Err(e) = auth {
+        let code = match e {
+            AuthzError::InsufficientRole => "forbidden_role",
+            AuthzError::InsufficientScope => "insufficient_scope",
+            _ => "forbidden",
+        };
         let _ = store
             .audit(&audit(
                 &target,
                 AuditResult::Refused,
                 None,
-                Some("forbidden"),
+                Some(code),
                 None,
                 None,
             ))
             .await;
-        return Err(rerr(403, "forbidden", "not allowed"));
+        return Err(rerr(403, code, "not allowed"));
     }
 
     let pv = match store.published(ws, site, &req.published_id).await {
@@ -219,6 +247,26 @@ where
             "the Cloudflare API token secret is not configured",
         ));
     };
+
+    // Activation-time authorization recheck right before taking the target lease.
+    match require_activate(store, &req.principal, ws, site).await {
+        Ok(_) => {}
+        Err(AuthzError::Unavailable) => {
+            return Err(rerr(503, "store_unavailable", "D1 is unavailable"));
+        }
+        Err(AuthzError::ReauthRequired) => {
+            refuse(&target, "activation_unauthorized").await;
+            return Err(rerr(
+                401,
+                "reauth_required",
+                "recent sign-in required for activation",
+            ));
+        }
+        Err(_) => {
+            refuse(&target, "activation_unauthorized").await;
+            return Err(rerr(403, "activation_unauthorized", "not allowed"));
+        }
+    }
 
     let previous = target.live_version_id.clone();
     let (account, script) = (target.account_id.clone(), target.script_name.clone());

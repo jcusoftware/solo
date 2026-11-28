@@ -49,10 +49,10 @@ use crate::asset_repo as q;
 use crate::assets_api::{
     self, AssetRoute, BACKEND_VAR, Backend, R2_BINDING, error_resp, limits_json, ok_json,
 };
-use crate::auth;
+use crate::auth::policy::{Permission, authorize};
 use crate::bounds::{self, MAX_URL_BYTES};
 use crate::d1;
-use crate::model::{Role, StorageBackend};
+use crate::model::StorageBackend;
 use crate::repo;
 use crate::respond::{self, Resp};
 
@@ -229,24 +229,6 @@ impl Drop for Inflight {
     }
 }
 
-/// The dev-auth header is only ever read by the `insecure-dev-auth` test build, and
-/// there only behind the same runtime fence as the session route
-/// ([`crate::session::entry::dev_fence_open`]); the release build neither reads it nor
-/// embeds its name (checked by `scripts/check-studio-release.mjs`). Shared with the
-/// rollback route (`publish::wasm`).
-#[cfg(feature = "insecure-dev-auth")]
-pub(crate) fn dev_user_header(req: &Request, env: &Env) -> Result<Option<String>> {
-    if !crate::session::entry::dev_fence_open(req, env) {
-        return Ok(None);
-    }
-    req.headers().get(auth::DEV_USER_HEADER)
-}
-
-#[cfg(not(feature = "insecure-dev-auth"))]
-pub(crate) fn dev_user_header(_req: &Request, _env: &Env) -> Result<Option<String>> {
-    Ok(None)
-}
-
 fn r2_bucket(env: &Env) -> Option<worker::Bucket> {
     env.bucket(R2_BINDING).ok()
 }
@@ -271,7 +253,6 @@ pub async fn handle(mut req: Request, env: &Env, route: AssetRoute) -> Result<Re
     let content_length = headers.get("Content-Length")?;
     let transfer_encoding = headers.get("Transfer-Encoding")?;
     let content_type = headers.get("Content-Type")?;
-    let dev_user = dev_user_header(&req, env)?;
 
     // Framing. Uploads have their own, larger bound (checked in `upload`); every
     // other asset route keeps the standard 64 KiB JSON/no-body rules.
@@ -290,22 +271,29 @@ pub async fn handle(mut req: Request, env: &Env, route: AssetRoute) -> Result<Re
         return json_resp(respond::reject(rej));
     }
 
-    let principal = match auth::authenticate(dev_user.as_deref()) {
-        Ok(p) => p,
-        Err(_) => return err(AssetError::Unauthenticated),
+    // Bearer token or session cookie (#65); the dev header only in the
+    // `insecure-dev-auth` test build, behind its runtime fence.
+    let Some(principal) = crate::auth_http::authenticate(&req, env).await? else {
+        return err(AssetError::Unauthenticated);
     };
+    // Cookie-borne writes must come from the Studio's own origin (CSRF).
+    if !crate::auth_http::csrf_ok(&req, env, &principal, &method) {
+        return json_resp(respond::json_error(403, "forbidden_origin", &[]));
+    }
     let (ws, site) = route.ids();
     let db = d1::database(env)?;
 
-    // Tenant boundary: membership of THIS workspace, else a uniform 403 (it does not
-    // reveal whether the workspace exists).
-    let Some(member) = d1::first(&db, &repo::membership_get(ws, principal.user_id)).await? else {
-        return err(AssetError::Forbidden);
+    // Tenant boundary: membership of THIS workspace (and, for a token, the token's own
+    // workspace), else a uniform 403 (it does not reveal whether the workspace exists).
+    let role = crate::auth_http::role_in(&db, ws, principal.user_id).await?;
+    let perm = if method == "GET" {
+        Permission::Read
+    } else {
+        Permission::Edit
     };
-    let role = member
-        .get("role")
-        .and_then(Value::as_str)
-        .and_then(Role::parse);
+    if authorize(&principal.credential, role, ws, perm).is_err() {
+        return err(AssetError::Forbidden);
+    }
     let Some(role) = role else {
         return err(AssetError::Forbidden);
     };
