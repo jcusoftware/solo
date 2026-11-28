@@ -38,3 +38,8 @@ sws-assets = { path = "../sws-assets" }
 sws-security = { path = "../sws-security" }
 sws-pack-hospitality = { path = "../../packs/hospitality/crate", optional = true }
 sws-codegen = { path = "../sws-codegen", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+rustls-native-certs = "0.8.5"
+rustls-rustcrypto = "0.1.0-pre.0"

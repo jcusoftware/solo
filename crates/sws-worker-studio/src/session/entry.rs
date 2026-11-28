@@ -24,7 +24,7 @@ use crate::session::{
 /// Durable Object binding name (`wrangler.studio.jsonc`).
 pub const BINDING: &str = "SITE_SESSION";
 
-fn stub(env: &Env, workspace_id: &str, site_id: &str) -> Result<worker::Stub> {
+pub(crate) fn stub(env: &Env, workspace_id: &str, site_id: &str) -> Result<worker::Stub> {
     env.durable_object(BINDING)?
         .id_from_name(&object_name(workspace_id, site_id))?
         .get_stub()

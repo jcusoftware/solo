@@ -232,6 +232,8 @@ jobs:
         run: npm run test:studio:publish
       - name: Studio Direct Upload deploy & rollback integration (ports 8800-8802, fake Cloudflare API, local D1; test-only dev-auth build)
         run: npm run test:studio:deploy
+      - name: Studio CLI sync & publish integration (native `solo` binary against local wrangler dev on 8804-8805)
+        run: npm run test:studio:cli
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Studio draft previews (release build; preview origin on a second loopback host name; own port 8796 and local state; Chromium framing/CSP checks)

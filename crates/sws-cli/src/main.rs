@@ -3,8 +3,10 @@
 mod assets_cmd;
 mod commands;
 mod edit;
+mod http_client;
 mod mcp;
 mod preview;
+mod studio_cmd;
 mod templates;
 #[cfg(test)]
 mod tests;
@@ -86,6 +88,11 @@ enum Command {
         site: String,
         #[command(subcommand)]
         action: assets_cmd::AssetsAction,
+    },
+    /// Studio control-plane sync, publish, status, and opt-in R2 onboarding.
+    Studio {
+        #[command(subcommand)]
+        action: studio_cmd::StudioAction,
     },
     /// Run the stdio JSON-RPC 2.0 MCP server.
     Mcp {
@@ -228,6 +235,10 @@ fn run() -> Result<ExitCode, String> {
             action,
         } => {
             assets_cmd::run(&store, &site, action)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Studio { action } => {
+            studio_cmd::run(action)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Mcp { root } => {

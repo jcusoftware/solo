@@ -38,7 +38,7 @@ use worker::{
 use crate::auth::policy::effective_role;
 use crate::model::Role;
 use crate::repo;
-use crate::respond::json_error;
+use crate::respond::{Resp, json_error};
 use crate::session::attach::{Attachment, Refresh, admit, merge_membership};
 use crate::session::authz::{
     Action, allowed_now, allows, delivery_allowed, needs_recheck, role_from_row,
@@ -51,11 +51,13 @@ use crate::session::engine::{
 use crate::session::fifo::Fifo;
 use crate::session::http::to_response;
 use crate::session::protocol::{self, CheckpointReason, ClientMessage};
+use crate::session::sha256::sha256_hex;
+use crate::session::sync::rejection_status;
 use crate::session::txn::run_in_tx;
 use crate::session::{
     CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_TOO_LARGE, CLOSE_UNAUTHENTICATED, CLOSE_UNSUPPORTED_DATA,
     H_CREDENTIAL, H_ROLE, H_SITE, H_USER, H_WORKSPACE, MAX_QUEUED_MESSAGES, PATH_REVISION,
-    PATH_REVOKE, PATH_SESSION, SessionConfig, alarm_after, is_valid_id,
+    PATH_REVOKE, PATH_SESSION, PATH_SYNC, SessionConfig, alarm_after, is_valid_id,
 };
 
 type Eng = Engine<DoStore>;
@@ -144,6 +146,8 @@ impl DurableObject for SiteSession {
         let method = req.method().to_string();
         match (method.as_str(), path.as_str()) {
             ("GET", PATH_SESSION) => self.accept(&req).await,
+            ("GET", PATH_SYNC) => self.http_sync_get(&req).await,
+            ("POST", PATH_SYNC) => self.http_sync_post(&mut req).await,
             ("POST", PATH_REVOKE) => {
                 #[derive(serde::Deserialize)]
                 struct Body {
@@ -1218,6 +1222,314 @@ impl SiteSession {
             "transaction_sync_available": available,
             "rows_after_failed_body": rows,
         }))
+    }
+
+    async fn http_sync_get(&self, req: &Request) -> Result<Response> {
+        let headers = req.headers();
+        let (Some(ws), Some(site)) = (
+            headers.get(H_WORKSPACE)?.filter(|s| is_valid_id(s)),
+            headers.get(H_SITE)?.filter(|s| is_valid_id(s)),
+        ) else {
+            return to_response(json_error(400, "bad_request", &[]));
+        };
+        let since_seq = match req
+            .url()
+            .ok()
+            .and_then(|u| {
+                u.query_pairs()
+                    .find(|(k, _)| k == "since_seq")
+                    .map(|(_, v)| v.to_string())
+            }) {
+            None => None,
+            Some(raw) => match raw.parse::<i64>() {
+                Ok(n) if n >= 0 => Some(n),
+                _ => {
+                    return to_response(Resp::new(
+                        400,
+                        Some(protocol::error(
+                            "invalid_message",
+                            "`since_seq` must be a non-negative integer",
+                            None,
+                            None,
+                        )),
+                        &[],
+                    ));
+                }
+            },
+        };
+        if self.engine.borrow().is_none() && !DoStore::initialised(&self.state.storage().sql()) {
+            return to_response(Resp::new(
+                404,
+                Some(protocol::error(
+                    "not_seeded",
+                    &Rejection::NotSeeded.message(),
+                    None,
+                    None,
+                )),
+                &[],
+            ));
+        }
+        let out = self
+            .with(Some((&ws, &site)), |e| {
+                if !e.seeded() {
+                    return Ok((
+                        404u16,
+                        protocol::error("not_seeded", &Rejection::NotSeeded.message(), None, None),
+                    ));
+                }
+                let rev_id = e
+                    .meta()
+                    .last_revision
+                    .as_ref()
+                    .map(|r| r.revision_id.clone());
+                let cp_seq = e.checkpoint_seq();
+                let resp = match e.sync_plan(since_seq)? {
+                    SyncPlan::Replay(entries) => {
+                        let mut v = protocol::replay(e.head_seq(), &entries);
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("checkpoint_seq".into(), serde_json::json!(cp_seq));
+                            obj.insert("revision_id".into(), serde_json::json!(rev_id));
+                        }
+                        v
+                    }
+                    SyncPlan::Full => {
+                        let doc = e.document_text().unwrap_or_default();
+                        let sha = sha256_hex(doc.as_bytes());
+                        let mut v = protocol::state(e.head_seq(), &doc, cp_seq);
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("revision_id".into(), serde_json::json!(rev_id));
+                            obj.insert("ir_sha256".into(), serde_json::json!(sha));
+                        }
+                        v
+                    }
+                };
+                Ok::<(u16, Value), EngineError>((200, resp))
+            })
+            .await?
+            .map_err(engine_err)?;
+        to_response(Resp::new(out.0, Some(out.1), &[]))
+    }
+
+    async fn http_sync_post(&self, req: &mut Request) -> Result<Response> {
+        let headers = req.headers();
+        let (Some(ws), Some(site)) = (
+            headers.get(H_WORKSPACE)?.filter(|s| is_valid_id(s)),
+            headers.get(H_SITE)?.filter(|s| is_valid_id(s)),
+        ) else {
+            return to_response(json_error(400, "bad_request", &[]));
+        };
+        let Some(user_id) = headers
+            .get(H_USER)?
+            .and_then(|s| s.parse::<i64>().ok())
+        else {
+            return to_response(json_error(401, "unauthenticated", &[]));
+        };
+        let Some(role) = headers.get(H_ROLE)?.and_then(|s| Role::parse(&s)) else {
+            return to_response(json_error(403, "forbidden", &[]));
+        };
+        let credential = headers.get(H_CREDENTIAL)?;
+
+        let turn = self.fifo.enter();
+        let _held = turn.await;
+
+        let text = req.text().await?;
+        let msg = match protocol::parse_client(&text) {
+            Ok(m) => m,
+            Err(pe) => {
+                return to_response(Resp::new(
+                    400,
+                    Some(protocol::error(
+                        pe.code,
+                        &pe.message,
+                        pe.op_id.as_deref(),
+                        pe.command_error.as_ref(),
+                    )),
+                    &[],
+                ));
+            }
+        };
+
+        let action = match &msg {
+            ClientMessage::Batch { .. } | ClientMessage::Undo { .. } => Action::Edit,
+            ClientMessage::Checkpoint { reason } => match reason {
+                CheckpointReason::Publish => Action::Publish,
+                _ => Action::Save,
+            },
+            ClientMessage::Seed { .. } => Action::Publish,
+            _ => {
+                return to_response(Resp::new(
+                    400,
+                    Some(protocol::error(
+                        "invalid_message",
+                        "message type is not valid for POST /sync",
+                        None,
+                        None,
+                    )),
+                    &[],
+                ));
+            }
+        };
+        if !allows(role, action) {
+            let err_msg = match action {
+                Action::Publish => "publishing requires the publisher or owner role",
+                _ => "your role does not allow this",
+            };
+            return to_response(Resp::new(
+                403,
+                Some(protocol::error("forbidden", err_msg, None, None)),
+                &[],
+            ));
+        }
+
+        let actor = Actor {
+            user_id,
+            client_id: credential
+                .as_deref()
+                .map_or_else(|| format!("http-u:{user_id}"), |c| format!("http-{c}")),
+        };
+        let now = now_ms();
+        match msg {
+            ClientMessage::Seed { document } => {
+                let res = self
+                    .with(Some((&ws, &site)), |e| {
+                        e.seed(&document, now).map(|()| {
+                            let text = e.document_text().unwrap_or_default();
+                            let sha = sha256_hex(text.as_bytes());
+                            (e.head_seq(), text, sha)
+                        })
+                    })
+                    .await?;
+                match res {
+                    Ok((head, text, sha)) => {
+                        let st = protocol::state(head, &text, None);
+                        self.broadcast(&st, None, now);
+                        let mut out = st;
+                        if let Some(obj) = out.as_object_mut() {
+                            obj.insert("ir_sha256".into(), serde_json::json!(sha));
+                        }
+                        to_response(Resp::new(200, Some(out), &[]))
+                    }
+                    Err(r) => to_response(Resp::new(
+                        rejection_status(&r),
+                        Some(conflict_or_error(None, &r)),
+                        &[],
+                    )),
+                }
+            }
+            ClientMessage::Batch {
+                op_id,
+                base_seq,
+                batch,
+            } => {
+                let res = self
+                    .with(Some((&ws, &site)), |e| {
+                        e.submit_batch(&actor, &op_id, base_seq, &batch, now)
+                    })
+                    .await?;
+                self.finish_http_submit(&op_id, res, now, user_id).await
+            }
+            ClientMessage::Undo { op_id, target_seq } => {
+                let res = self
+                    .with(Some((&ws, &site)), |e| {
+                        e.submit_undo(&actor, &op_id, target_seq, now)
+                    })
+                    .await?;
+                self.finish_http_submit(&op_id, res, now, user_id).await
+            }
+            ClientMessage::Checkpoint { reason } => {
+                self.flush_pending().await;
+                let out = self
+                    .with(Some((&ws, &site)), |e| {
+                        let doc_sha = e
+                            .document_text()
+                            .map(|t| sha256_hex(t.as_bytes()))
+                            .unwrap_or_default();
+                        e.take_checkpoint(user_id, reason, now)
+                            .map(|outcome| (outcome, doc_sha))
+                    })
+                    .await?;
+                match out {
+                    Ok((CheckpointOutcome::Taken(p), _)) => {
+                        let flushed = self.flush_pending().await;
+                        let status = match flushed {
+                            Flush::Written => "written",
+                            Flush::Abandoned => "abandoned",
+                            _ => "pending",
+                        };
+                        let mut v =
+                            protocol::checkpoint(p.seq, &p.revision_id, status, reason.as_str());
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("ir_sha256".into(), serde_json::json!(p.ir_sha256));
+                        }
+                        if !matches!(flushed, Flush::Written | Flush::Abandoned) {
+                            self.broadcast(&v, None, now_ms());
+                        }
+                        self.ensure_alarm().await;
+                        let http_status = if flushed == Flush::Written { 200 } else { 503 };
+                        to_response(Resp::new(http_status, Some(v), &[]))
+                    }
+                    Ok((CheckpointOutcome::Pending(p), _)) => {
+                        let mut v = protocol::checkpoint(
+                            p.seq,
+                            &p.revision_id,
+                            "pending",
+                            p.reason.as_str(),
+                        );
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("ir_sha256".into(), serde_json::json!(p.ir_sha256));
+                        }
+                        to_response(Resp::new(503, Some(v), &[]))
+                    }
+                    Ok((CheckpointOutcome::Unchanged { seq, revision_id }, doc_sha)) => {
+                        let mut v =
+                            protocol::checkpoint(seq, &revision_id, "unchanged", reason.as_str());
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("ir_sha256".into(), serde_json::json!(doc_sha));
+                        }
+                        to_response(Resp::new(200, Some(v), &[]))
+                    }
+                    Err(r) => to_response(Resp::new(
+                        rejection_status(&r),
+                        Some(conflict_or_error(None, &r)),
+                        &[],
+                    )),
+                }
+            }
+            _ => to_response(json_error(400, "bad_request", &[])),
+        }
+    }
+
+    async fn finish_http_submit(
+        &self,
+        op_id: &str,
+        res: std::result::Result<Committed, Rejection>,
+        now: i64,
+        user_id: i64,
+    ) -> Result<Response> {
+        match res {
+            Ok(c) => {
+                let head = c.seq.max(self.with(None, |e| e.head_seq()).await?);
+                if let Some(entry) = &c.entry {
+                    self.broadcast(&protocol::entry(entry), None, now);
+                    self.maybe_auto_checkpoint(user_id, now).await;
+                }
+                to_response(Resp::new(
+                    200,
+                    Some(protocol::ack(op_id, c.seq, c.duplicate, c.rebased, head)),
+                    &[],
+                ))
+            }
+            Err(r) => {
+                if let Rejection::Unavailable(m) = &r {
+                    console_error!("{m}");
+                }
+                to_response(Resp::new(
+                    rejection_status(&r),
+                    Some(conflict_or_error(Some(op_id), &r)),
+                    &[],
+                ))
+            }
+        }
     }
 }
 

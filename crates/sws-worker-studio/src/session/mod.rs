@@ -27,6 +27,7 @@ pub mod rebase;
 pub mod sha256;
 pub mod sql;
 pub mod store;
+pub mod sync;
 pub mod txn;
 
 #[cfg(all(target_arch = "wasm32", feature = "insecure-dev-auth"))]
@@ -39,6 +40,8 @@ pub mod entry;
 pub mod http;
 #[cfg(target_arch = "wasm32")]
 pub mod object;
+#[cfg(target_arch = "wasm32")]
+pub mod sync_http;
 
 #[cfg(test)]
 mod tests;
@@ -242,6 +245,7 @@ pub const H_ROLE: &str = "X-Sws-Internal-Role";
 pub const H_CREDENTIAL: &str = "X-Sws-Internal-Credential";
 /// Internal DO paths.
 pub const PATH_SESSION: &str = "/session";
+pub const PATH_SYNC: &str = "/internal/sync";
 pub const PATH_REVOKE: &str = "/internal/revoke";
 /// `GET /internal/revision?id=<revision_id>`: the snapshot bytes of a checkpoint (#64).
 pub const PATH_REVISION: &str = "/internal/revision";

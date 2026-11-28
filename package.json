@@ -35,6 +35,7 @@
     "test:studio:previews": "node scripts/test-studio-previews.mjs",
     "test:studio:publish": "node --test --test-timeout=300000 tests/integration/studio-publish.test.mjs",
     "test:studio:deploy": "node scripts/test-studio-deploy.mjs",
+    "test:studio:cli": "node scripts/test-studio-cli.mjs",
     "check:studio:release": "node scripts/check-studio-release.mjs",
     "build": "npm run build:wasm:release",
     "build:wasm:dev": "node scripts/build-wasm.mjs --profile dev",
