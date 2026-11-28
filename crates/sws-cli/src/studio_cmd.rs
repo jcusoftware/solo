@@ -874,18 +874,53 @@ fn cmd_publish(
     let mut bundle_status = "skipped";
     if upload_bundle && !manifest_sha.is_empty() {
         let bundle_url = format!("{base_url}/api/sites/{ws}/{site}/publish/bundles/{manifest_sha}");
-        let bundle_bytes = serde_json::to_vec(&json!({
-            "format": "sws-artifact-bundle/1",
-            "manifest_sha256": manifest_sha,
-            "files": bundle_files,
+        let worker_bytes = b"export default { fetch() { return new Response('ok'); } };";
+        let file_headers: Vec<Value> = bundle_files
+            .iter()
+            .map(|(path, content)| {
+                json!({
+                    "path": path,
+                    "size": u64::try_from(content.len()).unwrap_or(u64::MAX),
+                })
+            })
+            .collect();
+        let header_json = serde_json::to_vec(&json!({
+            "revision_id": rev_id,
+            "revision_sha256": rev_sha,
+            "compiler": {
+                "name": "sws-cli",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "schema_level": 0,
+            "worker": {
+                "main_module": "index.js",
+                "modules": [{
+                    "name": "index.js",
+                    "content_type": "application/javascript+module",
+                    "size": worker_bytes.len() as u64,
+                }],
+            },
+            "files": file_headers,
         }))
-        .unwrap_or_default();
+        .map_err(|e| format!("failed to encode bundle header: {e}"))?;
+        let header_len = u32::try_from(header_json.len())
+            .map_err(|_| "bundle header exceeds u32 length".to_string())?;
+        let mut bundle_bytes = Vec::with_capacity(
+            12 + header_json.len() + worker_bytes.len() + total_bytes as usize,
+        );
+        bundle_bytes.extend_from_slice(b"SWSBNDL1");
+        bundle_bytes.extend_from_slice(&header_len.to_be_bytes());
+        bundle_bytes.extend_from_slice(&header_json);
+        bundle_bytes.extend_from_slice(worker_bytes);
+        for content in bundle_files.values() {
+            bundle_bytes.extend_from_slice(content.as_bytes());
+        }
         let b_resp = http_client::request(
             "PUT",
             &bundle_url,
             Some(&token),
             Some(&bundle_bytes),
-            Some("application/json"),
+            Some("application/octet-stream"),
         )?;
         bundle_status = if (200..300).contains(&b_resp.status) {
             "uploaded"

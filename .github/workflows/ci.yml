@@ -230,10 +230,16 @@ jobs:
         # Cron Trigger handler (wrangler dev --test-scheduled) and a local Queue consumer; each wrangler
         # dev runs in its own process group, which the test stops itself.
         run: npm run test:studio:publish
+      - name: Studio Direct Upload deploy & rollback integration (ports 8800-8802, fake Cloudflare API, local D1; test-only dev-auth build)
+        run: npm run test:studio:deploy
       - name: Studio CLI sync & publish integration (native `solo` binary against local wrangler dev on 8804-8805)
         run: npm run test:studio:cli
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
+      - name: Studio draft previews (release build; preview origin on a second loopback host name; own port 8796 and local state; Chromium framing/CSP checks)
+        # Real auth only (no dev-auth build). Needs Chromium (installed above). Starts wrangler dev
+        # in its own process group and stops it itself.
+        run: npm run test:studio:previews
       - name: Accessibility + header gates (axe, WCAG 2.2 AA)
         run: npm run test:a11y
         env:

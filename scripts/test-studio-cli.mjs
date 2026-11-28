@@ -357,6 +357,7 @@ async function main() {
     assert.equal(pubJson.server_verified, false);
     assert.equal(pubJson.stages.compile.status, 'ok');
     assert.equal(pubJson.stages.upload.status, 'enqueued');
+    assert.equal(pubJson.stages.upload.bundle, 'uploaded');
     const jobId = pubJson.job.job_id;
     assert.ok(jobId, 'expected job_id from publish');
 
