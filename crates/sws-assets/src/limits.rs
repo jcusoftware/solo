@@ -153,6 +153,35 @@ pub const EXPORT: GeneratedPolicy = GeneratedPolicy {
 /// never traded against, [`AssetLimits::max_workspace_bytes`].
 pub const MAX_WORKSPACE_GENERATED_BYTES: u64 = 40 * MIB;
 
+/// Bounds for a CLI-compiled publish artifact manifest (#64). Shared here so the CLI
+/// (#68) can refuse an oversized build before it ever contacts Studio. Provisional.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactLimits {
+    /// Files listed in one manifest.
+    pub max_files: u32,
+    /// Largest single file. Equal to the largest asset any backend accepts, so every
+    /// stored asset can also be published.
+    pub max_file_bytes: u64,
+    /// Sum of every file's size.
+    pub max_total_bytes: u64,
+    /// Longest relative file path, in bytes.
+    pub max_path_bytes: usize,
+    /// Path segments (directories plus the file name).
+    pub max_path_depth: usize,
+    /// The manifest request body (and the canonical manifest stored in D1, far
+    /// below [`D1_ROW_LIMIT_ASSUMED_BYTES`]).
+    pub max_manifest_bytes: usize,
+}
+
+pub const PUBLISH_ARTIFACT: ArtifactLimits = ArtifactLimits {
+    max_files: 1000,
+    max_file_bytes: R2_OPT_IN.max_asset_bytes,
+    max_total_bytes: 100 * MIB,
+    max_path_bytes: 256,
+    max_path_depth: 16,
+    max_manifest_bytes: 256 * KIB as usize,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +218,19 @@ mod tests {
             assert!(MAX_DATABASE_BLOB_BYTES >= MAX_WORKSPACE_GENERATED_BYTES);
         }
         assert_eq!(R2_OPT_IN.max_database_bytes, u64::MAX);
+    }
+
+    #[test]
+    fn publish_artifact_limits_are_consistent() {
+        let a = PUBLISH_ARTIFACT;
+        const {
+            assert!(PUBLISH_ARTIFACT.max_file_bytes <= PUBLISH_ARTIFACT.max_total_bytes);
+            assert!(PUBLISH_ARTIFACT.max_file_bytes >= CARDLESS_D1.max_asset_bytes);
+            assert!(PUBLISH_ARTIFACT.max_file_bytes >= R2_OPT_IN.max_asset_bytes);
+            assert!((PUBLISH_ARTIFACT.max_manifest_bytes as u64) * 4 <= D1_ROW_LIMIT_ASSUMED_BYTES);
+        }
+        assert!(a.max_path_depth * 2 <= a.max_path_bytes);
+        assert!(a.max_files > MAX_PAGES_PER_SITE);
     }
 
     #[test]

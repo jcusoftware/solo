@@ -8,10 +8,13 @@
 //! Object command sessions (#62) live in [`session`], reached through
 //! `GET /api/sites/{workspace_id}/{site_id}/session` (WebSocket). GitHub OAuth
 //! sessions, invitations and scoped CLI/MCP tokens (#65) live in [`auth`]
-//! (pure) and `auth_http` (wasm), and guard every protected route. The publish
-//! pipeline (#64/#66) is out of scope. Draft previews (#67, [`preview`]) are
-//! served by this Worker on a SEPARATE host (`STUDIO_PREVIEW_ORIGIN`) that
-//! reaches only the preview routes, with the `preview` header profile.
+//! (pure) and `auth_http` (wasm), and guard every protected route. Asynchronous
+//! publish jobs (#64) live in [`publish`]: `POST|GET /api/sites/{workspace_id}/{site_id}/publish[/{job_id}]`,
+//! driven off the request path by the Cron Trigger (`scheduled` below) and, when a
+//! Queue is bound, the `queue` consumer. Cloudflare upload/activation (#66) is out
+//! of scope. Draft previews (#67, [`preview`]) are served by this Worker on a
+//! SEPARATE host (`STUDIO_PREVIEW_ORIGIN`) that reaches only the preview routes,
+//! with the `preview` header profile.
 //!
 //! Write-frequency invariant: the registry is written only on explicit
 //! save/publish/checkpoint actions, never once per edit. There is deliberately
@@ -32,6 +35,7 @@ pub mod auth_repo;
 pub mod bounds;
 pub mod model;
 pub mod preview;
+pub mod publish;
 pub mod repo;
 pub mod respond;
 pub mod routes;
@@ -49,7 +53,10 @@ pub mod auth_http;
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use futures_util::StreamExt;
-    use worker::{Context, Env, Request, Response, Result, console_error, event};
+    use worker::{
+        Context, Env, MessageBatch, MessageExt, Request, Response, Result, ScheduleContext,
+        ScheduledEvent, console_error, console_log, event,
+    };
 
     use sws_security::headers::{HeaderProfile, with_profile_headers};
     use sws_security::worker_utils::var;
@@ -71,6 +78,48 @@ mod wasm {
     fn start() {
         #[cfg(feature = "console_error_panic_hook")]
         console_error_panic_hook::set_once();
+    }
+
+    /// Cron Trigger: the Workers Free (queue-less) driver and the recovery sweep for
+    /// every deployment. Drives due publish jobs (queued, backing off, or whose
+    /// driver's lease expired), capped per run. Asset reconciliation stays on its
+    /// authenticated per-site route (it needs a site and an R2 listing cursor).
+    #[event(scheduled)]
+    async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+        let opts = crate::publish::drive::DriveOptions::from_env(&env);
+        match crate::publish::drive::run_due(&env, &opts).await {
+            Ok(report) => console_log!("publish sweep: {report}"),
+            Err(e) => console_error!("publish sweep failed: {e}"),
+        }
+    }
+
+    /// Optional Queue consumer (only when a `PUBLISH_QUEUE` consumer is configured).
+    /// Each message is a pointer; the same driver as the Cron Trigger runs it. A
+    /// malformed message is acknowledged and dropped; a D1 error retries the message
+    /// (and the Cron Trigger recovers the job regardless).
+    #[event(queue)]
+    async fn queue(batch: MessageBatch<serde_json::Value>, env: Env, _ctx: Context) -> Result<()> {
+        let opts = crate::publish::drive::DriveOptions::from_env(&env);
+        for msg in batch.raw_iter() {
+            let pointer = msg
+                .body()
+                .as_string()
+                .as_deref()
+                .and_then(crate::publish::parse_pointer);
+            let Some(p) = pointer else {
+                console_error!("dropping a malformed publish queue message");
+                msg.ack();
+                continue;
+            };
+            match crate::publish::drive::drive_pointer(&env, &p, &opts).await {
+                Ok(_) => msg.ack(),
+                Err(e) => {
+                    console_error!("publish job {}/{}: {e}", p.workspace_id, p.job_id);
+                    msg.retry();
+                }
+            }
+        }
+        Ok(())
     }
 
     #[event(fetch)]
@@ -122,6 +171,21 @@ mod wasm {
                 HeaderProfile::Studio,
                 None,
             );
+        }
+        // Publish routes (#64) carry a manifest body larger than the 64 KiB JSON bound
+        // and are authorized by `publish::authz::require_publish`.
+        if let Some(route) = url
+            .as_ref()
+            .and_then(|u| crate::publish::parse_route(u.path()))
+        {
+            let resp = match crate::publish::http::handle(req, &env, route).await {
+                Ok(r) => r,
+                Err(e) => {
+                    console_error!("unhandled publish error: {e}");
+                    to_response(respond::internal_error())?
+                }
+            };
+            return with_profile_headers(resp, HeaderProfile::Studio, None);
         }
         // Asset routes (#63) are authenticated, tenant-scoped, and carry uploads
         // larger than the 64 KiB JSON bound, so they are decided before `handle`.

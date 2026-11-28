@@ -5,7 +5,9 @@
 // the asset-store test hooks (X-Sws-Dev-Now, -Commit-Skew, -Batch, -Fail-Put,
 // -Fail-Batch-After-Commit, -Hold-Slot; #63) and the /api/dev/ session test routes, so it exists
 // only for the local integration tests (scripts/test-studio-sessions.mjs with
-// wrangler.studio-sessions.jsonc, and tests/integration/studio-assets.test.mjs), each building
+// wrangler.studio-sessions.jsonc, tests/integration/studio-assets.test.mjs and
+// tests/integration/studio-publish.test.mjs, whose /api/dev/publish-drive hook injects
+// publish-job faults; #64), each building
 // into a SEPARATE build-* directory. This one script is the union of the former #63 guard
 // (scripts/check-studio-no-dev-auth.mjs) and the #62 guard. Static checks (part of
 // `npm run verify`, no build needed):
@@ -46,7 +48,7 @@ export const DEV_HEADERS = [
 /** package.json scripts allowed to mention the feature (test and lint only). */
 export const ALLOWED_SCRIPTS = new Set(['test:studio:sessions', 'test:studio:assets', 'lint:clippy']);
 /** Local runners that start a dev-auth Worker; each must open the runtime fence itself. */
-export const DEV_RUNNERS = ['scripts/test-studio-sessions.mjs', 'tests/integration/studio-assets.test.mjs'];
+export const DEV_RUNNERS = ['scripts/test-studio-sessions.mjs', 'tests/integration/studio-assets.test.mjs', 'tests/integration/studio-publish.test.mjs'];
 
 const WALK_SKIP = new Set(['target', 'node_modules', '.git', 'build', '.wrangler']);
 

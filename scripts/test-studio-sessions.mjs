@@ -30,6 +30,7 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { createConnection } from 'node:net';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -150,9 +151,52 @@ function d1File(sql) {
   }
 }
 
+/** fetch() on a FRESH connection (`agent: false`), returning a standard `Response`. Like
+ *  scripts/test-studio-auth.mjs: the first request after local wrangler D1/R2 writes can
+ *  otherwise reuse a pooled keep-alive socket the server already closed and fail with
+ *  `fetch failed`. Transport only: bodies, headers and statuses are what fetch would see. */
+function freshFetch(url, { method = 'GET', headers = {}, body, signal } = {}) {
+  return new Promise((resolveP, reject) => {
+    const u = new URL(url);
+    const h = { ...headers };
+    const has = (name) => Object.keys(h).some((k) => k.toLowerCase() === name);
+    const stream = body && typeof body.getReader === 'function' ? body : null;
+    let bytes = null;
+    if (!stream && body !== undefined && body !== null) bytes = typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
+    if (bytes && !has('content-length')) h['Content-Length'] = bytes.length;
+    if (!stream && !bytes && ['POST', 'PUT'].includes(method) && !has('content-length')) h['Content-Length'] = 0;
+    const req = http.request({ host: u.hostname, port: u.port, path: `${u.pathname}${u.search}`, method, headers: h, agent: false }, (r) => {
+      const out = new Headers();
+      for (let i = 0; i < r.rawHeaders.length; i += 2) out.append(r.rawHeaders[i], r.rawHeaders[i + 1]);
+      const empty = method === 'HEAD' || [204, 304].includes(r.statusCode);
+      if (empty) r.resume();
+      if (signal) signal.addEventListener('abort', () => r.destroy(signal.reason), { once: true });
+      resolveP(new Response(empty ? null : Readable.toWeb(r), { status: r.statusCode, statusText: r.statusMessage, headers: out }));
+    });
+    req.on('error', reject);
+    if (signal) {
+      if (signal.aborted) return req.destroy(signal.reason);
+      signal.addEventListener('abort', () => req.destroy(signal.reason), { once: true });
+    }
+    if (stream) {
+      (async () => {
+        const reader = stream.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          req.write(value);
+        }
+        req.end();
+      })().catch((e) => req.destroy(e));
+    } else {
+      req.end(bytes ?? undefined);
+    }
+  });
+}
+
 /** Test-only routes of the dev-auth build (loopback + SWS_INSECURE_DEV_AUTH only). */
 async function dev(method, path) {
-  const r = await fetch(`${HTTP}/api/dev/${path}`, { method });
+  const r = await freshFetch(`${HTTP}/api/dev/${path}`, { method });
   return { status: r.status, body: await r.json().catch(() => null) };
 }
 
@@ -162,7 +206,7 @@ const revisions = (site) =>
 /** Raw HTTP request that may carry Upgrade headers (fetch() forbids them). Resolves {status, headers, body}. */
 function rawGet(path, headers = {}, method = 'GET', body = null) {
   return new Promise((res, rej) => {
-    const req = http.request({ host: '127.0.0.1', port: PORT, path, method, headers }, (r) => {
+    const req = http.request({ host: '127.0.0.1', port: PORT, path, method, headers, agent: false }, (r) => {
       let text = '';
       r.on('data', (d) => (text += d));
       r.on('end', () => res({ status: r.statusCode, headers: r.headers, body: text }));
@@ -340,13 +384,13 @@ async function phase1() {
   const persist = { ops: [] };
 
   await test('route gates: 426 without upgrade, 405, 401 unauthenticated, 403 non-member, 404 unknown site', async () => {
-    const plain = await fetch(`${HTTP}/api/sites/ws-a/s-auth/session`);
+    const plain = await freshFetch(`${HTTP}/api/sites/ws-a/s-auth/session`);
     assert.equal(plain.status, 426);
     assert.equal((await plain.json()).error, 'upgrade_required');
     assert.equal(plain.headers.get('cache-control'), 'no-store');
     assert.ok(plain.headers.get('strict-transport-security'));
     assertStudioHeaders((k) => plain.headers.get(k), 'the 426');
-    const post = await fetch(`${HTTP}/api/sites/ws-a/s-auth/session`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
+    const post = await freshFetch(`${HTTP}/api/sites/ws-a/s-auth/session`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
     assert.equal(post.status, 405);
     const p = '/api/sites/ws-a/s-auth/session';
     const noAuth = await upgrade(p);

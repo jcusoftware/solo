@@ -21,7 +21,9 @@ sws-ir = { path = "../sws-ir" }
 sws-security = { path = "../sws-security" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-worker = { version = "0.9", features = ["d1"] }
+# `queue`: the optional publish Queue producer/consumer (#64). worker-sys and
+# worker-macros already build with it, so it adds no crate to Cargo.lock.
+worker = { version = "0.9", features = ["d1", "queue"] }
 # Streamed request-body reads with a hard byte cap.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 console_error_panic_hook = { version = "0.1", optional = true }
