@@ -118,7 +118,7 @@ async fn publish_drive(req: &Request, env: &Env) -> Result<crate::respond::Resp>
             return Ok(json_error(400, "bad_request", &[]));
         }
         let db = crate::d1::database(env)?;
-        let out = drive::drive_one(&db, w, s, j, None, &opts).await?;
+        let out = drive::drive_one(env, &db, w, s, j, None, &opts).await?;
         return Ok(json_ok(json!({ "jobs": [out.to_json()] })));
     }
     Ok(json_ok(drive::run_due(env, &opts).await?))
