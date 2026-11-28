@@ -36,13 +36,25 @@ pub struct Resp {
 
 impl Resp {
     pub(crate) fn new(status: u16, body: Option<Value>, extra: &[(&str, &str)]) -> Self {
+        Self::with_profile(status, body, extra, HeaderProfile::Studio)
+    }
+
+    /// Like [`Resp::new`] with another security-header profile. Only the
+    /// invitation form uses this (`studio-form`, see
+    /// [`crate::auth::routes::AuthRoute::header_profile`]).
+    pub(crate) fn with_profile(
+        status: u16,
+        body: Option<Value>,
+        extra: &[(&str, &str)],
+        profile: HeaderProfile,
+    ) -> Self {
         let mut headers: Vec<(String, String)> = vec![
             ("Content-Type".into(), "application/json".into()),
             ("Cache-Control".into(), API_CACHE_CONTROL.into()),
         ];
         headers.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         headers.extend(
-            HeaderProfile::Studio
+            profile
                 .headers()
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string())),
@@ -76,6 +88,11 @@ pub fn reject(r: Reject) -> Resp {
 /// itself (the session routes).
 pub fn json_error(status: u16, code: &str, extra: &[(&str, &str)]) -> Resp {
     Resp::new(status, Some(error_body(code)), extra)
+}
+
+/// A bodyless response (the caller supplies an HTML body) with `profile`.
+pub fn page(status: u16, extra: &[(&str, &str)], profile: HeaderProfile) -> Resp {
+    Resp::with_profile(status, None, extra, profile)
 }
 
 /// JSON 200 body with the standard header set (internal glue and test-only routes).
@@ -327,5 +344,20 @@ mod tests {
             internal_error().header("Cross-Origin-Resource-Policy"),
             Some("same-origin")
         );
+    }
+
+    #[test]
+    fn page_carries_exactly_the_requested_profile_and_keeps_set_cookie() {
+        for profile in [HeaderProfile::Studio, HeaderProfile::StudioForm] {
+            let r = page(200, &[("Set-Cookie", "a=1; Path=/")], profile);
+            let mut want: Vec<(String, String)> = vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("Cache-Control".into(), "no-store".into()),
+                ("Set-Cookie".into(), "a=1; Path=/".into()),
+            ];
+            want.extend(profile.resolve(None));
+            assert_eq!(r.headers, want, "{}", profile.name());
+            assert_eq!(r.body, None);
+        }
     }
 }

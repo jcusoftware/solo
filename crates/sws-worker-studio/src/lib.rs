@@ -6,12 +6,13 @@
 //! The bounded asset store (#63: [`assets_api`], [`asset_repo`], `sws-assets`)
 //! serves `/api/sites/{workspace_id}/{site_id}/assets[/...]`. Per-site Durable
 //! Object command sessions (#62) live in [`session`], reached through
-//! `GET /api/sites/{workspace_id}/{site_id}/session` (WebSocket). Asynchronous
+//! `GET /api/sites/{workspace_id}/{site_id}/session` (WebSocket). GitHub OAuth
+//! sessions, invitations and scoped CLI/MCP tokens (#65) live in [`auth`]
+//! (pure) and `auth_http` (wasm), and guard every protected route. Asynchronous
 //! publish jobs (#64) live in [`publish`]: `POST|GET /api/sites/{workspace_id}/{site_id}/publish[/{job_id}]`,
 //! driven off the request path by the Cron Trigger (`scheduled` below) and, when a
-//! Queue is bound, the `queue` consumer. Sessions/OAuth (#65) and Cloudflare
-//! upload/activation (#66) are out of scope; [`auth`] keeps every protected route
-//! closed until #65.
+//! Queue is bound, the `queue` consumer. Cloudflare upload/activation (#66) is out
+//! of scope.
 //!
 //! Write-frequency invariant: the registry is written only on explicit
 //! save/publish/checkpoint actions, never once per edit. There is deliberately
@@ -28,6 +29,7 @@
 pub mod asset_repo;
 pub mod assets_api;
 pub mod auth;
+pub mod auth_repo;
 pub mod bounds;
 pub mod model;
 pub mod publish;
@@ -41,6 +43,9 @@ pub mod d1;
 
 #[cfg(target_arch = "wasm32")]
 mod assets_http;
+
+#[cfg(target_arch = "wasm32")]
+pub mod auth_http;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
@@ -147,6 +152,28 @@ mod wasm {
                 }
             };
             return with_profile_headers(resp, HeaderProfile::Studio, None);
+        }
+        // Authentication, token and membership routes (#65) read small JSON or
+        // form bodies and answer HTML/redirects, so they are decided before `handle`.
+        if let Some(route) = req
+            .url()
+            .ok()
+            .and_then(|u| crate::auth::routes::parse(req.method().as_ref(), u.path()))
+        {
+            return match crate::auth_http::handle(req, &env, route).await {
+                Ok(r) => Ok(r),
+                Err(e) => {
+                    console_error!(
+                        "unhandled auth error: {}",
+                        crate::auth::secret::redact(&e.to_string())
+                    );
+                    with_profile_headers(
+                        to_response(respond::internal_error())?,
+                        HeaderProfile::Studio,
+                        None,
+                    )
+                }
+            };
         }
         let resp = match handle(req, &env).await {
             Ok(r) => r,

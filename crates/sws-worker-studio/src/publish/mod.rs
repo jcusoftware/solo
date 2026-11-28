@@ -14,8 +14,8 @@
 //! Pure, host-tested modules: [`job`] (state machine), [`manifest`] (CLI artifact
 //! schema and validation), [`sql`] (statements); this file holds routing, the queue
 //! pointer, phase-step decisions and response shapes. Authorization for every
-//! publish route goes through the one seam `authz::require_publish` (#65 extends it
-//! with token scopes). Server-side compilation is not implemented (maintainer
+//! publish route goes through the one seam `authz::require_publish`, which applies
+//! the #65 policy through [`authorize_publish`]. Server-side compilation is not implemented (maintainer
 //! decision on #59: the CLI compile-and-upload path is the v0.2.0 default); a
 //! `server` job fails in `compiling`. Upload to Cloudflare and activation are #66:
 //! the `uploading` phase is the seam (`drive::stage_for_activation`) and today only
@@ -39,9 +39,10 @@ use sws_assets::limits::ArtifactLimits;
 use sws_assets::time::{parse_utc_text, utc_text};
 use sws_assets::validate::is_id;
 
+use crate::auth::Credential;
+use crate::auth::policy::{self, Permission};
 use crate::model::Role;
 use crate::respond::Resp;
-use crate::session::authz::{Action, allows};
 use job::{JobState, MAX_ATTEMPTS, Origin, Phase, StepError};
 
 /// Optional Queue producer binding. Absent (the cardless default): the Cron Trigger
@@ -64,10 +65,17 @@ pub const QUERIES_PER_RUN: u32 = 2;
 /// Assumed Workers Free cap on D1 queries per invocation (provisional, #59/#69).
 pub const ASSUMED_FREE_QUERIES_PER_INVOCATION: u32 = 50;
 
-/// Owner and publisher may publish (the same policy as a session publish checkpoint,
-/// `session::authz`). Editors may not.
-pub fn can_publish(role: Role) -> bool {
-    allows(role, Action::Publish)
+/// The publish decision for every publish route (enqueue and job status): the #65
+/// policy with [`Permission::Publish`]. `role` is the caller's current membership in
+/// `workspace_id` (`None` = not a member). Owner and publisher roles only; a token
+/// must be bound to this workspace with scope `publish` or `activate`; a browser
+/// session must be fresh (signed in within the 15-minute re-auth window).
+pub fn authorize_publish(
+    credential: &Credential,
+    role: Option<Role>,
+    workspace_id: &str,
+) -> Result<(), policy::Denied> {
+    policy::authorize(credential, role, workspace_id, Permission::Publish)
 }
 
 /// `STUDIO_SERVER_COMPILE=1`. Default off.
@@ -311,6 +319,14 @@ pub enum Enqueued {
     Busy,
 }
 
+/// Idempotency check BEFORE any other enqueue work: an existing job for the same
+/// (workspace, site, request id) decides the answer on its own, so a reused request
+/// id with another manifest is always `409 idempotency_conflict`, whatever that
+/// manifest's revision is (missing, mismatched or valid). `None` = no such job yet.
+pub fn existing_outcome(row: Option<&Value>, digest: &str, revision_id: &str) -> Option<Enqueued> {
+    row.map(|r| enqueue_outcome(false, Some(r), digest, revision_id))
+}
+
 pub fn enqueue_outcome(
     inserted: bool,
     row: Option<&Value>,
@@ -496,10 +512,65 @@ mod tests {
     }
 
     #[test]
-    fn only_owner_and_publisher_may_publish() {
-        assert!(can_publish(Role::Owner));
-        assert!(can_publish(Role::Publisher));
-        assert!(!can_publish(Role::Editor));
+    fn publish_authorization_uses_the_auth_policy() {
+        use crate::model::Scope;
+        let token = |scope, ws: &str| Credential::Token {
+            id: "1".repeat(24),
+            workspace_id: ws.into(),
+            scope,
+        };
+        let session = |fresh| Credential::Session {
+            id: "0".repeat(24),
+            fresh,
+        };
+        // Same role rule as a session publish checkpoint.
+        for role in Role::ALL {
+            assert_eq!(
+                authorize_publish(&session(true), Some(*role), "ws-a").is_ok(),
+                crate::session::authz::allows(*role, crate::session::authz::Action::Publish),
+                "{role:?}"
+            );
+        }
+        // Edit-only tokens never publish, whatever the role.
+        for role in Role::ALL {
+            assert_eq!(
+                authorize_publish(&token(Scope::Edit, "ws-a"), Some(*role), "ws-a"),
+                Err(if *role == Role::Editor {
+                    policy::Denied::Role
+                } else {
+                    policy::Denied::Scope
+                })
+            );
+        }
+        for scope in [Scope::Publish, Scope::Activate] {
+            assert_eq!(
+                authorize_publish(&token(scope, "ws-a"), Some(Role::Publisher), "ws-a"),
+                Ok(())
+            );
+            // A token from another workspace, even for a member of this one.
+            assert_eq!(
+                authorize_publish(&token(scope, "ws-b"), Some(Role::Owner), "ws-a"),
+                Err(policy::Denied::Forbidden)
+            );
+        }
+        assert_eq!(
+            authorize_publish(&session(true), Some(Role::Owner), "ws-a"),
+            Ok(())
+        );
+        assert_eq!(
+            authorize_publish(&session(true), Some(Role::Editor), "ws-a"),
+            Err(policy::Denied::Role)
+        );
+        // Past the 15-minute re-auth window (#60): 401 reauth_required.
+        assert_eq!(
+            authorize_publish(&session(false), Some(Role::Owner), "ws-a"),
+            Err(policy::Denied::ReauthRequired)
+        );
+        assert_eq!(policy::Denied::ReauthRequired.status(), 401);
+        assert_eq!(
+            authorize_publish(&session(true), None, "ws-a"),
+            Err(policy::Denied::Forbidden)
+        );
     }
 
     #[test]
@@ -663,6 +734,27 @@ mod tests {
             Enqueued::Conflict
         );
         assert_eq!(enqueue_outcome(false, None, H, "rev-1"), Enqueued::Busy);
+    }
+
+    #[test]
+    fn idempotency_is_decided_before_the_revision_check() {
+        let r = row("queued", Value::Null);
+        assert_eq!(existing_outcome(None, H, "rev-1"), None);
+        assert_eq!(
+            existing_outcome(Some(&r), H, "rev-1"),
+            Some(Enqueued::Existing)
+        );
+        // Another manifest under the same request id: a conflict, even when the new
+        // manifest names a revision that does not exist (the handler never gets to
+        // look it up) or the same revision with another digest.
+        assert_eq!(
+            existing_outcome(Some(&r), H, "rev-missing"),
+            Some(Enqueued::Conflict)
+        );
+        assert_eq!(
+            existing_outcome(Some(&r), &"c".repeat(64), "rev-1"),
+            Some(Enqueued::Conflict)
+        );
     }
 
     #[test]

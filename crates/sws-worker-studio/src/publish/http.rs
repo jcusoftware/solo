@@ -1,10 +1,13 @@
 //! wasm glue for the publish routes. Decisions live in the pure [`super`] modules;
 //! this file reads the request, performs the D1 I/O and adapts responses.
 //!
-//! Order (fixed): method (405), framing (411/413/414/415), authenticate (401),
-//! [`super::authz::require_publish`] (403/404), then the body (read under the cap)
-//! and the route. Enqueue validates the manifest and the revision, writes the job
-//! and its artifact in one D1 batch and answers `202`; it never compiles. It then
+//! Order (fixed): method (405), framing (411/413/414/415), then
+//! [`super::authz::require_publish`] (authenticate 401, cookie Origin 403, #65 policy
+//! 401/403, site 404), then the body (read under the cap) and the route. Enqueue
+//! validates the manifest, answers an existing job for the same request id (or
+//! `409 idempotency_conflict`) before it looks at the revision, then checks the
+//! revision, writes the job and its artifact in one D1 batch and answers `202`; it
+//! never compiles. It then
 //! sends a queue pointer if a Queue is bound; a failed or absent send is fine,
 //! because the Cron Trigger recovers every due job.
 
@@ -13,28 +16,15 @@ use serde_json::Value;
 use sws_assets::limits::PUBLISH_ARTIFACT;
 use worker::{Env, Request, Response, Result, console_error};
 
-use super::authz::{Denied, require_publish};
+use super::authz::require_publish;
 use super::manifest::{parse_request, validate_request};
 use super::{Enqueued, PublishRoute, QUEUE_BINDING, QueuePointer, sql};
 use crate::bounds::{self, BodyLimiter, MAX_URL_BYTES};
 use crate::respond::{self, Resp};
-use crate::{auth, d1, repo};
+use crate::{d1, repo};
 
 fn to_response(r: Resp) -> Result<Response> {
     crate::session::http::to_response(r)
-}
-
-#[cfg(feature = "insecure-dev-auth")]
-fn dev_user_header(req: &Request, env: &Env) -> Result<Option<String>> {
-    if !crate::session::entry::dev_fence_open(req, env) {
-        return Ok(None);
-    }
-    req.headers().get(auth::DEV_USER_HEADER)
-}
-
-#[cfg(not(feature = "insecure-dev-auth"))]
-fn dev_user_header(_req: &Request, _env: &Env) -> Result<Option<String>> {
-    Ok(None)
 }
 
 pub async fn handle(mut req: Request, env: &Env, route: PublishRoute) -> Result<Response> {
@@ -59,18 +49,13 @@ pub async fn handle(mut req: Request, env: &Env, route: PublishRoute) -> Result<
     ) {
         return to_response(respond::reject(rej));
     }
-    let dev_user = dev_user_header(&req, env)?;
 
     // Authenticate and authorize before buffering any body byte.
-    let Ok(principal) = auth::authenticate(dev_user.as_deref()) else {
-        return to_response(super::error(401, "unauthenticated", None));
-    };
     let (ws, site) = route.ids();
-    match require_publish(env, &principal, ws, site).await? {
-        Ok(_role) => {}
-        Err(Denied::Forbidden) => return to_response(super::error(403, "forbidden", None)),
-        Err(Denied::SiteNotFound) => return to_response(super::error(404, "site_not_found", None)),
-    }
+    let principal = match require_publish(&req, env, &method, ws, site).await? {
+        Ok((principal, _role)) => principal,
+        Err(d) => return to_response(super::error(d.status(), d.code(), None)),
+    };
 
     // Count the bytes actually streamed (never trust Content-Length alone). GET drains
     // under the standard cap and any byte is a 400.
@@ -123,6 +108,14 @@ async fn enqueue(
         Err(e) => return to_response(super::manifest_error(&e)),
     };
     let revision_id = m.manifest.revision_id.clone();
+    let job_id = super::job_id(ws, site, &request_id);
+
+    // Idempotency first: a job already filed under this request id answers on its own
+    // (the same job, or a conflict for another manifest), before the revision check.
+    let existing = d1::first(db, &sql::job_get(ws, site, &job_id)).await?;
+    if let Some(outcome) = super::existing_outcome(existing.as_ref(), &m.digest, &revision_id) {
+        return respond_enqueued(env, ws, site, &job_id, &revision_id, outcome, existing).await;
+    }
 
     // The artifact must be compiled from an existing, immutable revision of THIS site.
     let Some(rev) = d1::first(db, &repo::revision_get(ws, site, &revision_id)).await? else {
@@ -132,7 +125,6 @@ async fn enqueue(
         return to_response(super::error(409, "revision_mismatch", None));
     }
 
-    let job_id = super::job_id(ws, site, &request_id);
     let new = sql::NewJob {
         workspace_id: ws,
         site_id: site,
@@ -145,7 +137,20 @@ async fn enqueue(
     let changes = d1::batch(db, &[sql::job_insert(&new), sql::artifact_insert(&new, &m)]).await?;
     let inserted = changes.first().copied() == Some(1);
     let row = d1::first(db, &sql::job_get(ws, site, &job_id)).await?;
-    match super::enqueue_outcome(inserted, row.as_ref(), &m.digest, &revision_id) {
+    let outcome = super::enqueue_outcome(inserted, row.as_ref(), &m.digest, &revision_id);
+    respond_enqueued(env, ws, site, &job_id, &revision_id, outcome, row).await
+}
+
+async fn respond_enqueued(
+    env: &Env,
+    ws: &str,
+    site: &str,
+    job_id: &str,
+    revision_id: &str,
+    outcome: Enqueued,
+    row: Option<Value>,
+) -> Result<Response> {
+    match outcome {
         Enqueued::Busy => to_response(super::busy()),
         Enqueued::Conflict => to_response(super::error(409, "idempotency_conflict", None)),
         outcome @ (Enqueued::Created | Enqueued::Existing) => {
@@ -154,7 +159,7 @@ async fn enqueue(
             // client retry recovers a lost queue send. Duplicates are harmless.
             let still_queued = row.get("phase").and_then(Value::as_str) == Some("queued");
             let dispatch = if still_queued {
-                dispatch(env, &QueuePointer::new(ws, site, &job_id, &revision_id)).await
+                dispatch(env, &QueuePointer::new(ws, site, job_id, revision_id)).await
             } else {
                 "none"
             };

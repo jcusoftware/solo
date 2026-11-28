@@ -40,7 +40,7 @@ pub async fn handle(
             let Ok(user) = u.parse::<i64>() else {
                 return Ok(Some(to_response(json_error(400, "bad_request", &[]))?));
             };
-            entry::revoke_user(env, w, s, user).await?;
+            entry::revoke_user(env, w, s, user, None).await?;
             json_ok(json!({ "revoked": true }))
         }
         ("GET", ["revision", w, s, r]) if is_valid_id(w) && is_valid_id(s) && is_valid_id(r) => {

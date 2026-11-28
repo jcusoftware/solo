@@ -55,10 +55,20 @@
 		"STUDIO_VERSION": "0.2.0-dev",
 		"STUDIO_PUBLIC_ORIGIN": "https://studio.sws.example",
 		"PUBLISHED_ORIGIN_TEMPLATE": "https://{slug}.sws.example",
-		// GitHub OAuth App client id (public, non-secret); consumed by #65.
+		// GitHub OAuth App client id (public, non-secret). Callback URL to register:
+		// <STUDIO_PUBLIC_ORIGIN>/auth/github/callback. No GitHub scope is requested.
 		"GITHUB_OAUTH_CLIENT_ID": "<YOUR_GITHUB_OAUTH_CLIENT_ID>",
+		// Owner bootstrap (#65): the FIRST sign-in from this numeric GitHub user id becomes the
+		// owner of STUDIO_BOOTSTRAP_WORKSPACE (created if missing) while that workspace has no
+		// owner. Not a secret; find yours with `curl https://api.github.com/users/<login>`.
+		// Everyone else needs an invitation. Recovery: docs/STUDIO_SESSIONS.md, "Owner recovery".
+		"STUDIO_OWNER_GITHUB_ID": "<YOUR_NUMERIC_GITHUB_USER_ID>",
+		"STUDIO_BOOTSTRAP_WORKSPACE": "studio",
 		// Cloudflare Turnstile always-pass TEST site key (dev only). Replace in production.
+		// Used by the invitation form (/invite); the secret is TURNSTILE_SECRET_KEY below.
 		"TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+		// Hostnames the Turnstile token may be minted for (defence in depth).
+		"ALLOWED_HOSTNAMES": "studio.sws.example",
 		// Optional session tuning (#62), clamped by the Worker; defaults shown.
 		// Membership is re-read from D1 before every edit; a socket not verified for twice
 		// SESSION_AUTHZ_RECHECK_MS (cap 30000 ms, so 60 s) is sent nothing. The idle sweep alarm
@@ -71,12 +81,12 @@
 	},
 	// Secrets (never commit): set with `wrangler secret put <NAME>` in production,
 	// or in `.dev.vars` for local `wrangler dev`:
-	//   GITHUB_OAUTH_CLIENT_SECRET  secret; GitHub OAuth App client secret (consumed by #65)
-	//   SESSION_SIGNING_KEY         (future, #65) signing key for Studio auth sessions; not read by the current scaffold
-	//   TURNSTILE_SECRET_KEY        (future, #65) not read by the current scaffold; no route uses it yet
+	//   GITHUB_OAUTH_CLIENT_SECRET  GitHub OAuth App client secret (sign-in answers 503 without it)
+	//   TURNSTILE_SECRET_KEY        Turnstile secret for the invitation form (a TEST secret is refused
+	//                               unless DEV_MODE="true", which production must never set)
 	//   CLOUDFLARE_DEPLOY_API_TOKEN opt-in (#66, not read yet); for uploading/activating ready publish jobs
-	// Future (#65), not read by the current scaffold: a local-only DEV_MODE="true" in `.dev.vars`
-	// to relax Turnstile verification. Do not rely on it until that issue ships.
+	// No session signing key exists: session cookies, tokens and invitation codes are random
+	// 256-bit values stored only as SHA-256 digests in D1.
 	"observability": {
 		"enabled": true
 	}

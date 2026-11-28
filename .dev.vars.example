@@ -31,3 +31,12 @@ ZOOM_CLIENT_ID=
 ZOOM_CLIENT_SECRET=
 # Opaque Zoom host user ID (never an email, never "me").
 ZOOM_HOST_USER_ID=
+
+# --- Studio Worker (wrangler.studio.jsonc, issue #65; placeholders only) ---
+# Non-secret vars (may also live in the Wrangler config): GitHub OAuth App client id and
+# the numeric GitHub user id that becomes owner on first sign-in.
+GITHUB_OAUTH_CLIENT_ID=
+STUDIO_OWNER_GITHUB_ID=
+# SECRET (never commit): GitHub OAuth App client secret. `wrangler secret put` in production.
+GITHUB_OAUTH_CLIENT_SECRET=
+# The invitation form reuses TURNSTILE_SECRET_KEY and DEV_MODE above (TEST secret: dev only).

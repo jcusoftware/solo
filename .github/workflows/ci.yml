@@ -218,11 +218,14 @@ jobs:
       - name: Studio session integration tests (Durable Object, WebSockets, hibernation; own port 8790, own local state)
         # Builds a SEPARATE dev-auth Worker (build-dev-auth/), never the release build above.
         run: npm run test:studio:sessions
+      - name: Studio auth integration (release build, fake GitHub OAuth on loopback, own port 8794 and local state)
+        # Real auth only (no dev-auth build). Starts wrangler dev in its own process group and stops it itself.
+        run: npm run test:studio:auth
       - name: Studio asset store integration (own dev servers on 8791-8793 and local D1/R2 state; test-only dev-auth build)
         # Builds a SEPARATE dev-auth Worker (its own build-* directory). The test starts each
         # wrangler dev in its own process group and stops those groups itself.
         run: npm run test:studio:assets
-      - name: Studio publish job integration (own dev servers on 8794-8795, local D1 and Queue state; test-only dev-auth build)
+      - name: Studio publish job integration (own dev servers on 8798-8799, local D1 and Queue state; test-only dev-auth build)
         # Builds the SEPARATE test-only Worker (its own build-* directory). Drives jobs through the real
         # Cron Trigger handler (wrangler dev --test-scheduled) and a local Queue consumer; each wrangler
         # dev runs in its own process group, which the test stops itself.

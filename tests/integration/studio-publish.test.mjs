@@ -5,17 +5,23 @@
 // output directory (crates/sws-worker-studio/build-insecure-dev-auth/), then starts two
 // local `wrangler dev` instances on their own ports and their own `--persist-to` state
 // (nothing is shared with `npm run studio:dev`; nothing touches Cloudflare):
-//   A  :8794  the cardless default: NO Queue. Started with --test-scheduled, so
+//   A  :8798  the cardless default: NO Queue. Started with --test-scheduled, so
 //             /__scheduled runs the real Cron Trigger handler that drives jobs.
-//   B  :8795  the optional Queue path: a LOCAL simulated PUBLISH_QUEUE producer and
+//   B  :8799  the optional Queue path: a LOCAL simulated PUBLISH_QUEUE producer and
 //             consumer (only in this generated test config).
 // Every server gets `--var SWS_INSECURE_DEV_AUTH:1` (the dev-auth build's runtime fence;
 // no committed config sets it) and is reached on a loopback Host. Each wrangler runs in
 // its own process group, which this file stops itself.
+//
+// Authorization is proved with REAL #65 credentials: browser sessions and scoped CLI
+// tokens are minted here (random lookup id + secret) and seeded into local D1 as SHA-256
+// digests exactly as the Worker stores them, then presented as `__Host-sws_session` or
+// `Authorization: Bearer`. The dev identity (`X-Sws-Dev-User`) is used only for the
+// pipeline mechanics after authorization.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { resolve, join } from 'node:path';
@@ -25,8 +31,8 @@ const ROOT = resolve(import.meta.dirname, '..', '..');
 const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
 const STATE = join(ROOT, '.wrangler', 'studio-publish-test');
 const CRATE = join(ROOT, 'crates', 'sws-worker-studio');
-const PORTS = { a: 8794, b: 8795 };
-const INSPECTOR = { a: 9394, b: 9395 };
+const PORTS = { a: 8798, b: 8799 };
+const INSPECTOR = { a: 9396, b: 9397 };
 const STUDIO_HEADERS = parseRustConst(readFileSync(join(ROOT, 'crates/sws-security/src/headers.rs'), 'utf8'), 'STUDIO_HEADERS');
 const LEASE = 120; // publish::job::LEASE_SECS
 const BACKOFF_1 = 30; // publish::job::backoff_secs(1)
@@ -38,6 +44,49 @@ const jobIdOf = (ws, site, req) => `j${SHA(`publish\0${ws}\0${site}\0${req}`).sl
 const REV_SHA_A2 = SHA('revision a2');
 
 const servers = [];
+
+// --- Real #65 credentials (auth::secret formats; only digests reach D1) -----------------
+const hex = (n) => randomBytes(n).toString('hex');
+const isoAgo = (secs) => new Date(Date.now() - secs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+function mintSession() {
+  const id = hex(12);
+  const value = `${id}.${hex(32)}`;
+  return { id, value, hash: SHA(value) };
+}
+function mintToken() {
+  const id = hex(12);
+  const value = `swst_${id}_${hex(32)}`;
+  return { id, value, hash: SHA(value) };
+}
+/** Credentials per server, minted when the server is seeded (so "fresh" is measured from then). */
+function credentialsSql() {
+  const c = {
+    ownerFresh: { ...mintSession(), user: 1, ageSecs: 60 },
+    // Signed in 20 minutes ago: valid, but outside the 15-minute re-auth window (#60).
+    ownerStale: { ...mintSession(), user: 1, ageSecs: 20 * 60 },
+    editorFresh: { ...mintSession(), user: 3, ageSecs: 60 },
+    editToken: { ...mintToken(), user: 4, ws: 'ws-a', scope: 'edit' },
+    publishToken: { ...mintToken(), user: 4, ws: 'ws-a', scope: 'publish' },
+    activateToken: { ...mintToken(), user: 1, ws: 'ws-a', scope: 'activate' },
+    // dave is a publisher in BOTH workspaces; this token is bound to ws-b.
+    otherWsToken: { ...mintToken(), user: 4, ws: 'ws-b', scope: 'publish' },
+  };
+  const rows = [];
+  for (const v of Object.values(c)) {
+    if (v.ageSecs !== undefined) {
+      const created = isoAgo(v.ageSecs);
+      rows.push(
+        `INSERT INTO auth_sessions (id, user_id, secret_hash, created_at, last_seen_at, expires_at) VALUES ('${v.id}', ${v.user}, '${v.hash}', '${created}', '${isoAgo(30)}', '${isoAgo(v.ageSecs - 86_400)}');`,
+      );
+    } else {
+      const created = isoAgo(60);
+      rows.push(
+        `INSERT INTO api_tokens (id, workspace_id, user_id, token_hash, scope, label, created_at, expires_at, chain_started_at) VALUES ('${v.id}', '${v.ws}', ${v.user}, '${v.hash}', '${v.scope}', 'publish-test', '${created}', '${isoAgo(60 - 23 * 3600)}', '${created}');`,
+      );
+    }
+  }
+  return { creds: c, sql: rows.join('\n') };
+}
 
 function writeConfig(name, { queue }) {
   const dir = join(STATE, name);
@@ -65,7 +114,8 @@ function writeConfig(name, { queue }) {
             },
           }
         : {}),
-      vars: { STUDIO_VERSION: 'publish-test' },
+      // Cookie-borne writes must come from this origin (the #65 CSRF gate).
+      vars: { STUDIO_VERSION: 'publish-test', STUDIO_PUBLIC_ORIGIN: `http://127.0.0.1:${PORTS[name]}` },
     }),
   );
   return { dir, cfg, persist: join(dir, 'state') };
@@ -86,7 +136,7 @@ const SEED = `
 INSERT INTO workspaces (id, name) VALUES ('ws-a', 'Workspace A'), ('ws-b', 'Workspace B');
 INSERT INTO users (github_id, github_login) VALUES (1001, 'alice'), (2002, 'bob'), (3003, 'carol'), (4004, 'dave');
 INSERT INTO memberships (workspace_id, user_id, role) VALUES
-  ('ws-a', 1, 'owner'), ('ws-a', 3, 'editor'), ('ws-a', 4, 'publisher'), ('ws-b', 2, 'owner');
+  ('ws-a', 1, 'owner'), ('ws-a', 3, 'editor'), ('ws-a', 4, 'publisher'), ('ws-b', 2, 'owner'), ('ws-b', 4, 'publisher');
 INSERT INTO sites (workspace_id, id, slug, name) VALUES
   ('ws-a', 'site-a1', 'one', 'One'), ('ws-a', 'site-a2', 'two', 'Two'), ('ws-a', 'site-a3', 'three', 'Three'),
   ('ws-a', 'site-seed', 'seed', 'Seed'), ('ws-b', 'site-b1', 'bee', 'Bee');
@@ -107,7 +157,8 @@ async function startServer(key, { queue }) {
   const { cfg, persist, dir } = writeConfig(key, { queue });
   wr(['d1', 'migrations', 'apply', 'STUDIO_DB', '--local', '-c', cfg, '--persist-to', persist]);
   const file = join(dir, 'seed.sql');
-  writeFileSync(file, SEED);
+  const { creds, sql: credSql } = credentialsSql();
+  writeFileSync(file, `${SEED}\n${credSql}\n`);
   wr(['d1', 'execute', 'STUDIO_DB', '--local', '-c', cfg, '--persist-to', persist, '--file', file]);
   const port = PORTS[key];
   const args = ['dev', '-c', cfg, '--port', String(port), '--ip', '127.0.0.1', '--inspector-port', String(INSPECTOR[key]), '--persist-to', persist, '--test-scheduled'];
@@ -122,7 +173,7 @@ async function startServer(key, { queue }) {
   let log = '';
   child.stdout.on('data', (d) => (log += d));
   child.stderr.on('data', (d) => (log += d));
-  const server = { key, port, base: `http://127.0.0.1:${port}`, child, cfg, persist, log: () => log };
+  const server = { key, port, base: `http://127.0.0.1:${port}`, child, cfg, persist, creds, log: () => log };
   servers.push(server);
   for (let i = 0; i < 90; i++) {
     try {
@@ -148,25 +199,62 @@ function stopAll() {
 
 process.on('exit', stopAll);
 
-/** Request helpers. `user` is the dev-auth user id; `null` sends no identity. */
+/** One HTTP request on a FRESH connection (`agent: false`), like scripts/test-studio-auth.mjs:
+ *  the first request after local wrangler D1/Queue writes can otherwise reuse a pooled
+ *  keep-alive socket the server already closed and fail with `fetch failed`. */
+function request(port, method, path, headers, body) {
+  return new Promise((resolveP, reject) => {
+    const h = { ...headers };
+    if (body !== undefined && h['Content-Length'] === undefined) h['Content-Length'] = Buffer.byteLength(body);
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers: h, agent: false }, (r) => {
+      let text = '';
+      r.setEncoding('utf8');
+      r.on('data', (d) => (text += d));
+      r.on('end', () =>
+        resolveP({
+          status: r.statusCode,
+          text,
+          headers: {
+            get: (n) => {
+              const v = r.headers[n.toLowerCase()];
+              return v === undefined ? null : Array.isArray(v) ? v.join(', ') : v;
+            },
+          },
+        }),
+      );
+    });
+    req.on('error', reject);
+    req.setTimeout(30_000, () => req.destroy(new Error('timeout')));
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+/** Request helpers. `user` is the dev-auth user id (`null` sends no dev identity);
+ *  `session` sends a real `__Host-sws_session` cookie (with the Studio `Origin` unless
+ *  `origin` is given; `origin: null` omits it); `token` sends `Authorization: Bearer`. */
 function api(server) {
-  const call = async (method, path, { user, body, headers = {} } = {}) => {
+  const call = async (method, path, { user, session, token, origin, body, headers = {} } = {}) => {
     const h = { ...headers };
     if (user !== undefined && user !== null) h['X-Sws-Dev-User'] = String(user);
+    if (token) h.Authorization = `Bearer ${token}`;
+    if (session) {
+      h.Cookie = `__Host-sws_session=${session}`;
+      if (origin !== null) h.Origin = origin ?? server.base;
+    }
     if (body !== undefined && !h['Content-Type']) h['Content-Type'] = 'application/json';
-    const res = await fetch(`${server.base}${path}`, { method, headers: h, body });
-    const text = await res.text();
+    const res = await request(server.port, method, path, h, body);
     let json = null;
-    if ((res.headers.get('content-type') || '').includes('application/json')) json = JSON.parse(text);
-    return { status: res.status, headers: res.headers, text, json };
+    if ((res.headers.get('content-type') || '').includes('application/json')) json = JSON.parse(res.text);
+    return { status: res.status, headers: res.headers, text: res.text, json };
   };
-  const publish = (ws, site, payload, user = 1, headers = {}) =>
-    call('POST', `/api/sites/${ws}/${site}/publish`, { user, body: typeof payload === 'string' ? payload : JSON.stringify(payload), headers });
-  const status = (ws, site, job, user = 1) => call('GET', `/api/sites/${ws}/${site}/publish/${job}`, { user });
+  const publish = (ws, site, payload, user = 1, headers = {}, auth = {}) =>
+    call('POST', `/api/sites/${ws}/${site}/publish`, { user, ...auth, body: typeof payload === 'string' ? payload : JSON.stringify(payload), headers });
+  const status = (ws, site, job, user = 1, auth = {}) => call('GET', `/api/sites/${ws}/${site}/publish/${job}`, { user, ...auth });
   /** The real Cron Trigger handler (`wrangler dev --test-scheduled`). */
   const scheduled = async () => {
-    const r = await fetch(`${server.base}/__scheduled?cron=*%2F5+*+*+*+*`);
-    assert.equal(r.status, 200, await r.text());
+    const r = await request(server.port, 'GET', '/__scheduled?cron=*%2F5+*+*+*+*', {});
+    assert.equal(r.status, 200, r.text);
   };
   /** Dev-build hook: the same driver with a skewed clock and injected faults. */
   const devDrive = async (query) => {
@@ -199,7 +287,7 @@ function manifest({ requestId = 'req-1', revisionId = 'rev-a1', revisionSha = RE
 /** A request with an explicit Host header (fetch cannot set one). */
 function hostRequest(port, method, path, headers, body) {
   return new Promise((resolveP, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path, method, headers }, (r) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers, agent: false }, (r) => {
       let text = '';
       r.on('data', (d) => (text += d));
       r.on('end', () => resolveP({ status: r.statusCode, body: text }));
@@ -253,7 +341,7 @@ describe('studio publish jobs (local wrangler dev, insecure-dev-auth build)', { 
       const a = api(A);
       const editor = await a.publish('ws-a', 'site-a3', manifest({ requestId: 'by-editor', revisionId: 'rev-a3' }), 3);
       assert.equal(editor.status, 403);
-      assert.equal(editor.json.error, 'forbidden');
+      assert.equal(editor.json.error, 'forbidden_role');
       const pub = await a.publish('ws-a', 'site-a3', manifest({ requestId: 'by-publisher', revisionId: 'rev-a3' }), 4);
       assert.equal(pub.status, 202, pub.text);
       assert.equal((await a.status('ws-a', 'site-a3', pub.json.job_id, 3)).status, 403, 'editors cannot read publish jobs either');
@@ -277,6 +365,82 @@ describe('studio publish jobs (local wrangler dev, insecure-dev-auth build)', { 
       assert.equal((await a.publish('ws-a', 'site-b1', manifest({ requestId: 'x1' }), 1)).json.error, 'site_not_found');
       assert.equal((await a.publish('ws-a', 'site-a1', manifest({ requestId: 'x2', revisionId: 'rev-b1' }), 1)).json.error, 'revision_not_found');
       assert.equal((await a.publish('ws-a', 'site-a1', manifest({ requestId: 'x3', revisionId: 'rev-a2' }), 1)).json.error, 'revision_not_found');
+    });
+  });
+
+  describe('authorization with real #65 credentials (sessions and scoped tokens)', () => {
+    const m = (requestId) => manifest({ requestId, revisionId: 'rev-a3' });
+    const NO_DEV = null; // no X-Sws-Dev-User: only the real credential is presented
+
+    it('refuses an edit-only token (403 insufficient_scope) on enqueue and on job status', async () => {
+      const a = api(A);
+      const { editToken } = A.creds;
+      const r = await a.publish('ws-a', 'site-a3', m('tok-edit'), NO_DEV, {}, { token: editToken.value });
+      assert.equal(r.status, 403, r.text);
+      assert.equal(r.json.error, 'insufficient_scope');
+      assertStudioHeaders(r, 'POST 403 edit token');
+      assert.equal((await a.status('ws-a', 'site-a3', jobIdOf('ws-a', 'site-a3', 'tok-edit'), NO_DEV, { token: editToken.value })).status, 403);
+    });
+
+    it('accepts a publish-scoped token (202) and an activate-scoped token, and lets them read the job', async () => {
+      const a = api(A);
+      const { publishToken, activateToken } = A.creds;
+      const r = await a.publish('ws-a', 'site-a3', m('tok-publish'), NO_DEV, {}, { token: publishToken.value });
+      assert.equal(r.status, 202, r.text);
+      assert.equal(r.json.origin, 'cli');
+      assertStudioHeaders(r, 'POST 202 publish token');
+      const s = await a.status('ws-a', 'site-a3', r.json.job_id, NO_DEV, { token: publishToken.value });
+      assert.equal(s.status, 200, s.text);
+      const act = await a.status('ws-a', 'site-a3', r.json.job_id, NO_DEV, { token: activateToken.value });
+      assert.equal(act.status, 200, act.text);
+    });
+
+    it('refuses a token bound to another workspace (403 forbidden), even for a publisher of both', async () => {
+      const a = api(A);
+      const { otherWsToken } = A.creds;
+      const r = await a.publish('ws-a', 'site-a3', m('tok-other-ws'), NO_DEV, {}, { token: otherWsToken.value });
+      assert.equal(r.status, 403, r.text);
+      assert.equal(r.json.error, 'forbidden');
+      // The same token works in its own workspace.
+      const own = await a.publish('ws-b', 'site-b1', manifest({ requestId: 'tok-own-ws', revisionId: 'rev-b1' }), NO_DEV, {}, { token: otherWsToken.value });
+      assert.equal(own.status, 202, own.text);
+    });
+
+    it('refuses an editor session (403 forbidden_role) and accepts a fresh owner session from the Studio origin', async () => {
+      const a = api(A);
+      const { editorFresh, ownerFresh } = A.creds;
+      const ed = await a.publish('ws-a', 'site-a3', m('sess-editor'), NO_DEV, {}, { session: editorFresh.value });
+      assert.equal(ed.status, 403, ed.text);
+      assert.equal(ed.json.error, 'forbidden_role');
+      const ok = await a.publish('ws-a', 'site-a3', m('sess-owner'), NO_DEV, {}, { session: ownerFresh.value });
+      assert.equal(ok.status, 202, ok.text);
+      assert.equal((await a.status('ws-a', 'site-a3', ok.json.job_id, NO_DEV, { session: ownerFresh.value, origin: null })).status, 200);
+    });
+
+    it('refuses a cookie-borne POST without the Studio Origin (403 forbidden_origin)', async () => {
+      const a = api(A);
+      const { ownerFresh } = A.creds;
+      for (const origin of [null, 'https://evil.example']) {
+        const r = await a.publish('ws-a', 'site-a3', m('sess-no-origin'), NO_DEV, {}, { session: ownerFresh.value, origin });
+        assert.equal(r.status, 403, `${origin}: ${r.text}`);
+        assert.equal(r.json.error, 'forbidden_origin');
+      }
+      assert.equal((await a.status('ws-a', 'site-a3', jobIdOf('ws-a', 'site-a3', 'sess-no-origin'))).json.error, 'job_not_found');
+    });
+
+    it('refuses a session past the 15-minute re-auth window (401 reauth_required)', async () => {
+      const a = api(A);
+      const { ownerStale } = A.creds;
+      const r = await a.publish('ws-a', 'site-a3', m('sess-stale'), NO_DEV, {}, { session: ownerStale.value });
+      assert.equal(r.status, 401, r.text);
+      assert.equal(r.json.error, 'reauth_required');
+    });
+
+    it('an Authorization header is authoritative: a bad bearer is 401 even with a dev identity', async () => {
+      const a = api(A);
+      const r = await a.publish('ws-a', 'site-a3', m('tok-bad'), 1, {}, { token: `swst_${hex(12)}_${hex(32)}` });
+      assert.equal(r.status, 401, r.text);
+      assert.equal(r.json.error, 'unauthenticated');
     });
   });
 
@@ -357,6 +521,16 @@ describe('studio publish jobs (local wrangler dev, insecure-dev-auth build)', { 
       const conflict = await a.publish('ws-a', 'site-a2', other);
       assert.equal(conflict.status, 409);
       assert.equal(conflict.json.error, 'idempotency_conflict');
+      // Idempotency is decided before the revision check: a reused key is a conflict even
+      // when the new manifest names a missing revision or the wrong revision digest.
+      for (const changed of [
+        manifest({ requestId: 'main-1', revisionId: 'rev-missing', revisionSha: REV_SHA_A2 }),
+        manifest({ requestId: 'main-1', revisionId: 'rev-a2', revisionSha: SHA('another digest') }),
+      ]) {
+        const r = await a.publish('ws-a', 'site-a2', changed);
+        assert.equal(r.status, 409, r.text);
+        assert.equal(r.json.error, 'idempotency_conflict');
+      }
     });
 
     it('the scheduled handler drives it to ready', async () => {
